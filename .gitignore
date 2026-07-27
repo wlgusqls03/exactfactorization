@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+
+# Generated simulation and rendering output
+results/
+
+# LaTeX build products (keep .tex and final .pdf explicitly stageable)
+*.aux
+*.log
+*.out
+*.toc
+
+# Windows download metadata
+*:Zone.Identifier
