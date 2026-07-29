@@ -102,3 +102,21 @@ ef_propagate_realspace.py  BO-free direct propagation of Phi(r,R) and chi(R)
 The direct solver contains no surface hopping. See
 `exact_factorization/README.md` for matched-grid smoke commands and numerical
 limitations.
+
+## Multi-component exact factorization
+
+The separate `multi_component_exact_factorization/` package treats a 1D
+electron, quantum proton, and heavy quantum nucleus with the nested product
+
+```text
+Psi(x,q,R,t) = Phi_{R,q}(x,t) Lambda_R(q,t) chi(R,t).
+```
+
+It contains a direct three-factor propagator, an independent full-3D-TDSE
+reference, explicit two-level gauge functions, gauge-invariant comparison
+tools, paper-style plots, wave/density/potential animations, and optional
+local-electronic excited-state population analysis. It also provides a
+standalone interactive 3D configuration-density HTML with rotation and a time
+slider. See
+`multi_component_exact_factorization/README.md` for Korean documentation and
+run commands.

@@ -135,3 +135,21 @@ Passing a short smoke test is not evidence of convergence at the avoided
 crossing. Increase time, `nR`, the BO basis size, and reduce/scan the time step
 in stages while monitoring nuclear norm, partial normalization, fidelity, and
 boundary density.
+
+## 3-panel visualization
+
+For a real-space or BO-basis direct archive, generate a static three-panel
+figure and a four-panel animation. The animation separates conditional
+electronic `Phi`, nuclear `chi`, full molecular density, and TDPES:
+
+```bash
+python -m exact_factorization.ef_visualize \
+  results/exact_factorization/realspace_direct/shin_metiu_direct_ef_realspace.npz
+```
+
+The script writes MP4 when `ffmpeg` is available and falls back to GIF
+otherwise. Every density colormap includes a fixed numerical colorbar. The
+visualization code has Korean comments for easier study.
+
+The separate three-component implementation is documented in
+`multi_component_exact_factorization/README.md`.
