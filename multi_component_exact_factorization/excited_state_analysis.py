@@ -112,7 +112,7 @@ def save_population_plot(times, populations, residual, outdir, dpi=180):
     ax.set_ylabel("electronic-state population")
     ax.set_ylim(-0.02, 1.02)
     ax.yaxis.set_major_formatter(NUMBER_FORMATTER)
-    ax.set_title("Electronic population projected on local $H_{BO}(x;q,R)$ states")
+    ax.set_title("BO-state populations")
     ax.legend(frameon=False, ncol=min(4, populations.shape[1]+1))
 
     # 왼쪽의 0--1 scale에서는 1e-3 정도의 작은 전이가 거의 보이지 않는다.
@@ -134,7 +134,7 @@ def save_population_plot(times, populations, residual, outdir, dpi=180):
     transfer_ax.set_xlabel("time (fs)")
     transfer_ax.set_ylabel("transferred population")
     transfer_ax.yaxis.set_major_formatter(NUMBER_FORMATTER)
-    transfer_ax.set_title(rf"Magnified transfer out of initial state $n={initial_state}$")
+    transfer_ax.set_title(rf"Transfer from $n={initial_state}$")
     transfer_ax.legend(frameon=False, ncol=2)
     path = outdir/"electronic_state_populations.png"
     fig.savefig(path, dpi=dpi)
@@ -194,9 +194,10 @@ def save_population_animation(
     population_ax.set_title("Global electronic-state populations")
     population_ax.legend(frameon=False, fontsize=8, ncol=2)
     title = fig.suptitle(
-        f"Excited-state decomposition   t={times[first]:.4f} fs\n"
-        "BO basis is used for analysis only; dynamics is direct exact factorization",
-        fontsize=12,
+        f"BO-state decomposition | {times[first]:.4f} fs", fontsize=13
+    )
+    fig.supxlabel(
+        "BO basis is used for analysis only", fontsize=8.5, color="0.35"
     )
 
     def update(number):
@@ -205,10 +206,7 @@ def save_population_animation(
         for state, artist in enumerate(images):
             artist.set_data(resolved[frame, state])
         marker.set_xdata([times[frame], times[frame]])
-        title.set_text(
-            f"Excited-state decomposition   t={times[frame]:.4f} fs\n"
-            "BO basis is used for analysis only; dynamics is direct exact factorization"
-        )
+        title.set_text(f"BO-state decomposition | {times[frame]:.4f} fs")
         return (*images, marker, title)
 
     animation = FuncAnimation(fig, update, frames=len(frames), blit=False)

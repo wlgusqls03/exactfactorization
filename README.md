@@ -88,6 +88,13 @@ docs/shin_metiu_guide_ko.pdf
 
 ## Direct exact-factorization prototype
 
+The multi-component direct-EF implementation now has a separate single-GPU
+CuPy backend in `multi_component_exact_factorization_gpu/`. It keeps the CPU
+implementation as the numerical reference and writes archives compatible with
+the existing visualization and dynamics-analysis tools. See
+`multi_component_exact_factorization_gpu/README.md` for CUDA 11.2 setup,
+precision validation, and run commands.
+
 The original full-TDSE/BO-projection workflow above is unchanged. A separate
 research implementation under `exact_factorization/` provides:
 

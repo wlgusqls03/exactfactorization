@@ -47,6 +47,7 @@ class Model:
     x_right: float
     proton_mass: float
     heavy_mass: float
+    fft_workers: int             # 전자 DST에 사용할 CPU worker 수
     potential: np.ndarray         # (nx,nq,nR)
 
 
@@ -101,6 +102,8 @@ def build_model(args) -> Model:
         x=x, q=q, R=R, dx=dx, dq=dq, dR=dR,
         x_left=x_left, x_right=x_right,
         proton_mass=args.proton_mass, heavy_mass=args.heavy_mass,
+        # 예전 archive metadata에는 이 option이 없으므로 재분석 시 fallback한다.
+        fft_workers=getattr(args, "fft_workers", -1),
         potential=np.asarray(potential),
     )
 
@@ -328,15 +331,24 @@ def derivative(values, spacing, axis, order=1):
     같은 함수가 phi, Lambda, chi에 모두 쓰이지만 ``axis``가 다르다.
     예를 들어 phi에서 q 미분은 axis=1, R 미분은 axis=2이다.
     """
+    # np.roll을 두 번 쓰면 phi처럼 큰 3D 배열 전체를 매 미분마다 두 번
+    # 복사한다. 미분축을 맨 앞으로 보는 view를 만든 뒤 interior와 두
+    # periodic boundary를 직접 채우면 같은 stencil을 훨씬 적은 메모리
+    # traffic으로 계산할 수 있다.
+    source = np.moveaxis(values, axis, 0)
+    result = np.empty_like(source)
     if order == 1:
-        return (
-            np.roll(values, -1, axis=axis)-np.roll(values, 1, axis=axis)
-        )/(2.0*spacing)
+        scale = 1.0/(2.0*spacing)
+        result[1:-1] = (source[2:]-source[:-2])*scale
+        result[0] = (source[1]-source[-1])*scale
+        result[-1] = (source[0]-source[-2])*scale
+        return np.moveaxis(result, 0, axis)
     if order == 2:
-        return (
-            np.roll(values, -1, axis=axis)-2.0*values
-            +np.roll(values, 1, axis=axis)
-        )/spacing**2
+        scale = 1.0/spacing**2
+        result[1:-1] = (source[2:]-2.0*source[1:-1]+source[:-2])*scale
+        result[0] = (source[1]-2.0*source[0]+source[-1])*scale
+        result[-1] = (source[0]-2.0*source[-1]+source[-2])*scale
+        return np.moveaxis(result, 0, axis)
     raise ValueError("order는 1 또는 2여야 합니다.")
 
 
@@ -372,10 +384,15 @@ def electronic_kinetic_energies(model: Model):
 
 def electronic_kinetic_step(values, tau, model: Model):
     """전자축에 ``exp(-i*tau*T_x)``를 hard-wall sine basis로 적용."""
-    transformed = dst(values, type=1, axis=0, norm="ortho")
+    transformed = dst(
+        values, type=1, axis=0, norm="ortho", workers=model.fft_workers
+    )
     phase = np.exp(-1j*tau*electronic_kinetic_energies(model))
     phase = phase.reshape((-1,)+(1,)*(values.ndim-1))
-    return idst(transformed*phase, type=1, axis=0, norm="ortho")
+    return idst(
+        transformed*phase, type=1, axis=0, norm="ortho",
+        workers=model.fft_workers,
+    )
 
 
 def apply_electronic_hamiltonian(phi, model: Model):
@@ -582,6 +599,10 @@ def add_model_arguments(parser):
     grid.add_argument("--q-max", type=float, default=3.6)
     grid.add_argument("--R-min", type=float, default=3.0)
     grid.add_argument("--R-max", type=float, default=5.4)
+    grid.add_argument(
+        "--fft-workers", type=int, default=-1,
+        help="전자 DST worker 수; -1은 사용 가능한 CPU core를 모두 사용",
+    )
 
     particle = parser.add_argument_group("입자와 초기상태")
     particle.add_argument("--proton-mass", type=float, default=1836.0)

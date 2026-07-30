@@ -42,7 +42,12 @@ compare.py     두 독립 계산의 full-Psi fidelity와 density 비교
 visualize.py   snapshot, factor profile, wave/density/gauge-potential 동영상
 visualize_3d.py full |Psi(x,q,R,t)|^2의 회전 가능한 standalone HTML
 excited_state_analysis.py local electronic-state population과 분해 동영상
+dynamics_analysis.py 실제 1D marginal, 전자 이동, BO-state 종합 분석
 ```
+
+RTX GPU 전파기는 CPU 기준 구현과 분리된
+`multi_component_exact_factorization_gpu/`에 있다. GPU 서버 설치, 정밀도
+검증 및 실행 순서는 해당 폴더의 `README.md`를 따른다.
 
 소스의 주석과 docstring에는 각 물리량의 의미와 배열 shape을 한국어로
 적어 놓았다. 처음 읽을 때는 `core.py`의 `initial_factors`,
@@ -329,6 +334,60 @@ python -m multi_component_exact_factorization.excited_state_analysis \
 생성물은 `electronic_state_populations.png`,
 `electronic_state_population_dynamics.gif`, `electronic_state_analysis.npz`다.
 여기서 BO basis는 사후 population 분석에만 사용하며 surface hopping은 없다.
+
+## 실제 이동을 보는 dynamics 분석
+
+조건부 wavefunction 그림과 별도로, 저장된 trajectory에서 세 입자의 실제
+marginal, 전자 이동, BO-state 분해를 한 번에 만든다.
+
+```bash
+python -m multi_component_exact_factorization.dynamics_analysis \
+  results/multi_component_exact_factorization/local_excited/multi_component_direct_ef.npz
+```
+
+기본 출력 폴더는 archive 옆의 `dynamics_analysis/`이고 다음 파일이 생긴다.
+
+```text
+marginal_dynamics.png       rho_e(x,t), rho_p(q,t), rho_H(R,t), 평균±폭
+electron_transfer.png       difference density, 좌/우 population, 이동량
+nonadiabatic_summary.png    BO gap, rho_qR, BO population, state별 rho_n
+dynamics_observables.npz    그림에 사용한 모든 수치 배열
+```
+
+전자 좌/우 경계는 기본적으로 `(q0+R0)/2`이다. 다른 경계를 쓰려면
+`--electron-divider 3.0`처럼 지정한다. 마지막 frame 대신 중간 snapshot은
+`--frame 10`으로 고른다. BO projection 없이 marginal과 전자 이동만 빠르게
+만들려면 `--no-bo`를 사용한다.
+
+## 긴 시간 전파와 계산 비용
+
+필요한 step 수는 대략
+
+```text
+n_steps = t_final_fs * 41.341 / dt_au
+```
+
+이다. 예를 들어 `dt_au=0.005`이면 1 fs에 약 8,269 step, 10 fs에 약
+82,683 step이 필요하다. `--save-every`는 저장 용량과 후처리 시간을 줄이지만
+전파 step 수 자체는 줄이지 않는다.
+
+긴 계산은 다음 순서로 준비하는 것이 안전하다.
+
+1. 짧은 구간에서 `dt_au`를 두세 값으로 바꾸어 norm, PNC, observable이
+   수렴하는 최대 time step을 찾는다.
+2. 각 grid 점 수를 줄인 시험과 원래 grid를 비교해 허용 가능한 최소 격자를
+   찾는다. 총 비용은 대략 `nx*nq*nR*n_steps`에 비례한다.
+3. `save-every`를 늘려 저장 frame 수를 100--300개 정도로 제한한다.
+4. 검증된 설정으로 1 fs를 먼저 수행한 뒤 10 fs로 확장한다.
+
+현재 구현은 NumPy/SciPy CPU 코드다. 여러 CPU core는 서로 다른 convergence
+계산을 동시에 돌리는 데에는 유용하지만, 한 trajectory는 메모리 대역폭의
+영향이 커서 core 수만큼 빨라지지 않는다. 전자 DST는 기본적으로
+`--fft-workers -1`로 사용 가능한 CPU core를 모두 쓰며, 다른 작업과 core를
+나눠야 할 때는 `--fft-workers 2`처럼 제한할 수 있다. GPU를 쓰려면 CuPy/JAX 같은 backend로
+큰 3D 배열 연산과 DST를 함께 옮겨야 하며, 현재 코드에 GPU option만 켜는 것으로는
+동작하지 않는다. 정확도를 낮추는 임의의 큰 `dt_au`보다 grid/time-step 수렴을
+먼저 확인해야 한다.
 
 ## 4. Interactive 3D configuration-space density
 

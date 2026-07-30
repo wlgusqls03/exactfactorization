@@ -193,13 +193,10 @@ def plot_initial_state(data, outdir, dpi=180):
     else:
         mass_line = "mass and input-center metadata unavailable"
         correlation_line = ""
-    state_origin = (
-        "local electronic H_BO eigenstate initialization; direct EF propagation"
-    )
-    fig.suptitle(
-        "Initial state at t=0: "+state_origin+"\n"
-        +initial_summary(data)+"\n"+mass_line+"  |  "+correlation_line,
-        fontsize=12,
+    fig.suptitle(f"Initial state | BO $n={excitation}$", fontsize=14)
+    fig.supxlabel(
+        mass_line+"  |  "+correlation_line,
+        fontsize=8.5, color="0.35",
     )
     path = outdir/"initial_state_summary.png"
     fig.savefig(path, dpi=dpi)
