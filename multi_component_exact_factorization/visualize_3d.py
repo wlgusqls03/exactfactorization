@@ -53,16 +53,10 @@ def initial_summary(data):
     options = data["args"].reshape(-1)[0]
     if not isinstance(options, dict):
         return "initial parameters unavailable"
-    mode = options.get("electron_initial_state", "gaussian")
     excitation = int(options.get("electron_excitation", 0))
-    if mode == "local-eigenstate":
-        electron_text = f"electron=local H_BO state n={excitation}"
-    elif mode == "hermite":
-        electron_text = f"electron=Hermite-Gaussian n={excitation}"
-    else:
-        electron_text = f"electron=Gaussian x0={options['electron_center']:.2f}"
     return (
-        f"initial: {electron_text}, q0={options['q0']:.2f}, "
+        f"initial: electron=local H_BO state n={excitation}, "
+        f"q0={options['q0']:.2f}, "
         f"R0={options['R0']:.2f} a0 &nbsp; | &nbsp; masses (me): "
         f"mp={options['proton_mass']:.0f}, MH={options['heavy_mass']:.0f}"
     )

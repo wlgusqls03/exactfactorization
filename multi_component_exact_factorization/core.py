@@ -23,6 +23,7 @@ Nested exact factorization은
 from __future__ import annotations
 
 from dataclasses import dataclass
+import warnings
 
 import numpy as np
 
@@ -89,8 +90,17 @@ def build_model(args) -> Model:
 
 
 def normalized_gaussian(grid, spacing, center, sigma, momentum=0.0):
-    """한 좌표축에서 정규화된 Gaussian wavepacket을 만든다."""
-    wave = np.exp(-0.5*((grid-center)/sigma)**2 + 1j*momentum*(grid-center))
+    """``|psi|^2``의 표준편차가 ``sigma``인 정규화 Gaussian.
+
+    확률밀도를 ``exp[-(x-x0)^2/(2 sigma^2)]``로 만들려면 파동함수
+    amplitude는 그 제곱근인 ``exp[-(x-x0)^2/(4 sigma^2)]``여야 한다.
+    무한 공간의 amplitude 정규화 상수는 ``(2*pi*sigma^2)^(-1/4)``이다.
+    유한 격자/box에서는 이 상수를 그대로 쓰는 대신 아래의 수치 적분으로
+    정확히 다시 정규화한다.
+    """
+    if sigma <= 0.0:
+        raise ValueError("Gaussian 표준편차 sigma는 양수여야 합니다.")
+    wave = np.exp(-0.25*((grid-center)/sigma)**2 + 1j*momentum*(grid-center))
     norm = np.sqrt(np.sum(np.abs(wave)**2)*spacing)
     return wave/norm
 
@@ -98,9 +108,8 @@ def normalized_gaussian(grid, spacing, center, sigma, momentum=0.0):
 def local_electronic_basis(model: Model, n_states: int):
     """각 ``(q,R)``에서 clamped electronic Hamiltonian의 낮은 상태를 푼다.
 
-    이것은 dynamics 전파에 필요한 단계가 아니라, 사용자가 명시적으로
-    ``local-eigenstate`` 초기화를 선택했을 때만 수행하는 BO형 초기화다.
-    전파 자체는 이후에도 coupled exact-factorization 방정식을 사용한다.
+    전자 초기상태는 항상 이 BO형 초기화를 사용한다. 전파 자체는 이후에도
+    coupled exact-factorization 방정식을 사용한다.
 
     계산하는 고유값 문제는 각 configuration마다
 
@@ -170,67 +179,126 @@ def local_electronic_basis(model: Model, n_states: int):
     return energies, states
 
 
-def initial_factors(model: Model, args):
-    """동일한 direct/reference 계산에 사용할 초기 세 factor를 만든다.
+def local_surface_curvature(surface, model: Model, q0: float, R0: float):
+    """BO surface의 ``(q0,R0)`` 주변 3x3 점을 이차식으로 fit한다.
 
-    ``proton_follow_heavy``와 ``electron_follow_*``는 초기 상관관계를
-    눈으로 확인하기 위한 단순한 parameter이다. 0이면 factor의 중심이
-    다른 좌표에 의존하지 않는 초기 product 형태가 된다.
+    ``E = c + gq*dq + gR*dR + kq*dq^2/2 + kqR*dq*dR
+          + kR*dR^2/2``
+
+    의 계수를 least squares로 구한다. 반환값은 두 gradient, 두 대각 force
+    constant와 혼합 curvature다. 초기 nuclear Gaussian을 product 형태로
+    유지하기 위해 폭에는 대각 ``kq``, ``kR``만 사용하고 혼합항은 진단용으로
+    저장한다.
     """
+    if not model.q[0] <= q0 <= model.q[-1]:
+        raise ValueError(f"q0={q0}가 q grid 밖에 있습니다.")
+    if not model.R[0] <= R0 <= model.R[-1]:
+        raise ValueError(f"R0={R0}가 R grid 밖에 있습니다.")
+    iq = np.sort(np.argsort(np.abs(model.q-q0))[:3])
+    iR = np.sort(np.argsort(np.abs(model.R-R0))[:3])
+    design, values = [], []
+    for jq in iq:
+        for jR in iR:
+            dq = model.q[jq]-q0
+            dR = model.R[jR]-R0
+            design.append([1.0, dq, dR, 0.5*dq**2, dq*dR, 0.5*dR**2])
+            values.append(surface[jq, jR])
+    coefficients = np.linalg.lstsq(design, values, rcond=None)[0]
+    return dict(
+        gradient_q=float(coefficients[1]),
+        gradient_R=float(coefficients[2]),
+        k_q=float(coefficients[3]),
+        k_qR=float(coefficients[4]),
+        k_R=float(coefficients[5]),
+    )
+
+
+def harmonic_density_sigma(mass: float, force_constant: float):
+    """Harmonic ground-state 확률밀도의 표준편차.
+
+    ``omega=sqrt(k/m)``이고 ``Var(x)=1/(2*m*omega)``이므로
+    ``sigma=(1/(4*m*k))^(1/4)``이다.
+    """
+    if mass <= 0.0 or force_constant <= 0.0:
+        raise ValueError("mass와 force constant는 양수여야 합니다.")
+    return (1.0/(4.0*mass*force_constant))**0.25
+
+
+def initial_factors(model: Model, args):
+    """Local BO 전자상태와 고정 중심 nuclear Gaussian으로 초기화한다."""
+    excitation = int(args.electron_excitation)
+    if excitation < 0:
+        raise ValueError("--electron-excitation은 0 이상이어야 합니다.")
+
     # ------------------------------------------------------------------
-    # 1. 가장 바깥 factor: heavy-nucleus marginal chi(R,0), shape (nR,)
+    # 1. 모든 (q,R)에서 local H_BO를 풀어 전자 초기상태/PES를 얻는다.
+    # ------------------------------------------------------------------
+    energies, electronic_states = local_electronic_basis(model, excitation+1)
+    phi = electronic_states[excitation]                             # (nx,nq,nR)
+    curvature = local_surface_curvature(
+        energies[excitation], model, args.q0, args.R0
+    )
+
+    # 0이면 BO surface의 국소 이차 미분을 자동 사용하고, 양수 option은
+    # 사용자가 harmonic reference force constant를 직접 지정한 경우다.
+    if args.proton_force_constant < 0.0 or args.heavy_force_constant < 0.0:
+        raise ValueError("force constant option은 0(자동) 또는 양수여야 합니다.")
+    kq = (
+        curvature["k_q"]
+        if args.proton_force_constant == 0.0
+        else args.proton_force_constant
+    )
+    kR = (
+        curvature["k_R"]
+        if args.heavy_force_constant == 0.0
+        else args.heavy_force_constant
+    )
+    if kq <= 0.0 or kR <= 0.0:
+        raise ValueError(
+            "초기 폭에 사용할 대각 force constant가 양수가 아닙니다: "
+            f"k_q={kq:.6g}, k_R={kR:.6g} "
+            f"(BO 곡률: {curvature['k_q']:.6g}, {curvature['k_R']:.6g}). "
+            "양의 곡률 위치를 선택하거나 --proton-force-constant와 "
+            "--heavy-force-constant에 양수를 직접 지정하세요."
+        )
+    proton_sigma = harmonic_density_sigma(model.proton_mass, kq)
+    heavy_sigma = harmonic_density_sigma(model.heavy_mass, kR)
+
+    # 계산된 초기 parameter도 NPZ의 args metadata에 함께 남긴다.
+    args.electron_initial_state = "local-eigenstate"
+    args.proton_sigma = proton_sigma
+    args.heavy_sigma = heavy_sigma
+    args.initial_proton_force_constant = kq
+    args.initial_heavy_force_constant = kR
+    args.initial_cross_curvature = curvature["k_qR"]
+    args.initial_gradient_q = curvature["gradient_q"]
+    args.initial_gradient_R = curvature["gradient_R"]
+
+    for name, sigma, spacing in (
+        ("proton", proton_sigma, model.dq),
+        ("heavy", heavy_sigma, model.dR),
+    ):
+        if sigma < 1.5*spacing:
+            warnings.warn(
+                f"{name} sigma={sigma:.4g}가 grid spacing={spacing:.4g}에 "
+                "비해 좁습니다. 해당 grid 점 수를 늘려 convergence를 확인하세요.",
+                RuntimeWarning,
+            )
+
+    # ------------------------------------------------------------------
+    # 2. 가장 바깥 factor: heavy-nucleus marginal chi(R,0), shape (nR,)
     # ------------------------------------------------------------------
     chi = normalized_gaussian(
-        model.R, model.dR, args.R0, args.heavy_sigma, args.heavy_momentum
+        model.R, model.dR, args.R0, heavy_sigma, args.heavy_momentum
     )                                                               # (nR,)
 
     # ------------------------------------------------------------------
-    # 2. 두 번째 factor: R에 조건부인 proton Lambda_R(q,0), shape (nq,nR)
+    # 3. Proton 중심은 모든 R에서 정확히 q0로 고정한다.
     # ------------------------------------------------------------------
-    # follow 계수가 0이 아니면 proton Gaussian 중심도 R에 따라 움직인다.
-    q_center = args.q0 + args.proton_follow_heavy*(model.R-args.R0) # (nR,)
-    lam = np.exp(
-        -0.5*((model.q[:, None]-q_center[None, :])/args.proton_sigma)**2
-        +1j*args.proton_momentum*(model.q[:, None]-q_center[None, :])
-    )                                                               # (nq,nR)
-    lam /= np.sqrt(np.sum(np.abs(lam)**2, axis=0)*model.dq)[None, :]
-
-    # ------------------------------------------------------------------
-    # 3. 첫 번째 factor: (q,R)에 조건부인 electron Phi_{R,q}(x,0)
-    # ------------------------------------------------------------------
-    # Gaussian/Hermite mode에서 사용할 조건부 중심, shape (nq,nR)이다.
-    electron_center = (
-        args.electron_center
-        + args.electron_follow_proton*(model.q[:, None]-args.q0)
-        + args.electron_follow_heavy*(model.R[None, :]-args.R0)
-    )                                                               # (nq,nR)
-    excitation = int(getattr(args, "electron_excitation", 0))
-    if excitation < 0:
-        raise ValueError("--electron-excitation은 0 이상이어야 합니다.")
-    initial_state = getattr(args, "electron_initial_state", "gaussian")
-    displacement = model.x[:, None, None]-electron_center[None, :, :] # (nx,nq,nR)
-    if initial_state == "local-eigenstate":
-        # H_BO(x;q,R)를 실제로 대각화하는 선택적 초기화. Gaussian 관련
-        # option과 electron momentum은 이 mode에서는 사용하지 않는다.
-        _, electronic_states = local_electronic_basis(model, excitation+1)
-        phi = electronic_states[excitation]
-    else:
-        # Gaussian은 n=0 packet이다. Hermite mode에서는 physicists'
-        # Hermite polynomial H_n((x-x_c)/sigma)을 곱해 n개의 node를 만든다.
-        # 이것은 BO-free excited-shaped packet이며 H_BO 고유상태라는 뜻은 아니다.
-        envelope = np.exp(-0.5*(displacement/args.electron_sigma)**2)
-        if initial_state == "hermite":
-            coefficients = np.zeros(excitation+1)
-            coefficients[excitation] = 1.0
-            envelope *= np.polynomial.hermite.hermval(
-                displacement/args.electron_sigma, coefficients
-            )
-        elif initial_state != "gaussian":
-            raise ValueError(f"알 수 없는 electron 초기상태: {initial_state}")
-        phi = envelope*np.exp(1j*args.electron_momentum*displacement)
-                                                                    # (nx,nq,nR)
-    # 모든 (q,R) slice가 전자 PNC int dx |Phi|^2=1을 만족하도록 정규화한다.
-    phi /= np.sqrt(np.sum(np.abs(phi)**2, axis=0)*model.dx)[None, :, :]
+    proton_line = normalized_gaussian(
+        model.q, model.dq, args.q0, proton_sigma, args.proton_momentum
+    )                                                               # (nq,)
+    lam = np.repeat(proton_line[:, None], len(model.R), axis=1)     # (nq,nR)
     return phi.astype(complex), lam.astype(complex), chi.astype(complex)
 
 
@@ -465,8 +533,8 @@ def add_model_arguments(parser):
     """direct/reference 명령행에서 공유하는 model option을 등록한다."""
     grid = parser.add_argument_group("실공간 격자")
     grid.add_argument("--nx", type=int, default=48, help="전자 격자점 수")
-    grid.add_argument("--nq", type=int, default=40, help="양성자 격자점 수")
-    grid.add_argument("--nR", type=int, default=36, help="무거운 핵 격자점 수")
+    grid.add_argument("--nq", type=int, default=64, help="양성자 격자점 수")
+    grid.add_argument("--nR", type=int, default=72, help="무거운 핵 격자점 수")
     grid.add_argument("--x-min", type=float, default=-12.0)
     grid.add_argument("--x-max", type=float, default=12.0)
     grid.add_argument("--q-min", type=float, default=-3.5)
@@ -474,34 +542,25 @@ def add_model_arguments(parser):
     grid.add_argument("--R-min", type=float, default=3.4)
     grid.add_argument("--R-max", type=float, default=8.0)
 
-    particle = parser.add_argument_group("입자와 초기 wavepacket")
+    particle = parser.add_argument_group("입자와 초기상태")
     particle.add_argument("--proton-mass", type=float, default=1836.0)
     particle.add_argument("--heavy-mass", type=float, default=12000.0)
-    particle.add_argument("--q0", type=float, default=-0.4)
-    particle.add_argument("--R0", type=float, default=5.2)
-    particle.add_argument("--proton-sigma", type=float, default=0.65)
-    particle.add_argument("--heavy-sigma", type=float, default=0.38)
-    particle.add_argument("--proton-momentum", type=float, default=3.0)
+    particle.add_argument("--q0", type=float, default=2.0)
+    particle.add_argument("--R0", type=float, default=4.2)
+    particle.add_argument("--proton-momentum", type=float, default=0.0)
     particle.add_argument("--heavy-momentum", type=float, default=0.0)
-    particle.add_argument("--proton-follow-heavy", type=float, default=0.08)
-    particle.add_argument("--electron-center", type=float, default=-0.6)
-    particle.add_argument("--electron-sigma", type=float, default=1.0)
-    particle.add_argument("--electron-momentum", type=float, default=0.7)
     particle.add_argument(
-        "--electron-initial-state",
-        choices=("gaussian", "hermite", "local-eigenstate"),
-        default="gaussian",
-        help=(
-            "gaussian: 기존 packet, hermite: BO 없는 n-node packet, "
-            "local-eigenstate: 각 (q,R)의 H_BO 고유상태"
-        ),
+        "--proton-force-constant", type=float, default=0.0,
+        help="0이면 local BO surface의 d2E/dq2, 양수면 해당 값을 직접 사용",
+    )
+    particle.add_argument(
+        "--heavy-force-constant", type=float, default=0.0,
+        help="0이면 local BO surface의 d2E/dR2, 양수면 해당 값을 직접 사용",
     )
     particle.add_argument(
         "--electron-excitation", type=int, default=0,
-        help="hermite/local-eigenstate의 0-based 전자 excitation index",
+        help="초기 local H_BO 전자상태의 0-based index",
     )
-    particle.add_argument("--electron-follow-proton", type=float, default=0.55)
-    particle.add_argument("--electron-follow-heavy", type=float, default=0.05)
 
     potential = parser.add_argument_group("soft-Coulomb potential")
     potential.add_argument("--left-position", type=float, default=-6.0)

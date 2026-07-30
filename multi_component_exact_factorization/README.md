@@ -15,9 +15,10 @@ Psi(x,q,R,t) = Phi_{R,q}(x,t) Lambda_R(q,t) chi(R,t)
 - `R`: 오른쪽 무거운 핵 좌표
 - 왼쪽 중심: 고정되어 있으므로 좌표축 없이 potential에만 포함
 
-기본 Gaussian/Hermite 초기화와 direct dynamics에는 BO 전자 고유상태나
-surface hopping을 사용하지 않는다. 단, 사용자가 명시적으로 선택하면
-local `H_BO(x;q,R)` eigenstate를 **초기상태를 만드는 용도에만** 쓸 수 있다.
+전자 초기상태는 모든 `(q,R)`에서 local `H_BO(x;q,R)`를 풀어 얻은
+고유상태로 만든다. BO 계산은 물리적인 **초기 전자상태 구성**에만 사용하며,
+그 뒤 시간 전파는 세 coupled exact-factorization 방정식을 직접 푼다.
+Surface hopping은 사용하지 않는다.
 
 ## 기존 2-component EF와 다른 점
 
@@ -74,30 +75,62 @@ nt = 저장 frame 수
 
 ## 기본 초기상태
 
-기본 계산은 BO 고유상태를 고르는 방식이 아니라 다음 세 Gaussian EF factor를
-직접 지정해서 시작한다.
+기본 초기상태는 다음과 같다.
 
 ```text
-chi(R,0)                 center R0 =  5.20, sigma_R = 0.38, p_R = 0.0
-Lambda_R(q,0)            center q_c(R) = -0.40 + 0.08 (R-R0)
-Phi_{R,q}(x,0)           center x_c(q,R)
-  = -0.60 + 0.55 (q-q0) + 0.05 (R-R0)
+H_BO(x;q,R) phi_n(x;q,R) = E_n(q,R) phi_n(x;q,R)
+Phi_{R,q}(x,0) = phi_n(x;q,R)
+
+Lambda_R(q,0) = N_q exp[-(q-q0)^2/(4 sigma_q^2) + i p_q(q-q0)]
+chi(R,0)      = N_R exp[-(R-R0)^2/(4 sigma_R^2) + i p_R(R-R0)]
 ```
 
-양성자의 `sigma_q=0.65`, `p_q=3.0`이고 전자의 `sigma_x=1.0`, `p_x=0.7`이다.
-질량은 원자단위로 `m_p=1836 m_e`, `M_H=12000 m_e`이다. 따라서 기준
-configuration `(q0,R0)=(-0.40,5.20)`에서 전자 중심은 `x0=-0.60`이지만,
-조건부 중심의 작은 좌표 의존성 때문에 초기상태에도 전자-양성자-heavy 핵
-상관관계가 들어 있다. 모든 `follow` 계수를 0으로 바꾸면 좌표에 무관한
-product형 Gaussian 초기상태가 된다.
+`Lambda_R(q,0)`의 Gaussian 중심은 모든 `R`에서 정확히 같은 `q0`이다.
+즉, 이전처럼 주변 `R`에 따라 중심을 옮기는 `follow` 기능은 없다. `chi`의
+중심도 사용자가 지정한 `R0`에 고정된다. 기본 중심은 `(q0,R0)=(2.0,4.2)`이고
+`--q0`, `--R0`로 바꿀 수 있다.
 
-전자 초기상태 option은 세 종류다.
+이전 기본점 `(-0.4,5.2)`은 현재 ground BO 표면에서 두 대각 곡률이 음수라
+자동 조화 폭을 정의할 수 없으므로 기본값에서 제외했다. 그 위치를 꼭 써야
+한다면 별도 물리 모델에서 정당화한 양의 force constant를 함께 지정해야 한다.
 
-- `gaussian`(기본): 위 Gaussian conditional packet
-- `hermite`: BO 계산 없이 node를 가진 Hermite-Gaussian packet. 이것은
-  실제 molecular Hamiltonian의 energy eigenstate라는 뜻은 아니다.
-- `local-eigenstate`: 각 `(q,R)`에서 `H_BO(x;q,R)`를 대각화하여 선택한
-  상태로 시작한다. 초기화만 BO형이고 이후 전파는 direct EF이다.
+여기서 `sigma_q`, `sigma_R`는 **파동함수가 아니라 확률밀도**의 표준편차다.
+따라서 위 amplitude의 분모가 `4 sigma^2`이고,
+
+```text
+|Lambda|^2 proportional to exp[-(q-q0)^2/(2 sigma_q^2)]
+|chi|^2    proportional to exp[-(R-R0)^2/(2 sigma_R^2)]
+```
+
+가 된다. 무한 공간의 amplitude 정규화 상수는
+`N=(2 pi sigma^2)^(-1/4)`이다. 유한 box에서는 이 값을 그대로 쓰는 대신
+격자 적분으로 정확히 다시 정규화한다.
+
+폭은 선택한 전자상태의 BO 표면을 `(q0,R0)` 주변에서 이차식으로 fit해 얻은
+대각 force constant로 자동 결정한다.
+
+```text
+k_q = d^2 E_n/dq^2,  k_R = d^2 E_n/dR^2
+omega_q = sqrt(k_q/m_p),  omega_R = sqrt(k_R/M_H)
+sigma_q = (1/(4 m_p k_q))^(1/4)
+sigma_R = (1/(4 M_H k_R))^(1/4)
+```
+
+따라서 같은 potential에서 질량만 바꾸면 폭도 자동으로 바뀌며
+`sigma proportional to mass^(-1/4)`이다. 혼합곡률 `d^2E/(dq dR)`은 진단값으로
+저장하지만, 초기 Gaussian 중심의 조건부 이동을 다시 만들지 않도록 초기
+폭에는 넣지 않는다. 자동 곡률 대신 알려진 양의 값을 쓰고 싶다면
+`--proton-force-constant`, `--heavy-force-constant`를 지정한다.
+
+선택한 중심에서 대각 곡률이 0 이하이면 그 지점에는 조화 바닥상태의 실수
+폭이 존재하지 않는다. 코드는 절댓값으로 숨기지 않고 중단하므로, 양의 곡률
+영역으로 중심을 옮기거나 양의 force constant를 직접 주어야 한다.
+
+질량 기본값은 `m_p=1836 m_e`, `M_H=12000 m_e`, 두 nuclear momentum 기본값은
+`p_q=p_R=0`이다. Momentum 위상 기능은 남아 있으므로 필요할 때만 예를 들어
+`--proton-momentum 1.0 --heavy-momentum -0.2`처럼 지정한다. 전자는
+`--electron-excitation n`으로 local BO 상태 번호를 선택하며, Gaussian/Hermite
+전자 초기화 option은 제거되었다.
 
 ## 두 gauge의 선택
 
@@ -135,13 +168,14 @@ potential 단위다. 임의의 비선형 gauge도 이론적으로 가능하지�
 
 ## 1. 아주 짧은 학습용 실행
 
-먼저 작은 격자에서 전체 흐름과 shape을 확인한다.
+먼저 짧은 시간 동안 전체 흐름과 shape을 확인한다. 자동 계산되는 nuclear
+폭이 좁으므로 기본 격자보다 점 수를 크게 줄이지 않는 편이 좋다.
 
 ```bash
 cd /home/jubjhbjey5/Shin-Metiu
 
 python -m multi_component_exact_factorization.propagate \
-  --nx 24 --nq 20 --nR 16 \
+  --nx 48 --nq 64 --nR 72 \
   --dt-au 0.002 --t-final-fs 0.002 --save-every 5 \
   --outdir results/multi_component_exact_factorization/study_direct
 ```
@@ -152,7 +186,7 @@ python -m multi_component_exact_factorization.propagate \
 
 ```bash
 python -m multi_component_exact_factorization.reference \
-  --nx 24 --nq 20 --nR 16 \
+  --nx 48 --nq 64 --nR 72 \
   --dt-au 0.002 --t-final-fs 0.002 --save-every 5 \
   --outdir results/multi_component_exact_factorization/study_reference
 
@@ -237,26 +271,17 @@ conditional-density 방식처럼 물리적으로 해석 가능한 reduced densit
 
 ## Excited-state dynamics와 population 분석
 
-BO 계산 없이 node가 있는 전자 packet부터 시작하려면 다음처럼 실행한다.
+실제 local electronic excited state `n=1`에서 시작하려면 다음처럼 실행한다.
 
 ```bash
 python -m multi_component_exact_factorization.propagate \
-  --electron-initial-state hermite --electron-excitation 1 \
-  --outdir results/multi_component_exact_factorization/hermite_excited
-```
-
-실제 local electronic excited state `n=1`에서 시작하려면
-
-```bash
-python -m multi_component_exact_factorization.propagate \
-  --electron-initial-state local-eigenstate --electron-excitation 1 \
-  --electron-momentum 0 \
+  --electron-excitation 1 \
   --outdir results/multi_component_exact_factorization/local_excited
 ```
 
-`local-eigenstate` mode에서는 electron center/sigma/momentum option을 쓰지
-않는다. 각 configuration의 eigenvector phase는 이웃 상태와 overlap이 양의
-실수가 되도록 맞춰 q/R derivative의 임의 부호 jump를 줄인다.
+각 configuration의 eigenvector phase는 이웃 상태와 overlap이 양의 실수가
+되도록 맞춰 q/R derivative의 임의 부호 jump를 줄인다. 선택한 excited BO
+표면의 local curvature로 nuclear 폭도 다시 계산한다.
 
 Full density가 변하는 모습만으로 `n=1 -> n=0` 전이를 주장할 수는 없다.
 다음 분석은 각 시간의 조건부 `Phi`를 local `H_BO` 상태에 투영하여
@@ -327,7 +352,7 @@ python -m multi_component_exact_factorization.visualize_3d ARCHIVE.npz \
 
 ```bash
 python -m multi_component_exact_factorization.propagate \
-  --nx 48 --nq 40 --nR 36 \
+  --nx 48 --nq 64 --nR 72 \
   --dt-au 0.005 --t-final-fs 0.05 --save-every 10 \
   --outdir results/multi_component_exact_factorization/direct
 ```
@@ -337,8 +362,8 @@ python -m multi_component_exact_factorization.propagate \
 ```text
 dt-au: 0.005 -> 0.0025
 nx:    48 -> 64
-nq:    40 -> 56
-nR:    36 -> 48
+nq:    64 -> 96
+nR:    72 -> 108
 box:   각 density가 양 끝에서 충분히 작은지 확인
 ```
 
@@ -349,6 +374,7 @@ box:   각 density가 양 끝에서 충분히 작은지 확인
 - reference 대비 full-Psi fidelity
 - heavy/proton-heavy/electron-heavy density L1 오차
 - wavepacket의 경계 도달 여부
+- 자동 force constant와 Gaussian 표준편차의 격자 수렴
 - `density-threshold` 변화에 대한 민감도
 
 ## 수치적 주의점

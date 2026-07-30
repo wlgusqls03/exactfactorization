@@ -112,11 +112,12 @@ electron, quantum proton, and heavy quantum nucleus with the nested product
 Psi(x,q,R,t) = Phi_{R,q}(x,t) Lambda_R(q,t) chi(R,t).
 ```
 
-It contains a direct three-factor propagator, an independent full-3D-TDSE
-reference, explicit two-level gauge functions, gauge-invariant comparison
-tools, paper-style plots, wave/density/potential animations, and optional
-local-electronic excited-state population analysis. It also provides a
-standalone interactive 3D configuration-density HTML with rotation and a time
-slider. See
+It initializes the electron in a local Born-Oppenheimer eigenstate, then uses
+a direct three-factor propagator without surface hopping. It also contains an
+independent full-3D-TDSE reference, explicit two-level gauge functions,
+gauge-invariant comparison tools, paper-style plots, wave/density/potential
+animations, and local-electronic excited-state population analysis. A
+standalone interactive 3D configuration-density HTML provides rotation and a
+time slider. See
 `multi_component_exact_factorization/README.md` for Korean documentation and
 run commands.

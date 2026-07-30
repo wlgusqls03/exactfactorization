@@ -76,19 +76,10 @@ def initial_summary(data):
     options = archive_arguments(data)
     if not options:
         return "initial parameters unavailable in archive"
-    mode = options.get("electron_initial_state", "gaussian")
     excitation = int(options.get("electron_excitation", 0))
-    if mode == "local-eigenstate":
-        electron_text = f"electron=local H_BO state n={excitation}"
-    elif mode == "hermite":
-        electron_text = (
-            f"electron=Hermite-Gaussian n={excitation}, x0="
-            f"{options['electron_center']:.2f}"
-        )
-    else:
-        electron_text = f"electron=Gaussian x0={options['electron_center']:.2f}"
     return (
-        f"initial: {electron_text}, q0={options['q0']:.2f}, "
+        f"initial: electron=local H_BO state n={excitation}, "
+        f"q0={options['q0']:.2f}, "
         f"R0={options['R0']:.2f} a0  |  masses (me): "
         f"mp={options['proton_mass']:.0f}, MH={options['heavy_mass']:.0f}"
     )
@@ -118,7 +109,6 @@ def plot_initial_state(data, outdir, dpi=180):
     dx, dq, dR = float(x[1]-x[0]), float(q[1]-q[0]), float(R[1]-R[0])
     densities = initial_marginals(data)
     options = archive_arguments(data)
-    mode = options.get("electron_initial_state", "gaussian")
     excitation = int(options.get("electron_excitation", 0))
 
     grids = (x, q, R)
@@ -127,31 +117,24 @@ def plot_initial_state(data, outdir, dpi=180):
     colors = ("#2878B5", "#D9534F", "#3A923A")
     spacings = (dx, dq, dR)
     configured_centers = (
-        (
-            np.nan if mode == "local-eigenstate"
-            else options.get("electron_center", np.nan)
-        ),
+        np.nan,
         options.get("q0", np.nan),
         options.get("R0", np.nan),
     )
     sigmas = (
-        options.get("electron_sigma", np.nan),
+        np.nan,
         options.get("proton_sigma", np.nan),
         options.get("heavy_sigma", np.nan),
     )
     momenta = (
-        options.get("electron_momentum", np.nan),
+        np.nan,
         options.get("proton_momentum", np.nan),
         options.get("heavy_momentum", np.nan),
     )
     details = (
-        (
-            f"local H_BO eigenstate n={excitation}"
-            if mode == "local-eigenstate"
-            else f"input sigma={sigmas[0]:.2f}, p0={momenta[0]:.2f}"
-        ),
-        f"input sigma={sigmas[1]:.2f}, p0={momenta[1]:.2f}",
-        f"input sigma={sigmas[2]:.2f}, p0={momenta[2]:.2f}",
+        f"local H_BO eigenstate n={excitation}",
+        f"harmonic sigma={sigmas[1]:.3f}, p0={momenta[1]:.2f}",
+        f"harmonic sigma={sigmas[2]:.3f}, p0={momenta[2]:.2f}",
     )
 
     common_min = min(float(grid[0]) for grid in grids)
@@ -190,26 +173,17 @@ def plot_initial_state(data, outdir, dpi=180):
             f"M_H={options['heavy_mass']:.0f} m_e;  "
             f"fixed site={options['left_position']:.2f} a0"
         )
-        if mode == "local-eigenstate":
-            correlation_line = (
-                "proton conditional slope: "
-                f"dq_c/dR={options['proton_follow_heavy']:.2f}; "
-                "electron shape follows local H_BO"
-            )
-        else:
-            correlation_line = (
-                "conditional-center slopes: "
-                f"dq_c/dR={options['proton_follow_heavy']:.2f}, "
-                f"dx_c/dq={options['electron_follow_proton']:.2f}, "
-                f"dx_c/dR={options['electron_follow_heavy']:.2f}"
-            )
+        correlation_line = (
+            "fixed nuclear centers; "
+            f"kq={options.get('initial_proton_force_constant', np.nan):.4f}, "
+            f"kR={options.get('initial_heavy_force_constant', np.nan):.4f}; "
+            "electron follows local H_BO"
+        )
     else:
         mass_line = "mass and input-center metadata unavailable"
         correlation_line = ""
     state_origin = (
         "local electronic H_BO eigenstate initialization; direct EF propagation"
-        if mode == "local-eigenstate"
-        else "directly specified EF factors; no BO eigenstate initialization"
     )
     fig.suptitle(
         "Initial state at t=0: "+state_origin+"\n"

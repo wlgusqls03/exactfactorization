@@ -2,7 +2,8 @@
 """세 coupled equation을 직접 푸는 1D multi-component EF 전파기.
 
 이 프로그램은 full Psi를 시간 전파한 뒤 분해하는 reference가 아니다.
-초기 ``Phi, Lambda, chi``만 받은 뒤 다음 세 식을 함께 적분한다.
+초기 ``Phi``는 local BO 고유상태로, ``Lambda``와 ``chi``는 국소 곡률로
+폭을 정한 Gaussian으로 만든 뒤 다음 세 식을 함께 적분한다.
 
     i d_t Phi    = (H_el - epsilon_1) Phi
     i d_t Lambda = (H_pr - epsilon_2) Lambda
@@ -155,6 +156,14 @@ def run(args):
         "초기 배열: "
         f"Phi={phi.shape}, Lambda={lam.shape}, chi={chi.shape}"
     )
+    print(
+        "초기 nuclear Gaussian: "
+        f"q0={args.q0:.4f}, sigma_q={args.proton_sigma:.6f}, "
+        f"k_q={args.initial_proton_force_constant:.6f}; "
+        f"R0={args.R0:.4f}, sigma_R={args.heavy_sigma:.6f}, "
+        f"k_R={args.initial_heavy_force_constant:.6f}; "
+        f"p_q={args.proton_momentum:.4f}, p_R={args.heavy_momentum:.4f}"
+    )
 
     n_steps = int(round(args.t_final_fs*AU_PER_FS/args.dt_au))
     save_steps = list(range(0, n_steps+1, max(1, args.save_every)))
@@ -277,7 +286,7 @@ def run(args):
     )
     payload = dict(
         kind=np.array("direct_multi_component_exact_factorization"),
-        representation=np.array("nested_realspace_no_bo"),
+        representation=np.array("nested_realspace_local_bo_initialization"),
         gauge=np.array(gauge_name),
         base_gauge=np.array("parallel_transport_two_level"),
         x=model.x, q=model.q, R=model.R, times_fs=times_fs,
