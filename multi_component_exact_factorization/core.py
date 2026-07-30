@@ -193,89 +193,62 @@ def local_electronic_basis(model: Model, n_states: int):
     return energies, states
 
 
-def local_surface_curvature(surface, model: Model, q0: float, R0: float):
-    """BO surface의 ``(q0,R0)`` 주변 3x3 점을 이차식으로 fit한다.
+def independent_surface_curvatures(surface, model: Model, q0: float, R0: float):
+    """BO energy를 q와 R 방향으로 각각 독립적으로 두 번 미분한다.
 
-    ``E = c + gq*dq + gR*dR + kq*dq^2/2 + kqR*dq*dR
-          + kR*dR^2/2``
+    먼저 ``E(q,R0)``와 ``E(q0,R)``의 1차원 slice를 만든다. 다른 좌표가
+    grid point와 정확히 일치하지 않으면 선형보간하고, 각 slice에서 중심에
+    가장 가까운 세 점을
 
-    의 계수를 least squares로 구한다. 반환값은 두 gradient, 두 대각 force
-    constant와 혼합 curvature다. 세 curvature 모두 결합 nuclear harmonic
-    state를 만드는 데 사용한다.
+        E(s) = c + g*(s-s0) + k*(s-s0)^2/2
+
+    로 fit한다. 따라서 ``k_q=d2E(q,R0)/dq2``와
+    ``k_R=d2E(q0,R)/dR2``만 계산하며 혼합미분은 만들지 않는다.
     """
     if not model.q[0] <= q0 <= model.q[-1]:
         raise ValueError(f"q0={q0}가 q grid 밖에 있습니다.")
     if not model.R[0] <= R0 <= model.R[-1]:
         raise ValueError(f"R0={R0}가 R grid 밖에 있습니다.")
-    iq = np.sort(np.argsort(np.abs(model.q-q0))[:3])
-    iR = np.sort(np.argsort(np.abs(model.R-R0))[:3])
-    design, values = [], []
-    for jq in iq:
-        for jR in iR:
-            dq = model.q[jq]-q0
-            dR = model.R[jR]-R0
-            design.append([1.0, dq, dR, 0.5*dq**2, dq*dR, 0.5*dR**2])
-            values.append(surface[jq, jR])
-    coefficients = np.linalg.lstsq(design, values, rcond=None)[0]
+
+    # E(q,R0): 각 q에서 R 방향으로 R0까지 보간한다. shape (nq,)
+    energy_along_q = np.array([
+        np.interp(R0, model.R, surface[iq, :])
+        for iq in range(len(model.q))
+    ])
+    # E(q0,R): 각 R에서 q 방향으로 q0까지 보간한다. shape (nR,)
+    energy_along_R = np.array([
+        np.interp(q0, model.q, surface[:, iR])
+        for iR in range(len(model.R))
+    ])
+
+    def fit_one_axis(grid, energy, center):
+        indices = np.sort(np.argsort(np.abs(grid-center))[:3])
+        displacement = grid[indices]-center
+        design = np.column_stack((
+            np.ones(3), displacement, 0.5*displacement**2,
+        ))
+        coefficients = np.linalg.solve(design, energy[indices])
+        return float(coefficients[1]), float(coefficients[2])
+
+    gradient_q, k_q = fit_one_axis(model.q, energy_along_q, q0)
+    gradient_R, k_R = fit_one_axis(model.R, energy_along_R, R0)
     return dict(
-        gradient_q=float(coefficients[1]),
-        gradient_R=float(coefficients[2]),
-        k_q=float(coefficients[3]),
-        k_qR=float(coefficients[4]),
-        k_R=float(coefficients[5]),
+        gradient_q=gradient_q,
+        gradient_R=gradient_R,
+        k_q=k_q,
+        k_R=k_R,
     )
 
 
-def coupled_harmonic_state(model: Model, args, k_q, k_qR, k_R):
-    """Full 2x2 Hessian으로 상관된 nuclear harmonic state를 만든다.
-
-    ``y=(q-q0,R-R0)``와 ``M=diag(m_p,M_H)``에 대해
-
-        D = M^(-1/2) K M^(-1/2),   Omega = sqrt(D)
-        Xi(y) = N exp[-y^T M^(1/2) Omega M^(1/2) y/2 + i p^T y]
-
-    이다. ``|Xi|^2``의 covariance는
-    ``Sigma=(1/2)[M^(1/2) Omega M^(1/2)]^(-1)``이다. 즉 혼합곡률은
-    marginal 폭뿐 아니라 q-R correlation과 조건부 중심 이동도 결정한다.
-
-    반환 shape은 ``Xi(nq,nR)``, ``Sigma(2,2)``, ``omega(2,)``이다.
-    """
-    masses = np.array([model.proton_mass, model.heavy_mass], float)
-    if np.any(masses <= 0.0):
-        raise ValueError("두 핵 질량은 양수여야 합니다.")
-
-    force = np.array([[k_q, k_qR], [k_qR, k_R]], float)
-    inv_sqrt_mass = np.diag(1.0/np.sqrt(masses))
-    sqrt_mass = np.diag(np.sqrt(masses))
-    mass_weighted = inv_sqrt_mass@force@inv_sqrt_mass
-    omega_squared, normal_modes = np.linalg.eigh(mass_weighted)
-    if np.min(omega_squared) <= 0.0:
-        raise ValueError(
-            "혼합곡률까지 포함한 mass-weighted Hessian이 positive definite가 "
-            f"아닙니다. omega^2={omega_squared}. 안정한 중심/전자상태를 "
-            "선택하거나 force constant들을 직접 지정하세요."
-        )
-
-    frequencies = np.sqrt(omega_squared)
-    omega_matrix = normal_modes@np.diag(frequencies)@normal_modes.T
-    exponent_matrix = sqrt_mass@omega_matrix@sqrt_mass
-    covariance = 0.5*np.linalg.inv(exponent_matrix)
-
-    delta_q = model.q[:, None]-args.q0                         # (nq,1)
-    delta_R = model.R[None, :]-args.R0                         # (1,nR)
-    quadratic = (
-        exponent_matrix[0, 0]*delta_q**2
-        +2.0*exponent_matrix[0, 1]*delta_q*delta_R
-        +exponent_matrix[1, 1]*delta_R**2
-    )                                                           # (nq,nR)
-    phase = args.proton_momentum*delta_q+args.heavy_momentum*delta_R
-    xi = np.exp(-0.5*quadratic+1j*phase)                         # (nq,nR)
-    xi /= np.sqrt(np.sum(np.abs(xi)**2)*model.dq*model.dR)
-    return xi, covariance, frequencies
+def harmonic_density_sigma(mass: float, force_constant: float):
+    """1D harmonic ground-state 확률밀도의 표준편차."""
+    if mass <= 0.0 or force_constant <= 0.0:
+        raise ValueError("mass와 force constant는 양수여야 합니다.")
+    return (1.0/(4.0*mass*force_constant))**0.25
 
 
 def initial_factors(model: Model, args):
-    """Local BO 전자상태와 결합 harmonic nuclear Gaussian으로 초기화."""
+    """Local BO 전자상태와 두 독립 harmonic Gaussian으로 초기화."""
     excitation = int(args.electron_excitation)
     if excitation < 0:
         raise ValueError("--electron-excitation은 0 이상이어야 합니다.")
@@ -285,7 +258,7 @@ def initial_factors(model: Model, args):
     # ------------------------------------------------------------------
     energies, electronic_states = local_electronic_basis(model, excitation+1)
     phi = electronic_states[excitation]                             # (nx,nq,nR)
-    curvature = local_surface_curvature(
+    curvature = independent_surface_curvatures(
         energies[excitation], model, args.q0, args.R0
     )
 
@@ -303,27 +276,14 @@ def initial_factors(model: Model, args):
         if args.heavy_force_constant == 0.0
         else args.heavy_force_constant
     )
-    kqR = (
-        curvature["k_qR"]
-        if args.cross_force_constant is None
-        else args.cross_force_constant
-    )
-
-    # 사용자가 정한 (q0,R0)는 Gaussian의 전체 중심으로 그대로 유지한다.
-    # local gradient는 중심을 옮기는 데 쓰지 않고 진단값으로만 저장한다.
-    # 반면 Hessian의 혼합항은 물리적 q-R correlation에 반드시 포함한다.
-    xi, covariance, frequencies = coupled_harmonic_state(
-        model, args, kq, kqR, kR
-    )                                                               # (nq,nR)
-    proton_sigma = float(np.sqrt(covariance[0, 0]))
-    heavy_sigma = float(np.sqrt(covariance[1, 1]))
-    correlation = float(
-        covariance[0, 1]/np.sqrt(covariance[0, 0]*covariance[1, 1])
-    )
-    conditional_slope = float(covariance[0, 1]/covariance[1, 1])
-    conditional_sigma = float(np.sqrt(
-        covariance[0, 0]-covariance[0, 1]**2/covariance[1, 1]
-    ))
+    if kq <= 0.0 or kR <= 0.0:
+        raise ValueError(
+            "독립적인 초기 harmonic 폭에 사용할 곡률이 양수가 아닙니다: "
+            f"k_q={kq:.6g}, k_R={kR:.6g}. 양의 곡률 위치를 선택하거나 "
+            "--proton-force-constant와 --heavy-force-constant를 지정하세요."
+        )
+    proton_sigma = harmonic_density_sigma(model.proton_mass, kq)
+    heavy_sigma = harmonic_density_sigma(model.heavy_mass, kR)
 
     # 계산된 초기 parameter도 NPZ의 args metadata에 함께 남긴다.
     args.electron_initial_state = "local-eigenstate"
@@ -331,17 +291,11 @@ def initial_factors(model: Model, args):
     args.heavy_sigma = heavy_sigma
     args.initial_proton_force_constant = kq
     args.initial_heavy_force_constant = kR
-    args.initial_cross_curvature = kqR
     args.initial_gradient_q = curvature["gradient_q"]
     args.initial_gradient_R = curvature["gradient_R"]
-    args.initial_covariance_qR = covariance
-    args.initial_correlation_qR = correlation
-    args.initial_conditional_center_slope = conditional_slope
-    args.initial_conditional_proton_sigma = conditional_sigma
-    args.initial_normal_frequencies = frequencies
 
     for name, sigma, spacing in (
-        ("conditional proton", conditional_sigma, model.dq),
+        ("proton", proton_sigma, model.dq),
         ("heavy", heavy_sigma, model.dR),
     ):
         if sigma < 1.5*spacing:
@@ -352,24 +306,19 @@ def initial_factors(model: Model, args):
             )
 
     # ------------------------------------------------------------------
-    # 2. 결합 nuclear state Xi(q,R)를 nested factorization한다.
+    # 2. Heavy marginal Gaussian: 중심 R0, 폭 sigma_R, shape (nR,)
     # ------------------------------------------------------------------
-    # chi에는 heavy momentum phase를 두고, Lambda에는 proton momentum과
-    # Hessian이 결정한 조건부 q-R correlation을 남기는 gauge를 택한다.
-    chi_amplitude = np.sqrt(np.sum(np.abs(xi)**2, axis=0)*model.dq) # (nR,)
-    chi = chi_amplitude*np.exp(
-        1j*args.heavy_momentum*(model.R-args.R0)
+    chi = normalized_gaussian(
+        model.R, model.dR, args.R0, heavy_sigma, args.heavy_momentum
     )                                                               # (nR,)
-    safe_chi = np.where(chi_amplitude > 1.0e-300, chi, 1.0+0.0j)
-    lam = xi/safe_chi[None, :]                                      # (nq,nR)
-    # Underflow로 marginal이 정확히 0인 열에서도 PNC를 명시적으로 유지한다.
-    zero_columns = chi_amplitude <= 1.0e-300
-    if np.any(zero_columns):
-        fallback = normalized_gaussian(
-            model.q, model.dq, args.q0, conditional_sigma,
-            args.proton_momentum,
-        )
-        lam[:, zero_columns] = fallback[:, None]
+
+    # ------------------------------------------------------------------
+    # 3. Proton Gaussian은 모든 R에서 동일한 q0와 sigma_q를 갖는다.
+    # ------------------------------------------------------------------
+    proton_line = normalized_gaussian(
+        model.q, model.dq, args.q0, proton_sigma, args.proton_momentum
+    )                                                               # (nq,)
+    lam = np.repeat(proton_line[:, None], len(model.R), axis=1)     # (nq,nR)
     return phi.astype(complex), lam.astype(complex), chi.astype(complex)
 
 
@@ -622,17 +571,17 @@ def reduced_densities(phi, lam, chi, model: Model):
 def add_model_arguments(parser):
     """direct/reference 명령행에서 공유하는 model option을 등록한다."""
     grid = parser.add_argument_group("실공간 격자")
-    grid.add_argument("--nx", type=int, default=139, help="전자 interior 격자점 수")
-    grid.add_argument("--nq", type=int, default=70, help="양성자 격자점 수")
+    grid.add_argument("--nx", type=int, default=174, help="전자 interior 격자점 수")
+    grid.add_argument("--nq", type=int, default=87, help="양성자 격자점 수")
     grid.add_argument("--nR", type=int, default=30, help="무거운 핵 격자점 수")
     grid.add_argument(
         "--x-max", type=float, default=8.0,
         help="전자 hard-wall 오른쪽 끝; 왼쪽 끝은 --left-position",
     )
-    grid.add_argument("--q-min", type=float, default=-3.4)
+    grid.add_argument("--q-min", type=float, default=-3.36)
     grid.add_argument("--q-max", type=float, default=3.6)
-    grid.add_argument("--R-min", type=float, default=2.8)
-    grid.add_argument("--R-max", type=float, default=5.8)
+    grid.add_argument("--R-min", type=float, default=3.0)
+    grid.add_argument("--R-max", type=float, default=5.4)
 
     particle = parser.add_argument_group("입자와 초기상태")
     particle.add_argument("--proton-mass", type=float, default=1836.0)
@@ -650,17 +599,19 @@ def add_model_arguments(parser):
         help="0이면 local BO surface의 d2E/dR2, 양수면 해당 값을 직접 사용",
     )
     particle.add_argument(
-        "--cross-force-constant", type=float, default=None,
-        help="생략하면 local BO surface의 d2E/(dq dR), 값 지정 시 override",
-    )
-    particle.add_argument(
         "--electron-excitation", type=int, default=0,
         help="초기 local H_BO 전자상태의 0-based index",
     )
 
     potential = parser.add_argument_group("soft-Coulomb potential")
-    potential.add_argument("--left-position", type=float, default=-6.0)
-    potential.add_argument("--left-charge", type=float, default=1.0)
+    potential.add_argument(
+        "--left-position", type=float, default=-6.0,
+        help="전자 hard wall 및 왼쪽 고정 중심의 위치",
+    )
+    potential.add_argument(
+        "--left-charge", type=float, default=0.0,
+        help="왼쪽 고정 중심의 전하 Z_L; 기본값 0이면 Coulomb 항은 꺼짐",
+    )
     potential.add_argument("--heavy-charge", type=float, default=1.0)
     potential.add_argument("--soft-e-left", type=float, default=1.0)
     potential.add_argument("--soft-e-proton", type=float, default=0.8)

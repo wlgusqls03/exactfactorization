@@ -182,14 +182,13 @@ def plot_initial_state(data, outdir, dpi=180):
         mass_line = (
             f"m_p={options['proton_mass']:.0f} m_e,  "
             f"M_H={options['heavy_mass']:.0f} m_e;  "
-            f"fixed site={options['left_position']:.2f} a0"
+            f"left wall={options['left_position']:.2f} a0, "
+            f"Z_L={options.get('left_charge', np.nan):.2f}"
         )
         correlation_line = (
-            "full-Hessian correlated Gaussian; "
+            "independent q/R harmonic Gaussians; "
             f"kq={options.get('initial_proton_force_constant', np.nan):.4f}, "
-            f"kqR={options.get('initial_cross_curvature', np.nan):.4f}, "
-            f"kR={options.get('initial_heavy_force_constant', np.nan):.4f}; "
-            f"rho={options.get('initial_correlation_qR', np.nan):.3f}"
+            f"kR={options.get('initial_heavy_force_constant', np.nan):.4f}"
         )
     else:
         mass_line = "mass and input-center metadata unavailable"

@@ -2,8 +2,8 @@
 """세 coupled equation을 직접 푸는 1D multi-component EF 전파기.
 
 이 프로그램은 full Psi를 시간 전파한 뒤 분해하는 reference가 아니다.
-초기 ``Phi``는 local BO 고유상태로, ``Lambda``와 ``chi``는 full nuclear
-Hessian으로 만든 상관 harmonic Gaussian으로 초기화한 뒤 다음 세 식을 함께
+초기 ``Phi``는 local BO 고유상태로, ``Lambda``와 ``chi``는 q/R 방향의
+독립적인 BO 곡률로 폭을 정한 Gaussian으로 초기화한 뒤 다음 세 식을 함께
 적분한다. 전자는 왼쪽 고정점에서 0이 되는 hard-wall 경계를 사용한다.
 
     i d_t Phi    = (H_el - epsilon_1) Phi
@@ -160,17 +160,16 @@ def run(args):
     print(
         "격자 간격/경계: "
         f"dx={model.dx:.6f} (hard wall {model.x_left:.3f}..{model.x_right:.3f}), "
-        f"dq={model.dq:.6f}, dR={model.dR:.6f}"
+        f"dq={model.dq:.6f}, dR={model.dR:.6f}; "
+        f"Z_L={args.left_charge:.3f}"
     )
     print(
-        "초기 correlated nuclear Gaussian: "
+        "초기 independent nuclear Gaussians: "
         f"(q0,R0)=({args.q0:.4f},{args.R0:.4f}), "
         f"sigma_q={args.proton_sigma:.6f}, "
         f"k_q={args.initial_proton_force_constant:.6f}; "
         f"sigma_R={args.heavy_sigma:.6f}, "
         f"k_R={args.initial_heavy_force_constant:.6f}; "
-        f"k_qR={args.initial_cross_curvature:.6f}, "
-        f"rho_qR={args.initial_correlation_qR:.6f}; "
         f"p_q={args.proton_momentum:.4f}, p_R={args.heavy_momentum:.4f}"
     )
 
@@ -298,7 +297,7 @@ def run(args):
     payload = dict(
         kind=np.array("direct_multi_component_exact_factorization"),
         representation=np.array(
-            "nested_realspace_correlated_harmonic_hardwall_electron"
+            "nested_realspace_independent_harmonic_hardwall_electron"
         ),
         gauge=np.array(gauge_name),
         base_gauge=np.array("parallel_transport_two_level"),

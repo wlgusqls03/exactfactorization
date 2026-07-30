@@ -113,8 +113,9 @@ Psi(x,q,R,t) = Phi_{R,q}(x,t) Lambda_R(q,t) chi(R,t).
 ```
 
 It initializes the electron in a local Born-Oppenheimer eigenstate, then uses
-a full-Hessian correlated nuclear Gaussian and a direct three-factor
-propagator without surface hopping. The fixed left site is the electron's
+a pair of nuclear Gaussians whose widths come from independent q/R BO
+curvatures, followed by a direct three-factor propagator without surface
+hopping. The fixed left site is the electron's
 Dirichlet hard-wall boundary. It also contains an independent full-3D-TDSE
 reference, explicit two-level gauge functions,
 gauge-invariant comparison tools, paper-style plots, wave/density/potential

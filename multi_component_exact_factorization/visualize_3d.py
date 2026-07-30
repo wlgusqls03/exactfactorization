@@ -58,7 +58,9 @@ def initial_summary(data):
         f"initial: electron=local H_BO state n={excitation}, "
         f"q0={options['q0']:.2f}, "
         f"R0={options['R0']:.2f} a0 &nbsp; | &nbsp; masses (me): "
-        f"mp={options['proton_mass']:.0f}, MH={options['heavy_mass']:.0f}"
+        f"mp={options['proton_mass']:.0f}, MH={options['heavy_mass']:.0f} "
+        f"&nbsp; | &nbsp; xL={options['left_position']:.2f}, "
+        f"ZL={options.get('left_charge', np.nan):.2f}"
     )
 
 

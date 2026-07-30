@@ -84,51 +84,46 @@ H_BO(x;q,R) phi_n(x;q,R) = E_n(q,R) phi_n(x;q,R)
 Phi_{R,q}(x,0) = phi_n(x;q,R)
 ```
 
-Nuclear 초기상태는 사용자가 지정한 `(q0,R0)`를 **전체 2D Gaussian의
-중심**으로 사용한다. 이전처럼 경험적인 `follow` 계수를 중심에 더하지 않는다.
-대신 BO 표면의 full Hessian이 만드는 물리적인 q-R correlation은 유지한다.
+Nuclear 초기상태는 사용자가 지정한 `q0`, `R0`를 각각 Gaussian 중심으로
+사용한다. 이전처럼 경험적인 `follow` 계수를 더하지 않으며, q와 R 초기
+Gaussian은 서로 독립적이다.
 
 ```text
-y = (q-q0, R-R0)^T
-K = [[d2E/dq2,    d2E/(dq dR)],
-     [d2E/(dq dR), d2E/dR2   ]]
-M = diag(m_p, M_H)
-D = M^(-1/2) K M^(-1/2)
-Omega = sqrt(D)
-A = M^(1/2) Omega M^(1/2)
-
-Xi(q,R,0) = N exp[-y^T A y/2 + i p_q(q-q0) + i p_R(R-R0)]
-Sigma = (1/2) A^(-1)
+Lambda_R(q,0) = N_q exp[-(q-q0)^2/(4 sigma_q^2) + i p_q(q-q0)]
+chi(R,0)      = N_R exp[-(R-R0)^2/(4 sigma_R^2) + i p_R(R-R0)]
 ```
 
-그 다음 `Xi(q,R,0)=Lambda_R(q,0) chi(R,0)`로 정확히 factorize한다. 따라서
-joint density의 평균은 `(q0,R0)`이지만, 혼합곡률이 0이 아니면 조건부
-`Lambda_R(q,0)`의 중심은 `R`에 따라 움직인다. 이것은 제거된 임의 `follow`
-기능이 아니라 Hessian과 질량에서 자동으로 정해지는 물리적 상관관계다.
+선택한 전자 BO 표면 `E_n(q,R)`에서 다른 좌표를 중심값에 고정한 두 개의
+1차원 energy slice를 만든다.
 
 ```text
-<q> = q0,  <R> = R0
-sigma_q = sqrt(Sigma_qq),  sigma_R = sqrt(Sigma_RR)
-q_conditional_center(R) = q0 + Sigma_qR/Sigma_RR * (R-R0)
+E_q(q) = E_n(q,R0)
+E_R(R) = E_n(q0,R)
+
+k_q = d^2 E_q(q)/dq^2 at q=q0
+k_R = d^2 E_R(R)/dR^2 at R=R0
+
+sigma_q = (1/(4 m_p k_q))^(1/4)
+sigma_R = (1/(4 M_H k_R))^(1/4)
 ```
 
-기본 중심은 `(q0,R0)=(2.0,4.2)`이며 `--q0`, `--R0`로 바꾼다. Local gradient는
-사용자가 지정한 중심을 이동시키지 않고 진단값으로만 저장한다. Hessian은
-주변 3x3 BO energy를 이차식으로 fit하여 구한다.
+각 이차미분은 해당 1차원 slice에서 중심에 가장 가까운 세 energy를 이차식으로
+fit하여 구한다. `d^2E/(dq dR)` 혼합미분과 Hessian 대각화는 사용하지 않는다.
+`Lambda_R(q,0)`의 중심과 폭은 모든 R에서 동일하다.
+
+기본 중심은 `(q0,R0)=(2.0,4.2)`이며 `--q0`, `--R0`로 바꾼다. 중심이 grid와
+정확히 일치하지 않으면 고정하는 다른 좌표 방향으로 energy를 선형보간한 뒤
+1차원 fit을 수행한다.
 
 이전 기본점 `(-0.4,5.2)`은 현재 ground BO 표면에서 두 대각 곡률이 음수라
 자동 조화 폭을 정의할 수 없으므로 기본값에서 제외했다. 그 위치를 꼭 써야
 한다면 별도 물리 모델에서 정당화한 양의 force constant를 함께 지정해야 한다.
 
-`sigma_q`, `sigma_R`는 joint probability density의 marginal 표준편차다.
-유한 box에서는 analytic 상수 대신 `sum |Xi|^2 dq dR=1`이 되도록 수치적으로
-정규화한다. 자동 Hessian 대신 알려진 값을 쓰려면
-`--proton-force-constant`, `--heavy-force-constant`,
-`--cross-force-constant`를 지정할 수 있다.
-
-혼합항까지 포함한 mass-weighted Hessian이 positive definite가 아니면 안정한
-결합 harmonic ground state가 존재하지 않는다. 코드는 고유값에 절댓값을
-씌우지 않고 중단한다.
+`sigma_q`, `sigma_R`는 각각 `|Lambda|^2`, `|chi|^2`의 표준편차다. 유한
+box에서는 각 1차원 wavefunction을 격자 적분으로 다시 정규화한다. 자동
+곡률 대신 알려진 양의 값을 쓰려면 `--proton-force-constant`,
+`--heavy-force-constant`를 지정한다. 어느 한 곡률이라도 0 이하이면 해당
+1차원 harmonic 폭이 정의되지 않으므로 코드가 중단된다.
 
 질량 기본값은 `m_p=1836 m_e`, `M_H=12000 m_e`, 두 nuclear momentum 기본값은
 `p_q=p_R=0`이다. Momentum 위상 기능은 남아 있으므로 필요할 때만 예를 들어
@@ -138,19 +133,31 @@ q_conditional_center(R) = q0 + Sigma_qR/Sigma_RR * (R-R0)
 
 ## 기본 격자와 전자 hard wall
 
-기본 spacing은 세 좌표에서 모두 `0.1 a0`로 맞췄다.
+기본 spacing은 세 좌표에서 모두 `0.08 a0`로 맞췄다.
 
 | 좌표 | 물리적 범위 | 점 수 | spacing | 경계 |
 |---|---:|---:|---:|---|
-| electron `x` | `(-6,8)` interior | 139 | 0.1 | 양쪽 Dirichlet hard wall |
-| proton `q` | `[-3.4,3.6)` | 70 | 0.1 | periodic numerical box |
-| heavy `R` | `[2.8,5.8)` | 30 | 0.1 | periodic numerical box |
+| electron `x` | `(-6,8)` interior | 174 | 0.08 | 양쪽 Dirichlet hard wall |
+| proton `q` | `[-3.36,3.6)` | 87 | 0.08 | periodic numerical box |
+| heavy `R` | `[3.0,5.4)` | 30 | 0.08 | periodic numerical box |
 
 전자 왼쪽 경계는 항상 `--left-position`과 같으며 기본값은 `-6 a0`이다.
-경계점 자체에서는 `Phi=0`이고 배열에는 139개 interior point만 저장한다.
+경계점 자체에서는 `Phi=0`이고 배열에는 174개 interior point만 저장한다.
 전자 kinetic은 FFT가 아니라 DST-I sine basis를 사용하므로 왼쪽 벽을 넘어
 오른쪽으로 wrap-around하지 않는다. `--x-min` option은 없으며 오른쪽 벽만
 `--x-max`로 바꾼다.
+
+왼쪽 경계 위치와 고정 중심 전하는 서로 독립적인 option이다.
+
+```bash
+--left-position -6.0   # hard wall과 왼쪽 고정 중심의 위치
+--left-charge 0.0      # 왼쪽 고정 중심 전하 Z_L
+```
+
+`Z_L`의 기본값은 `0`이다. 따라서 기본 계산에서 `x=-6` hard wall은 유지되지만
+왼쪽 중심이 만드는 electron attraction, proton repulsion, left-heavy repulsion
+soft-Coulomb 항은 모두 0이다. 예전처럼 `Z_L=+1` 중심을 사용하려면
+`--left-charge 1.0`을 명시한다.
 
 Heavy 핵은 질량이 크고 짧은 dynamics에서 이동이 작으므로 기존보다 R box를
 좁히고 점 수도 줄였다. 단, 더 긴 시간 전파에서는 density가 R 경계에
@@ -199,7 +206,7 @@ potential 단위다. 임의의 비선형 gauge도 이론적으로 가능하지�
 cd /home/jubjhbjey5/Shin-Metiu
 
 python -m multi_component_exact_factorization.propagate \
-  --nx 139 --nq 70 --nR 30 \
+  --nx 174 --nq 87 --nR 30 \
   --dt-au 0.002 --t-final-fs 0.002 --save-every 5 \
   --outdir results/multi_component_exact_factorization/study_direct
 ```
@@ -210,7 +217,7 @@ python -m multi_component_exact_factorization.propagate \
 
 ```bash
 python -m multi_component_exact_factorization.reference \
-  --nx 139 --nq 70 --nR 30 \
+  --nx 174 --nq 87 --nR 30 \
   --dt-au 0.002 --t-final-fs 0.002 --save-every 5 \
   --outdir results/multi_component_exact_factorization/study_reference
 
@@ -305,7 +312,9 @@ python -m multi_component_exact_factorization.propagate \
 
 각 configuration의 eigenvector phase는 이웃 상태와 overlap이 양의 실수가
 되도록 맞춰 q/R derivative의 임의 부호 jump를 줄인다. 선택한 excited BO
-표면의 local curvature로 nuclear 폭도 다시 계산한다.
+표면의 q/R 독립 local curvature로 nuclear 폭도 다시 계산한다. Excited
+표면에서 폭이 더 좁아져 grid-resolution 경고가 나오면 세 축 spacing을 함께
+줄여 convergence를 확인한다.
 
 Full density가 변하는 모습만으로 `n=1 -> n=0` 전이를 주장할 수는 없다.
 다음 분석은 각 시간의 조건부 `Phi`를 local `H_BO` 상태에 투영하여
@@ -377,7 +386,7 @@ python -m multi_component_exact_factorization.visualize_3d ARCHIVE.npz \
 
 ```bash
 python -m multi_component_exact_factorization.propagate \
-  --nx 139 --nq 70 --nR 30 \
+  --nx 174 --nq 87 --nR 30 \
   --dt-au 0.005 --t-final-fs 0.05 --save-every 10 \
   --outdir results/multi_component_exact_factorization/direct
 ```
@@ -386,7 +395,7 @@ python -m multi_component_exact_factorization.propagate \
 
 ```text
 dt-au: 0.005 -> 0.0025
-spacing: 0.10 -> 0.075 -> 0.05 a0 (세 축을 함께 조밀하게)
+spacing: 0.08 -> 0.06 -> 0.04 a0 (세 축을 함께 조밀하게)
 box:   각 density가 양 끝에서 충분히 작은지 확인
 ```
 
