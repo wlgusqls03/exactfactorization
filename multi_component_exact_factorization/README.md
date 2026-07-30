@@ -13,7 +13,7 @@ Psi(x,q,R,t) = Phi_{R,q}(x,t) Lambda_R(q,t) chi(R,t)
 - `x`: 전자 좌표
 - `q`: 양성자(수소 핵) 좌표
 - `R`: 오른쪽 무거운 핵 좌표
-- 왼쪽 중심: 고정되어 있으므로 좌표축 없이 potential에만 포함
+- 왼쪽 중심: 고정되어 potential에 포함되며 전자 hard-wall의 왼쪽 끝
 
 전자 초기상태는 모든 `(q,R)`에서 local `H_BO(x;q,R)`를 풀어 얻은
 고유상태로 만든다. BO 계산은 물리적인 **초기 전자상태 구성**에만 사용하며,
@@ -71,66 +71,90 @@ nt = 저장 frame 수
 | `theta_2` | `(nt,nR)` | 두 번째 명시적 gauge function |
 | `epsilon_gd_1` | `(nt,nq,nR)` | 첫 time-Berry connection 진단 |
 | `epsilon_gd_2` | `(nt,nR)` | composite 두 번째 time connection 진단 |
+| `pnc_error` | `(nt,)` | 저장된 factor의 실제 PNC 잔차 |
+| `pnc_projection_correction` | `(nt,)` | RK substep 뒤 PNC 투영 전 최대 이탈 |
 | `psi` | `(nt,nx,nq,nR)` | 선택 저장하는 full wavefunction |
 
 ## 기본 초기상태
 
-기본 초기상태는 다음과 같다.
+전자 초기상태는 모든 nuclear configuration에서 local BO 고유상태다.
 
 ```text
 H_BO(x;q,R) phi_n(x;q,R) = E_n(q,R) phi_n(x;q,R)
 Phi_{R,q}(x,0) = phi_n(x;q,R)
-
-Lambda_R(q,0) = N_q exp[-(q-q0)^2/(4 sigma_q^2) + i p_q(q-q0)]
-chi(R,0)      = N_R exp[-(R-R0)^2/(4 sigma_R^2) + i p_R(R-R0)]
 ```
 
-`Lambda_R(q,0)`의 Gaussian 중심은 모든 `R`에서 정확히 같은 `q0`이다.
-즉, 이전처럼 주변 `R`에 따라 중심을 옮기는 `follow` 기능은 없다. `chi`의
-중심도 사용자가 지정한 `R0`에 고정된다. 기본 중심은 `(q0,R0)=(2.0,4.2)`이고
-`--q0`, `--R0`로 바꿀 수 있다.
+Nuclear 초기상태는 사용자가 지정한 `(q0,R0)`를 **전체 2D Gaussian의
+중심**으로 사용한다. 이전처럼 경험적인 `follow` 계수를 중심에 더하지 않는다.
+대신 BO 표면의 full Hessian이 만드는 물리적인 q-R correlation은 유지한다.
+
+```text
+y = (q-q0, R-R0)^T
+K = [[d2E/dq2,    d2E/(dq dR)],
+     [d2E/(dq dR), d2E/dR2   ]]
+M = diag(m_p, M_H)
+D = M^(-1/2) K M^(-1/2)
+Omega = sqrt(D)
+A = M^(1/2) Omega M^(1/2)
+
+Xi(q,R,0) = N exp[-y^T A y/2 + i p_q(q-q0) + i p_R(R-R0)]
+Sigma = (1/2) A^(-1)
+```
+
+그 다음 `Xi(q,R,0)=Lambda_R(q,0) chi(R,0)`로 정확히 factorize한다. 따라서
+joint density의 평균은 `(q0,R0)`이지만, 혼합곡률이 0이 아니면 조건부
+`Lambda_R(q,0)`의 중심은 `R`에 따라 움직인다. 이것은 제거된 임의 `follow`
+기능이 아니라 Hessian과 질량에서 자동으로 정해지는 물리적 상관관계다.
+
+```text
+<q> = q0,  <R> = R0
+sigma_q = sqrt(Sigma_qq),  sigma_R = sqrt(Sigma_RR)
+q_conditional_center(R) = q0 + Sigma_qR/Sigma_RR * (R-R0)
+```
+
+기본 중심은 `(q0,R0)=(2.0,4.2)`이며 `--q0`, `--R0`로 바꾼다. Local gradient는
+사용자가 지정한 중심을 이동시키지 않고 진단값으로만 저장한다. Hessian은
+주변 3x3 BO energy를 이차식으로 fit하여 구한다.
 
 이전 기본점 `(-0.4,5.2)`은 현재 ground BO 표면에서 두 대각 곡률이 음수라
 자동 조화 폭을 정의할 수 없으므로 기본값에서 제외했다. 그 위치를 꼭 써야
 한다면 별도 물리 모델에서 정당화한 양의 force constant를 함께 지정해야 한다.
 
-여기서 `sigma_q`, `sigma_R`는 **파동함수가 아니라 확률밀도**의 표준편차다.
-따라서 위 amplitude의 분모가 `4 sigma^2`이고,
+`sigma_q`, `sigma_R`는 joint probability density의 marginal 표준편차다.
+유한 box에서는 analytic 상수 대신 `sum |Xi|^2 dq dR=1`이 되도록 수치적으로
+정규화한다. 자동 Hessian 대신 알려진 값을 쓰려면
+`--proton-force-constant`, `--heavy-force-constant`,
+`--cross-force-constant`를 지정할 수 있다.
 
-```text
-|Lambda|^2 proportional to exp[-(q-q0)^2/(2 sigma_q^2)]
-|chi|^2    proportional to exp[-(R-R0)^2/(2 sigma_R^2)]
-```
-
-가 된다. 무한 공간의 amplitude 정규화 상수는
-`N=(2 pi sigma^2)^(-1/4)`이다. 유한 box에서는 이 값을 그대로 쓰는 대신
-격자 적분으로 정확히 다시 정규화한다.
-
-폭은 선택한 전자상태의 BO 표면을 `(q0,R0)` 주변에서 이차식으로 fit해 얻은
-대각 force constant로 자동 결정한다.
-
-```text
-k_q = d^2 E_n/dq^2,  k_R = d^2 E_n/dR^2
-omega_q = sqrt(k_q/m_p),  omega_R = sqrt(k_R/M_H)
-sigma_q = (1/(4 m_p k_q))^(1/4)
-sigma_R = (1/(4 M_H k_R))^(1/4)
-```
-
-따라서 같은 potential에서 질량만 바꾸면 폭도 자동으로 바뀌며
-`sigma proportional to mass^(-1/4)`이다. 혼합곡률 `d^2E/(dq dR)`은 진단값으로
-저장하지만, 초기 Gaussian 중심의 조건부 이동을 다시 만들지 않도록 초기
-폭에는 넣지 않는다. 자동 곡률 대신 알려진 양의 값을 쓰고 싶다면
-`--proton-force-constant`, `--heavy-force-constant`를 지정한다.
-
-선택한 중심에서 대각 곡률이 0 이하이면 그 지점에는 조화 바닥상태의 실수
-폭이 존재하지 않는다. 코드는 절댓값으로 숨기지 않고 중단하므로, 양의 곡률
-영역으로 중심을 옮기거나 양의 force constant를 직접 주어야 한다.
+혼합항까지 포함한 mass-weighted Hessian이 positive definite가 아니면 안정한
+결합 harmonic ground state가 존재하지 않는다. 코드는 고유값에 절댓값을
+씌우지 않고 중단한다.
 
 질량 기본값은 `m_p=1836 m_e`, `M_H=12000 m_e`, 두 nuclear momentum 기본값은
 `p_q=p_R=0`이다. Momentum 위상 기능은 남아 있으므로 필요할 때만 예를 들어
 `--proton-momentum 1.0 --heavy-momentum -0.2`처럼 지정한다. 전자는
 `--electron-excitation n`으로 local BO 상태 번호를 선택하며, Gaussian/Hermite
 전자 초기화 option은 제거되었다.
+
+## 기본 격자와 전자 hard wall
+
+기본 spacing은 세 좌표에서 모두 `0.1 a0`로 맞췄다.
+
+| 좌표 | 물리적 범위 | 점 수 | spacing | 경계 |
+|---|---:|---:|---:|---|
+| electron `x` | `(-6,8)` interior | 139 | 0.1 | 양쪽 Dirichlet hard wall |
+| proton `q` | `[-3.4,3.6)` | 70 | 0.1 | periodic numerical box |
+| heavy `R` | `[2.8,5.8)` | 30 | 0.1 | periodic numerical box |
+
+전자 왼쪽 경계는 항상 `--left-position`과 같으며 기본값은 `-6 a0`이다.
+경계점 자체에서는 `Phi=0`이고 배열에는 139개 interior point만 저장한다.
+전자 kinetic은 FFT가 아니라 DST-I sine basis를 사용하므로 왼쪽 벽을 넘어
+오른쪽으로 wrap-around하지 않는다. `--x-min` option은 없으며 오른쪽 벽만
+`--x-max`로 바꾼다.
+
+Heavy 핵은 질량이 크고 짧은 dynamics에서 이동이 작으므로 기존보다 R box를
+좁히고 점 수도 줄였다. 단, 더 긴 시간 전파에서는 density가 R 경계에
+도달하지 않는지 확인하고 필요하면 범위를 넓혀야 한다.
 
 ## 두 gauge의 선택
 
@@ -175,7 +199,7 @@ potential 단위다. 임의의 비선형 gauge도 이론적으로 가능하지�
 cd /home/jubjhbjey5/Shin-Metiu
 
 python -m multi_component_exact_factorization.propagate \
-  --nx 48 --nq 64 --nR 72 \
+  --nx 139 --nq 70 --nR 30 \
   --dt-au 0.002 --t-final-fs 0.002 --save-every 5 \
   --outdir results/multi_component_exact_factorization/study_direct
 ```
@@ -186,7 +210,7 @@ python -m multi_component_exact_factorization.propagate \
 
 ```bash
 python -m multi_component_exact_factorization.reference \
-  --nx 48 --nq 64 --nR 72 \
+  --nx 139 --nq 70 --nR 30 \
   --dt-au 0.002 --t-final-fs 0.002 --save-every 5 \
   --outdir results/multi_component_exact_factorization/study_reference
 
@@ -343,7 +367,8 @@ python -m multi_component_exact_factorization.visualize_3d ARCHIVE.npz \
 ```
 
 `visualize_3d.py`에는 `plotly`가 추가로 필요하다. 현재 검증 환경은
-`plotly 5.6.0`이다.
+`plotly 5.6.0`이다. 전자 hard-wall DST와 tridiagonal local BO solver에는
+`scipy`가 필요하며 현재 검증 환경은 `scipy 1.7.3`이다.
 
 ## 5. 조금 더 매끄러운 결과
 
@@ -352,7 +377,7 @@ python -m multi_component_exact_factorization.visualize_3d ARCHIVE.npz \
 
 ```bash
 python -m multi_component_exact_factorization.propagate \
-  --nx 48 --nq 64 --nR 72 \
+  --nx 139 --nq 70 --nR 30 \
   --dt-au 0.005 --t-final-fs 0.05 --save-every 10 \
   --outdir results/multi_component_exact_factorization/direct
 ```
@@ -361,16 +386,14 @@ python -m multi_component_exact_factorization.propagate \
 
 ```text
 dt-au: 0.005 -> 0.0025
-nx:    48 -> 64
-nq:    64 -> 96
-nR:    72 -> 108
+spacing: 0.10 -> 0.075 -> 0.05 a0 (세 축을 함께 조밀하게)
 box:   각 density가 양 끝에서 충분히 작은지 확인
 ```
 
 다음 진단을 함께 확인한다.
 
 - full molecular norm
-- Phi와 Lambda의 두 PNC 오차
+- Phi와 Lambda의 저장 PNC 오차 및 substep projection 보정량
 - reference 대비 full-Psi fidelity
 - heavy/proton-heavy/electron-heavy density L1 오차
 - wavepacket의 경계 도달 여부
@@ -383,6 +406,11 @@ Direct EF에는 `(-i d chi)/chi`, `(-i d Lambda)/Lambda`가 있어 density node�
 tail에서 매우 불안정할 수 있다. 이 코드는 `--density-threshold`로 분모를
 regularize하지만, 이는 물리적 근사가 아니라 수치적 안전장치다. 최종 결과가
 threshold, 격자, time step에 안정적인지 반드시 확인해야 한다.
+
+`pnc_projection_correction`은 점유율이 거의 0인 조건부 tail까지 포함한
+substep 전역 최댓값이라 크게 보일 수 있다. 저장 factor 자체의 PNC 잔차는
+`pnc_error`이며, 물리적 정확도는 full norm과 reference fidelity도 함께 보고
+판단해야 한다.
 
 또한 기본 model은 q와 R 격자 범위를 분리하여 초기 공간 순서를 유지한다.
 양성자와 무거운 핵의 crossing이나 같은 위치 configuration까지 연구하려면

@@ -52,6 +52,18 @@ def archive_arguments(data):
     return stored if isinstance(stored, dict) else {}
 
 
+def common_position_limits(data):
+    """세 좌표 profile에 공통으로 쓸 물리적 box 범위."""
+    options = archive_arguments(data)
+    lower = [float(data[key][0]) for key in ("x", "q", "R")]
+    upper = [float(data[key][-1]) for key in ("x", "q", "R")]
+    # Hard-wall 전자 grid는 경계점 자체를 저장하지 않으므로 metadata의
+    # x_min/x_max를 포함해야 왼쪽 고정점과 오른쪽 벽이 정확히 보인다.
+    lower.append(float(options.get("x_min", lower[0])))
+    upper.append(float(options.get("x_max", upper[0])))
+    return min(lower), max(upper)
+
+
 def initial_marginals(data):
     """t=0 full wavefunction에서 세 입자의 1D marginal density를 계산한다.
 
@@ -133,12 +145,11 @@ def plot_initial_state(data, outdir, dpi=180):
     )
     details = (
         f"local H_BO eigenstate n={excitation}",
-        f"harmonic sigma={sigmas[1]:.3f}, p0={momenta[1]:.2f}",
-        f"harmonic sigma={sigmas[2]:.3f}, p0={momenta[2]:.2f}",
+        f"marginal sigma={sigmas[1]:.3f}, p0={momenta[1]:.2f}",
+        f"marginal sigma={sigmas[2]:.3f}, p0={momenta[2]:.2f}",
     )
 
-    common_min = min(float(grid[0]) for grid in grids)
-    common_max = max(float(grid[-1]) for grid in grids)
+    common_min, common_max = common_position_limits(data)
     fig, axes = plt.subplots(1, 3, figsize=(15.0, 5.2), constrained_layout=True)
     for ax, grid, rho, name, symbol, color, spacing, center, detail in zip(
         axes, grids, densities, names, symbols, colors, spacings,
@@ -174,10 +185,11 @@ def plot_initial_state(data, outdir, dpi=180):
             f"fixed site={options['left_position']:.2f} a0"
         )
         correlation_line = (
-            "fixed nuclear centers; "
+            "full-Hessian correlated Gaussian; "
             f"kq={options.get('initial_proton_force_constant', np.nan):.4f}, "
+            f"kqR={options.get('initial_cross_curvature', np.nan):.4f}, "
             f"kR={options.get('initial_heavy_force_constant', np.nan):.4f}; "
-            "electron follows local H_BO"
+            f"rho={options.get('initial_correlation_qR', np.nan):.3f}"
         )
     else:
         mass_line = "mass and input-center metadata unavailable"
@@ -348,8 +360,7 @@ def plot_factor_profiles(data, outdir, frame=-1, dpi=180):
         (R, chi, r"$\chi(R,t)$", "heavy R"),
     ]
     # 세 입자는 같은 1D 물리 공간에 있으므로 그림의 위치축 범위를 통일한다.
-    common_min = min(float(x[0]), float(q[0]), float(R[0]))
-    common_max = max(float(x[-1]), float(q[-1]), float(R[-1]))
+    common_min, common_max = common_position_limits(data)
     for ax, (grid, wave, title, xlabel) in zip(axes, profiles):
         ax.plot(grid, wave.real, label="Real", color="#2369BD")
         ax.plot(grid, wave.imag, label="Imag", color="#D1495B")
@@ -377,8 +388,7 @@ def make_wavefunction_animation(
     """Phi/Lambda/chi/full Psi/epsilon_1/epsilon_2의 6-panel 영상."""
     x, q, R, times = data["x"], data["q"], data["R"], data["times_fs"]
     # 전자, 양성자, heavy 핵을 동일한 물리적 위치 눈금에서 비교한다.
-    common_min = min(float(x[0]), float(q[0]), float(R[0]))
-    common_max = max(float(x[-1]), float(q[-1]), float(R[-1]))
+    common_min, common_max = common_position_limits(data)
     frames = selected_frames(len(times), min(max_frames, len(times)))
     # frame마다 y축/색 범위가 흔들리지 않도록 전체 영상에서 limit을 정한다.
     phi_amp = lam_amp = chi_amp = 1.0e-12

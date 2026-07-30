@@ -2,8 +2,9 @@
 """세 coupled equation을 직접 푸는 1D multi-component EF 전파기.
 
 이 프로그램은 full Psi를 시간 전파한 뒤 분해하는 reference가 아니다.
-초기 ``Phi``는 local BO 고유상태로, ``Lambda``와 ``chi``는 국소 곡률로
-폭을 정한 Gaussian으로 만든 뒤 다음 세 식을 함께 적분한다.
+초기 ``Phi``는 local BO 고유상태로, ``Lambda``와 ``chi``는 full nuclear
+Hessian으로 만든 상관 harmonic Gaussian으로 초기화한 뒤 다음 세 식을 함께
+적분한다. 전자는 왼쪽 고정점에서 0이 되는 hard-wall 경계를 사용한다.
 
     i d_t Phi    = (H_el - epsilon_1) Phi
     i d_t Lambda = (H_pr - epsilon_2) Lambda
@@ -85,7 +86,7 @@ def full_step(phi, lam, chi, dt, model, args):
         phi, lam, chi, dt, model, args
     )
     phi = electronic_split_step(phi, 0.5*dt, model)
-    # FFT roundoff까지 제거하되 세 factor의 곱 Psi는 그대로 보존한다.
+    # Split-transform roundoff까지 제거하되 세 factor의 곱 Psi는 보존한다.
     phi, lam, chi, final_error = pnc_project(phi, lam, chi, model)
     return phi, lam, chi, max(pnc_error, final_error)
 
@@ -157,11 +158,19 @@ def run(args):
         f"Phi={phi.shape}, Lambda={lam.shape}, chi={chi.shape}"
     )
     print(
-        "초기 nuclear Gaussian: "
-        f"q0={args.q0:.4f}, sigma_q={args.proton_sigma:.6f}, "
+        "격자 간격/경계: "
+        f"dx={model.dx:.6f} (hard wall {model.x_left:.3f}..{model.x_right:.3f}), "
+        f"dq={model.dq:.6f}, dR={model.dR:.6f}"
+    )
+    print(
+        "초기 correlated nuclear Gaussian: "
+        f"(q0,R0)=({args.q0:.4f},{args.R0:.4f}), "
+        f"sigma_q={args.proton_sigma:.6f}, "
         f"k_q={args.initial_proton_force_constant:.6f}; "
-        f"R0={args.R0:.4f}, sigma_R={args.heavy_sigma:.6f}, "
+        f"sigma_R={args.heavy_sigma:.6f}, "
         f"k_R={args.initial_heavy_force_constant:.6f}; "
+        f"k_qR={args.initial_cross_curvature:.6f}, "
+        f"rho_qR={args.initial_correlation_qR:.6f}; "
         f"p_q={args.proton_momentum:.4f}, p_R={args.heavy_momentum:.4f}"
     )
 
@@ -184,10 +193,11 @@ def run(args):
     theta1 = np.empty_like(avec)                                    # theta_1(q,R,t)
     theta2 = np.empty((nt, args.nR))                                # theta_2(R,t)
     norm = np.empty(nt)
-    pnc = np.empty(nt)
+    pnc = np.empty(nt)                                               # 저장 factor의 실제 PNC 잔차
+    projection_correction = np.empty(nt)                             # substep 투영 전 최대 이탈
     psis = []                                                       # 선택 저장 (nt,nx,nq,nR)
 
-    def save_frame(frame, step, step_pnc=0.0):
+    def save_frame(frame, step, step_projection_correction=0.0):
         """현재 base-gauge factor를 선택 gauge로 바꾸어 한 frame 저장."""
         # 1) 현재 factor로부터 base-gauge의 모든 EF potential을 계산한다.
         fields = instantaneous_functionals(
@@ -220,7 +230,8 @@ def run(args):
         lam_err = np.max(
             np.abs(np.sum(np.abs(lam)**2, axis=0)*model.dq-1.0)
         )
-        pnc[frame] = max(step_pnc, float(phi_err), float(lam_err))
+        pnc[frame] = max(float(phi_err), float(lam_err))
+        projection_correction[frame] = step_projection_correction
         if args.save_psi:
             psis.append(psi.copy())
 
@@ -286,7 +297,9 @@ def run(args):
     )
     payload = dict(
         kind=np.array("direct_multi_component_exact_factorization"),
-        representation=np.array("nested_realspace_local_bo_initialization"),
+        representation=np.array(
+            "nested_realspace_correlated_harmonic_hardwall_electron"
+        ),
         gauge=np.array(gauge_name),
         base_gauge=np.array("parallel_transport_two_level"),
         x=model.x, q=model.q, R=model.R, times_fs=times_fs,
@@ -296,6 +309,7 @@ def run(args):
         theta_1=theta1, theta_2=theta2,
         epsilon_gd_1=epsilon_gd_1, epsilon_gd_2=epsilon_gd_2,
         norm=norm, pnc_error=pnc,
+        pnc_projection_correction=projection_correction,
         args=np.array([vars(args)], dtype=object),
     )
     if args.save_psi:
@@ -304,7 +318,8 @@ def run(args):
     np.savez_compressed(path, **payload)
     print(f"저장 완료: {path}")
     print(f"최대 norm 오차: {np.max(np.abs(norm-1.0)):.3e}")
-    print(f"최대 PNC 오차:  {np.max(pnc):.3e}")
+    print(f"최대 저장 PNC 오차:       {np.max(pnc):.3e}")
+    print(f"최대 PNC projection 보정: {np.max(projection_correction):.3e}")
     return path
 
 

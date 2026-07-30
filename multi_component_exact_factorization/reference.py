@@ -21,6 +21,7 @@ from .core import (
     AU_PER_FS,
     add_model_arguments,
     build_model,
+    electronic_kinetic_step,
     geometric_fields,
     initial_factors,
     nested_factorize,
@@ -38,17 +39,27 @@ def run(args):
     psi = reconstruct_psi(phi0, lam0, chi0)                         # (nx,nq,nR)
     print(f"full Psi 초기 shape: {psi.shape}")
 
-    # 세 좌표의 운동에너지는 Fourier 공간에서 대각이므로 한꺼번에 적용한다.
-    kx = 2*np.pi*np.fft.fftfreq(args.nx, d=model.dx)
+    # 전자축은 hard-wall DST, 두 핵 좌표는 periodic FFT를 사용한다.
+    # 서로 다른 좌표의 kinetic은 commute하므로 같은 half step 안에서
+    # 순서대로 적용해도 정확히 같은 exp[-i dt(Tx+Tq+TR)/2]이다.
     kq = 2*np.pi*np.fft.fftfreq(args.nq, d=model.dq)
     kR = 2*np.pi*np.fft.fftfreq(args.nR, d=model.dR)
-    kinetic = (
-        0.5*kx[:, None, None]**2
-        +0.5*kq[None, :, None]**2/model.proton_mass
-        +0.5*kR[None, None, :]**2/model.heavy_mass
+    nuclear_kinetic = (
+        0.5*kq[:, None]**2/model.proton_mass
+        +0.5*kR[None, :]**2/model.heavy_mass
     )
-    half_t = np.exp(-0.5j*args.dt_au*kinetic)
+    nuclear_half_t = np.exp(-0.5j*args.dt_au*nuclear_kinetic)[None, :, :]
     full_v = np.exp(-1j*args.dt_au*model.potential)
+
+    def kinetic_half_step(wavefunction):
+        """전자 DST와 핵 FFT kinetic을 한 half step 적용한다."""
+        wavefunction = electronic_kinetic_step(
+            wavefunction, 0.5*args.dt_au, model
+        )
+        transformed = np.fft.fftn(wavefunction, axes=(1, 2))
+        return np.fft.ifftn(
+            transformed*nuclear_half_t, axes=(1, 2)
+        )
 
     n_steps = int(round(args.t_final_fs*AU_PER_FS/args.dt_au))
     save_steps = list(range(0, n_steps+1, max(1, args.save_every)))
@@ -69,9 +80,9 @@ def run(args):
     save_frame(0)
     frame = 1
     for step in range(1, n_steps+1):
-        psi = np.fft.ifftn(np.fft.fftn(psi)*half_t)
+        psi = kinetic_half_step(psi)
         psi *= full_v
-        psi = np.fft.ifftn(np.fft.fftn(psi)*half_t)
+        psi = kinetic_half_step(psi)
         if frame < len(save_steps) and step == save_steps[frame]:
             save_frame(step)
             frame += 1

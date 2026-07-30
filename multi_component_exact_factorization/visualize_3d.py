@@ -94,8 +94,16 @@ def run(args):
     hover_value = "%{value:"+number_format+"}"
     initial_text = initial_summary(data)
 
-    common_min = min(float(x[0]), float(q[0]), float(R[0]))
-    common_max = max(float(x[-1]), float(q[-1]), float(R[-1]))
+    options = data["args"].reshape(-1)[0] if "args" in data.files else {}
+    options = options if isinstance(options, dict) else {}
+    common_min = min(
+        float(x[0]), float(q[0]), float(R[0]),
+        float(options.get("x_min", x[0])),
+    )
+    common_max = max(
+        float(x[-1]), float(q[-1]), float(R[-1]),
+        float(options.get("x_max", x[-1])),
+    )
 
     def trace_for(rho, show_colorbar):
         """동일한 절대 color scale을 사용하는 한 frame의 isosurface."""

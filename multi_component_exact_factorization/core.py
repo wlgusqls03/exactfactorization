@@ -26,6 +26,8 @@ from dataclasses import dataclass
 import warnings
 
 import numpy as np
+from scipy.fft import dst, idst
+from scipy.linalg import eigh_tridiagonal
 
 
 AU_PER_FS = 41.3413745758
@@ -41,6 +43,8 @@ class Model:
     dx: float
     dq: float
     dR: float
+    x_left: float
+    x_right: float
     proton_mass: float
     heavy_mass: float
     potential: np.ndarray         # (nx,nq,nR)
@@ -54,17 +58,28 @@ def soft_inverse(distance: np.ndarray, softening: float) -> np.ndarray:
 def build_model(args) -> Model:
     """왼쪽 고정점-전자-양성자-무거운 핵의 1D model을 만든다.
 
-    왼쪽 중심은 움직이지 않으므로 파동함수 좌표축을 갖지 않는다.
-    그 영향은 potential에만 포함된다. q와 R 범위를 서로 떨어뜨려 두면
-    기본 계산에서 양성자와 무거운 핵의 위치 순서가 자연스럽게 유지된다.
+    왼쪽 중심은 움직이지 않으므로 파동함수 좌표축을 갖지 않는다. 전자에게는
+    potential 중심인 동시에 넘을 수 없는 왼쪽 Dirichlet 경계다. q와 R box는
+    초기 packet의 tail이 수치 경계에서 충분히 작도록 잡는다.
     """
-    # FFT 전파와 맞추기 위해 endpoint=False인 균일 주기 격자를 사용한다.
-    x = np.linspace(args.x_min, args.x_max, args.nx, endpoint=False)
+    # 전자는 왼쪽 고정점 x_L을 넘을 수 없는 Dirichlet hard-wall box에 둔다.
+    # 따라서 x_L과 x_max 자체는 psi=0인 경계이고, 실제 배열에는 그 사이의
+    # nx개 interior point만 저장한다. 이 배치는 DST-I kinetic과 정확히 맞는다.
+    x_left = float(args.left_position)
+    x_right = float(args.x_max)
+    if x_right <= x_left:
+        raise ValueError("--x-max는 왼쪽 고정점 --left-position보다 커야 합니다.")
+    dx = (x_right-x_left)/(args.nx+1)
+    x = x_left+dx*np.arange(1, args.nx+1)
+
+    # q와 R은 density가 경계에서 충분히 작다는 전제 아래 주기 격자를 쓴다.
     q = np.linspace(args.q_min, args.q_max, args.nq, endpoint=False)
     R = np.linspace(args.R_min, args.R_max, args.nR, endpoint=False)
-    dx = float(x[1] - x[0])
     dq = float(q[1] - q[0])
     dR = float(R[1] - R[0])
+
+    # 저장 metadata에서도 전자 box의 왼쪽 끝이 고정점임을 명시한다.
+    args.x_min = x_left
 
     xx = x[:, None, None]       # (nx,1,1)
     qq = q[None, :, None]       # (1,nq,1)
@@ -84,6 +99,7 @@ def build_model(args) -> Model:
 
     return Model(
         x=x, q=q, R=R, dx=dx, dq=dq, dR=dR,
+        x_left=x_left, x_right=x_right,
         proton_mass=args.proton_mass, heavy_mass=args.heavy_mass,
         potential=np.asarray(potential),
     )
@@ -128,16 +144,11 @@ def local_electronic_basis(model: Model, n_states: int):
     # ------------------------------------------------------------------
     # 1. 전자 운동에너지 T_x의 실공간 matrix를 한 번만 만든다.
     # ------------------------------------------------------------------
-    # 실제 전파에서 T_x는 FFT로 적용한다. 초기 고유상태도 같은 discrete
-    # Hamiltonian에서 얻어야 하므로, 단위행렬의 각 열에 FFT kinetic을
-    # 적용하여 그 연산자의 (nx,nx) matrix 표현을 구성한다.
-    kx = 2*np.pi*np.fft.fftfreq(nx, d=model.dx)
-    identity = np.eye(nx, dtype=complex)
-    kinetic = np.fft.ifft(
-        np.fft.fft(identity, axis=0)*(0.5*kx**2)[:, None], axis=0
-    )
-    # Roundoff로 생기는 작은 anti-Hermitian/imaginary 성분을 제거한다.
-    kinetic = 0.5*(kinetic+kinetic.conj().T)
+    # Dirichlet 경계의 2차 중앙차분 T_x=-d_x^2/2는 tridiagonal이다.
+    # diagonal=1/dx^2, off-diagonal=-1/(2 dx^2)이므로 전체 dense matrix를
+    # 만들지 않고 필요한 낮은 고유상태만 효율적으로 구할 수 있다.
+    kinetic_diagonal = np.full(nx, 1.0/model.dx**2)
+    kinetic_offdiagonal = np.full(nx-1, -0.5/model.dx**2)
 
     energies = np.empty((n_states, nq, nR), float)                 # (state,nq,nR)
     states = np.empty((n_states, nx, nq, nR), complex)             # (state,nx,nq,nR)
@@ -147,12 +158,15 @@ def local_electronic_basis(model: Model, n_states: int):
     # ------------------------------------------------------------------
     for iR in range(nR):
         for iq in range(nq):
-            hamiltonian = kinetic+np.diag(model.potential[:, iq, iR])
-            values, vectors = np.linalg.eigh(hamiltonian)
+            diagonal = kinetic_diagonal+model.potential[:, iq, iR]
+            values, vectors = eigh_tridiagonal(
+                diagonal, kinetic_offdiagonal,
+                select="i", select_range=(0, n_states-1),
+            )
 
             # np.linalg.eigh의 열벡터는 sum_x |v_x|^2=1이다. 연속 PNC
             # sum_x |phi_x|^2 dx=1에 맞추기 위해 sqrt(dx)로 나눈다.
-            chosen = vectors[:, :n_states].T.astype(complex)/np.sqrt(model.dx)
+            chosen = vectors.T.astype(complex)/np.sqrt(model.dx)
 
             # ----------------------------------------------------------
             # 3. Eigenvector가 갖는 임의의 complex phase를 매끈하게 잇는다.
@@ -174,7 +188,7 @@ def local_electronic_basis(model: Model, n_states: int):
                 overlap = np.sum(np.conj(reference)*chosen[state])*model.dx
                 if abs(overlap) > 1.0e-12:
                     chosen[state] *= np.exp(-1j*np.angle(overlap))
-            energies[:, iq, iR] = values[:n_states]
+            energies[:, iq, iR] = values
             states[:, :, iq, iR] = chosen
     return energies, states
 
@@ -186,9 +200,8 @@ def local_surface_curvature(surface, model: Model, q0: float, R0: float):
           + kR*dR^2/2``
 
     의 계수를 least squares로 구한다. 반환값은 두 gradient, 두 대각 force
-    constant와 혼합 curvature다. 초기 nuclear Gaussian을 product 형태로
-    유지하기 위해 폭에는 대각 ``kq``, ``kR``만 사용하고 혼합항은 진단용으로
-    저장한다.
+    constant와 혼합 curvature다. 세 curvature 모두 결합 nuclear harmonic
+    state를 만드는 데 사용한다.
     """
     if not model.q[0] <= q0 <= model.q[-1]:
         raise ValueError(f"q0={q0}가 q grid 밖에 있습니다.")
@@ -213,19 +226,56 @@ def local_surface_curvature(surface, model: Model, q0: float, R0: float):
     )
 
 
-def harmonic_density_sigma(mass: float, force_constant: float):
-    """Harmonic ground-state 확률밀도의 표준편차.
+def coupled_harmonic_state(model: Model, args, k_q, k_qR, k_R):
+    """Full 2x2 Hessian으로 상관된 nuclear harmonic state를 만든다.
 
-    ``omega=sqrt(k/m)``이고 ``Var(x)=1/(2*m*omega)``이므로
-    ``sigma=(1/(4*m*k))^(1/4)``이다.
+    ``y=(q-q0,R-R0)``와 ``M=diag(m_p,M_H)``에 대해
+
+        D = M^(-1/2) K M^(-1/2),   Omega = sqrt(D)
+        Xi(y) = N exp[-y^T M^(1/2) Omega M^(1/2) y/2 + i p^T y]
+
+    이다. ``|Xi|^2``의 covariance는
+    ``Sigma=(1/2)[M^(1/2) Omega M^(1/2)]^(-1)``이다. 즉 혼합곡률은
+    marginal 폭뿐 아니라 q-R correlation과 조건부 중심 이동도 결정한다.
+
+    반환 shape은 ``Xi(nq,nR)``, ``Sigma(2,2)``, ``omega(2,)``이다.
     """
-    if mass <= 0.0 or force_constant <= 0.0:
-        raise ValueError("mass와 force constant는 양수여야 합니다.")
-    return (1.0/(4.0*mass*force_constant))**0.25
+    masses = np.array([model.proton_mass, model.heavy_mass], float)
+    if np.any(masses <= 0.0):
+        raise ValueError("두 핵 질량은 양수여야 합니다.")
+
+    force = np.array([[k_q, k_qR], [k_qR, k_R]], float)
+    inv_sqrt_mass = np.diag(1.0/np.sqrt(masses))
+    sqrt_mass = np.diag(np.sqrt(masses))
+    mass_weighted = inv_sqrt_mass@force@inv_sqrt_mass
+    omega_squared, normal_modes = np.linalg.eigh(mass_weighted)
+    if np.min(omega_squared) <= 0.0:
+        raise ValueError(
+            "혼합곡률까지 포함한 mass-weighted Hessian이 positive definite가 "
+            f"아닙니다. omega^2={omega_squared}. 안정한 중심/전자상태를 "
+            "선택하거나 force constant들을 직접 지정하세요."
+        )
+
+    frequencies = np.sqrt(omega_squared)
+    omega_matrix = normal_modes@np.diag(frequencies)@normal_modes.T
+    exponent_matrix = sqrt_mass@omega_matrix@sqrt_mass
+    covariance = 0.5*np.linalg.inv(exponent_matrix)
+
+    delta_q = model.q[:, None]-args.q0                         # (nq,1)
+    delta_R = model.R[None, :]-args.R0                         # (1,nR)
+    quadratic = (
+        exponent_matrix[0, 0]*delta_q**2
+        +2.0*exponent_matrix[0, 1]*delta_q*delta_R
+        +exponent_matrix[1, 1]*delta_R**2
+    )                                                           # (nq,nR)
+    phase = args.proton_momentum*delta_q+args.heavy_momentum*delta_R
+    xi = np.exp(-0.5*quadratic+1j*phase)                         # (nq,nR)
+    xi /= np.sqrt(np.sum(np.abs(xi)**2)*model.dq*model.dR)
+    return xi, covariance, frequencies
 
 
 def initial_factors(model: Model, args):
-    """Local BO 전자상태와 고정 중심 nuclear Gaussian으로 초기화한다."""
+    """Local BO 전자상태와 결합 harmonic nuclear Gaussian으로 초기화."""
     excitation = int(args.electron_excitation)
     if excitation < 0:
         raise ValueError("--electron-excitation은 0 이상이어야 합니다.")
@@ -253,16 +303,27 @@ def initial_factors(model: Model, args):
         if args.heavy_force_constant == 0.0
         else args.heavy_force_constant
     )
-    if kq <= 0.0 or kR <= 0.0:
-        raise ValueError(
-            "초기 폭에 사용할 대각 force constant가 양수가 아닙니다: "
-            f"k_q={kq:.6g}, k_R={kR:.6g} "
-            f"(BO 곡률: {curvature['k_q']:.6g}, {curvature['k_R']:.6g}). "
-            "양의 곡률 위치를 선택하거나 --proton-force-constant와 "
-            "--heavy-force-constant에 양수를 직접 지정하세요."
-        )
-    proton_sigma = harmonic_density_sigma(model.proton_mass, kq)
-    heavy_sigma = harmonic_density_sigma(model.heavy_mass, kR)
+    kqR = (
+        curvature["k_qR"]
+        if args.cross_force_constant is None
+        else args.cross_force_constant
+    )
+
+    # 사용자가 정한 (q0,R0)는 Gaussian의 전체 중심으로 그대로 유지한다.
+    # local gradient는 중심을 옮기는 데 쓰지 않고 진단값으로만 저장한다.
+    # 반면 Hessian의 혼합항은 물리적 q-R correlation에 반드시 포함한다.
+    xi, covariance, frequencies = coupled_harmonic_state(
+        model, args, kq, kqR, kR
+    )                                                               # (nq,nR)
+    proton_sigma = float(np.sqrt(covariance[0, 0]))
+    heavy_sigma = float(np.sqrt(covariance[1, 1]))
+    correlation = float(
+        covariance[0, 1]/np.sqrt(covariance[0, 0]*covariance[1, 1])
+    )
+    conditional_slope = float(covariance[0, 1]/covariance[1, 1])
+    conditional_sigma = float(np.sqrt(
+        covariance[0, 0]-covariance[0, 1]**2/covariance[1, 1]
+    ))
 
     # 계산된 초기 parameter도 NPZ의 args metadata에 함께 남긴다.
     args.electron_initial_state = "local-eigenstate"
@@ -270,12 +331,17 @@ def initial_factors(model: Model, args):
     args.heavy_sigma = heavy_sigma
     args.initial_proton_force_constant = kq
     args.initial_heavy_force_constant = kR
-    args.initial_cross_curvature = curvature["k_qR"]
+    args.initial_cross_curvature = kqR
     args.initial_gradient_q = curvature["gradient_q"]
     args.initial_gradient_R = curvature["gradient_R"]
+    args.initial_covariance_qR = covariance
+    args.initial_correlation_qR = correlation
+    args.initial_conditional_center_slope = conditional_slope
+    args.initial_conditional_proton_sigma = conditional_sigma
+    args.initial_normal_frequencies = frequencies
 
     for name, sigma, spacing in (
-        ("proton", proton_sigma, model.dq),
+        ("conditional proton", conditional_sigma, model.dq),
         ("heavy", heavy_sigma, model.dR),
     ):
         if sigma < 1.5*spacing:
@@ -286,19 +352,24 @@ def initial_factors(model: Model, args):
             )
 
     # ------------------------------------------------------------------
-    # 2. 가장 바깥 factor: heavy-nucleus marginal chi(R,0), shape (nR,)
+    # 2. 결합 nuclear state Xi(q,R)를 nested factorization한다.
     # ------------------------------------------------------------------
-    chi = normalized_gaussian(
-        model.R, model.dR, args.R0, heavy_sigma, args.heavy_momentum
+    # chi에는 heavy momentum phase를 두고, Lambda에는 proton momentum과
+    # Hessian이 결정한 조건부 q-R correlation을 남기는 gauge를 택한다.
+    chi_amplitude = np.sqrt(np.sum(np.abs(xi)**2, axis=0)*model.dq) # (nR,)
+    chi = chi_amplitude*np.exp(
+        1j*args.heavy_momentum*(model.R-args.R0)
     )                                                               # (nR,)
-
-    # ------------------------------------------------------------------
-    # 3. Proton 중심은 모든 R에서 정확히 q0로 고정한다.
-    # ------------------------------------------------------------------
-    proton_line = normalized_gaussian(
-        model.q, model.dq, args.q0, proton_sigma, args.proton_momentum
-    )                                                               # (nq,)
-    lam = np.repeat(proton_line[:, None], len(model.R), axis=1)     # (nq,nR)
+    safe_chi = np.where(chi_amplitude > 1.0e-300, chi, 1.0+0.0j)
+    lam = xi/safe_chi[None, :]                                      # (nq,nR)
+    # Underflow로 marginal이 정확히 0인 열에서도 PNC를 명시적으로 유지한다.
+    zero_columns = chi_amplitude <= 1.0e-300
+    if np.any(zero_columns):
+        fallback = normalized_gaussian(
+            model.q, model.dq, args.q0, conditional_sigma,
+            args.proton_momentum,
+        )
+        lam[:, zero_columns] = fallback[:, None]
     return phi.astype(complex), lam.astype(complex), chi.astype(complex)
 
 
@@ -336,23 +407,42 @@ def regularized_ratio(numerator, denominator, relative_floor):
     return numerator*np.conj(denominator)/(density+floor)
 
 
+def electronic_kinetic_energies(model: Model):
+    """Dirichlet 중앙차분 전자 kinetic의 DST-I 고유값 ``(nx,)``.
+
+    왼쪽/오른쪽 경계에서 wavefunction이 0인 interior grid의 mode는
+    ``sin[n*pi*(x-x_L)/L]``이고, 2차 중앙차분 kinetic 고유값은
+
+        T_n = [1-cos(n*pi/(nx+1))]/dx^2,  n=1,...,nx
+
+    이다.
+    """
+    modes = np.arange(1, len(model.x)+1, dtype=float)
+    return (1.0-np.cos(np.pi*modes/(len(model.x)+1)))/model.dx**2
+
+
+def electronic_kinetic_step(values, tau, model: Model):
+    """전자축에 ``exp(-i*tau*T_x)``를 hard-wall sine basis로 적용."""
+    transformed = dst(values, type=1, axis=0, norm="ortho")
+    phase = np.exp(-1j*tau*electronic_kinetic_energies(model))
+    phase = phase.reshape((-1,)+(1,)*(values.ndim-1))
+    return idst(transformed*phase, type=1, axis=0, norm="ortho")
+
+
 def apply_electronic_hamiltonian(phi, model: Model):
-    """고유상태 계산 없이 ``[-d_x^2/2+V(x,q,R)] Phi``를 적용한다."""
-    kx = 2*np.pi*np.fft.fftfreq(len(model.x), d=model.dx)
-    kinetic = np.fft.ifft(
-        np.fft.fft(phi, axis=0)*(0.5*kx**2)[:, None, None], axis=0
-    )
+    """Dirichlet 중앙차분 ``[-d_x^2/2+V(x,q,R)] Phi``를 적용."""
+    # 배열 밖의 두 값은 hard-wall Dirichlet 조건에 따라 0이다.
+    kinetic = phi/model.dx**2
+    kinetic[1:] -= 0.5*phi[:-1]/model.dx**2
+    kinetic[:-1] -= 0.5*phi[1:]/model.dx**2
     return kinetic + model.potential*phi
 
 
 def electronic_split_step(phi, tau, model: Model):
-    """전자 ``T_x/2 -> V -> T_x/2`` split-operator 한 번."""
-    kx = 2*np.pi*np.fft.fftfreq(len(model.x), d=model.dx)
-    half_t = np.exp(-0.25j*tau*kx**2)[:, None, None]
-    phi = np.fft.ifft(np.fft.fft(phi, axis=0)*half_t, axis=0)
+    """Hard-wall 전자 ``T_x/2 -> V -> T_x/2`` split step."""
+    phi = electronic_kinetic_step(phi, 0.5*tau, model)
     phi *= np.exp(-1j*tau*model.potential)
-    phi = np.fft.ifft(np.fft.fft(phi, axis=0)*half_t, axis=0)
-    return phi
+    return electronic_kinetic_step(phi, 0.5*tau, model)
 
 
 def pnc_project(phi, lam, chi, model: Model):
@@ -532,15 +622,17 @@ def reduced_densities(phi, lam, chi, model: Model):
 def add_model_arguments(parser):
     """direct/reference 명령행에서 공유하는 model option을 등록한다."""
     grid = parser.add_argument_group("실공간 격자")
-    grid.add_argument("--nx", type=int, default=48, help="전자 격자점 수")
-    grid.add_argument("--nq", type=int, default=64, help="양성자 격자점 수")
-    grid.add_argument("--nR", type=int, default=72, help="무거운 핵 격자점 수")
-    grid.add_argument("--x-min", type=float, default=-12.0)
-    grid.add_argument("--x-max", type=float, default=12.0)
-    grid.add_argument("--q-min", type=float, default=-3.5)
-    grid.add_argument("--q-max", type=float, default=3.0)
-    grid.add_argument("--R-min", type=float, default=3.4)
-    grid.add_argument("--R-max", type=float, default=8.0)
+    grid.add_argument("--nx", type=int, default=139, help="전자 interior 격자점 수")
+    grid.add_argument("--nq", type=int, default=70, help="양성자 격자점 수")
+    grid.add_argument("--nR", type=int, default=30, help="무거운 핵 격자점 수")
+    grid.add_argument(
+        "--x-max", type=float, default=8.0,
+        help="전자 hard-wall 오른쪽 끝; 왼쪽 끝은 --left-position",
+    )
+    grid.add_argument("--q-min", type=float, default=-3.4)
+    grid.add_argument("--q-max", type=float, default=3.6)
+    grid.add_argument("--R-min", type=float, default=2.8)
+    grid.add_argument("--R-max", type=float, default=5.8)
 
     particle = parser.add_argument_group("입자와 초기상태")
     particle.add_argument("--proton-mass", type=float, default=1836.0)
@@ -556,6 +648,10 @@ def add_model_arguments(parser):
     particle.add_argument(
         "--heavy-force-constant", type=float, default=0.0,
         help="0이면 local BO surface의 d2E/dR2, 양수면 해당 값을 직접 사용",
+    )
+    particle.add_argument(
+        "--cross-force-constant", type=float, default=None,
+        help="생략하면 local BO surface의 d2E/(dq dR), 값 지정 시 override",
     )
     particle.add_argument(
         "--electron-excitation", type=int, default=0,
