@@ -17,6 +17,8 @@ from matplotlib.animation import FFMpegWriter, FuncAnimation, PillowWriter
 from matplotlib.ticker import FuncFormatter
 import numpy as np
 
+from result_paths import dated_results_dir
+
 
 def readable_number(value, _position=None):
     """1e-3 order 이하는 과학 표기, 나머지는 소수점 둘째 자리까지 표시."""
@@ -230,7 +232,8 @@ def animate(data, outdir, fps=12, max_frames=180, dpi=120, fmt="mp4"):
 
 def run(args):
     data = np.load(args.archive, allow_pickle=True)
-    outdir = Path(args.outdir) if args.outdir else Path(args.archive).parent/"figures"
+    requested_outdir = Path(args.outdir) if args.outdir else Path(args.archive).parent/"figures"
+    outdir = dated_results_dir(requested_outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     draw_static(data, outdir, frame=args.frame, dpi=args.dpi)
     if not args.no_animation:

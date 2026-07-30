@@ -22,6 +22,8 @@ from pathlib import Path
 import numpy as np
 import plotly.graph_objects as go
 
+from result_paths import dated_results_dir
+
 
 def load_density(data, frame):
     """한 frame의 full molecular probability density ``(nx,nq,nR)``."""
@@ -223,7 +225,8 @@ def run(args):
         )],
     )
 
-    outdir = Path(args.outdir) if args.outdir else Path(args.archive).parent/"figures"
+    requested_outdir = Path(args.outdir) if args.outdir else Path(args.archive).parent/"figures"
+    outdir = dated_results_dir(requested_outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     path = outdir/"multi_component_full_density_3d.html"
     fig.write_html(

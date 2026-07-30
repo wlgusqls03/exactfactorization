@@ -1,5 +1,10 @@
 # Single-GPU Multi-Component Exact Factorization
 
+모든 ``--outdir`` 결과는 서버 현지 실행일에 따라 자동으로
+``results/YYYYMMDD/<지정한 이름>`` 아래에 저장된다. 예를 들어
+``--outdir results/gpu_mixed_1fs``를 2026년 7월 30일에 실행하면 실제 경로는
+``results/20260730/gpu_mixed_1fs``다.
+
 기존 CPU 코드를 기준으로 남겨두고, 큰 3차원 direct-EF 전파만 CuPy GPU에서
 수행한다. 결과 NPZ의 key와 shape은 CPU 버전과 같아서 기존
 `visualize`, `dynamics_analysis`, `visualize_3d`를 그대로 사용할 수 있다.

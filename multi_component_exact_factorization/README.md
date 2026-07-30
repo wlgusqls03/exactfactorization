@@ -34,6 +34,12 @@ Surface hopping은 사용하지 않는다.
 
 ## 파일 구성
 
+모든 계산과 후처리의 출력은 서버 현지 실행일을 기준으로 자동 분류된다.
+예를 들어 ``--outdir results/mcef_exc1_gpu_double_10fs``를 2026년 7월
+30일에 실행하면 실제 저장 위치는
+``results/20260730/mcef_exc1_gpu_double_10fs``가 된다. 이미
+``results/YYYYMMDD``가 포함된 경로에는 날짜를 중복해서 넣지 않는다.
+
 ```text
 core.py        격자, soft-Coulomb model, 미분, PNC, EF potential
 propagate.py   Phi/Lambda/chi 세 coupled equation의 direct 전파

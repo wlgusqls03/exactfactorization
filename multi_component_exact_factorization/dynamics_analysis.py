@@ -20,6 +20,8 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import TwoSlopeNorm
 import numpy as np
 
+from result_paths import dated_results_dir
+
 from .excited_state_analysis import calculate_state_decomposition
 from .visualize import NUMBER_FORMATTER, archive_arguments, load_archive
 
@@ -264,7 +266,12 @@ def save_nonadiabatic_figure(data, joint, energies, resolved, populations, frame
 
 def run(args):
     data = load_archive(args.archive)
-    outdir = Path(args.outdir) if args.outdir else Path(args.archive).resolve().parent/"dynamics_analysis"
+    requested_outdir = (
+        Path(args.outdir)
+        if args.outdir
+        else Path(args.archive).resolve().parent/"dynamics_analysis"
+    )
+    outdir = dated_results_dir(requested_outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     electron, proton, heavy, joint = normalized_marginals(data)
     densities = (electron, proton, heavy)

@@ -13,9 +13,10 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import numpy as np
+
+from result_paths import dated_results_dir
 
 from .core import (
     AU_PER_FS,
@@ -32,7 +33,7 @@ from .core import (
 
 
 def run(args):
-    outdir = Path(args.outdir)
+    outdir = dated_results_dir(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     model = build_model(args)
     phi0, lam0, chi0 = initial_factors(model, args)

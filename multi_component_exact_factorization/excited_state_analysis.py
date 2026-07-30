@@ -26,6 +26,8 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FFMpegWriter, FuncAnimation, PillowWriter
 import numpy as np
 
+from result_paths import dated_results_dir
+
 from .core import build_model, local_electronic_basis
 from .visualize import NUMBER_FORMATTER, archive_arguments, selected_frames
 
@@ -234,7 +236,8 @@ def run(args):
     energies, resolved, populations, residual = calculate_state_decomposition(
         data, n_states
     )
-    outdir = Path(args.outdir) if args.outdir else Path(args.archive).parent/"figures"
+    requested_outdir = Path(args.outdir) if args.outdir else Path(args.archive).parent/"figures"
+    outdir = dated_results_dir(requested_outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     # 후속 분석에서 비싼 local diagonalization을 반복하지 않도록 energy와
     # state-resolved density까지 별도 NPZ에 저장한다.

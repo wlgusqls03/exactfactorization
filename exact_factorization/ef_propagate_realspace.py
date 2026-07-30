@@ -21,11 +21,11 @@ TDSE reference.
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import numpy as np
 
 from shin_metiu_1d import AU_PER_FS
+from result_paths import dated_results_dir
 
 from .core import (
     apply_hbo,
@@ -158,7 +158,7 @@ def full_step(phi, chi, dt, model, args):
 
 def run(args):
     """Initialize BO-free fields, propagate them, and save the trajectory."""
-    outdir = Path(args.outdir)
+    outdir = dated_results_dir(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     model = build_grid_model(args)
     print("Built pure real-space model (no BO eigenproblem).")

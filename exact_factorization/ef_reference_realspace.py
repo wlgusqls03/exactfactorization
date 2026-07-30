@@ -10,11 +10,11 @@ A=0 gauge. No BO eigenproblem or BO projection is performed anywhere.
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import numpy as np
 
 from shin_metiu_1d import AU_PER_FS
+from result_paths import dated_results_dir
 
 from .core import (
     build_grid_model,
@@ -28,7 +28,7 @@ def run(args):
     """Propagate full ``Psi(nr,nR)`` and extract BO-free EF reference fields."""
     if args.boundary != "periodic":
         raise ValueError("The FFT reference requires --boundary periodic")
-    outdir = Path(args.outdir)
+    outdir = dated_results_dir(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     model = build_grid_model(args)
     print("Built pure real-space reference model (no BO eigenproblem).")

@@ -17,11 +17,11 @@ Saved arrays add a leading time-frame axis ``nt``.
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import numpy as np
 
 from shin_metiu_1d import AU_PER_FS
+from result_paths import dated_results_dir
 
 from .core import (
     build_model,
@@ -126,7 +126,7 @@ def rk4_step(coefficients, chi, dt, model, args):
 
 def run(args):
     """Set the initial state, propagate it, and write the direct-EF archive."""
-    outdir = Path(args.outdir)
+    outdir = dated_results_dir(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     print("Building grids and BO basis...")
     model = build_model(args)

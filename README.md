@@ -49,6 +49,12 @@ for example `--nr 384 --nR 384`, if runtime is acceptable.
 
 ## Outputs
 
+All calculation and analysis commands automatically group outputs by the
+server's local run date. For example,
+`--outdir results/mcef_exc1_gpu_double_10fs` writes below
+`results/20260730/mcef_exc1_gpu_double_10fs` when run on July 30, 2026.
+Paths that already contain a `results/YYYYMMDD` component are left unchanged.
+
 The script writes:
 
 ```text

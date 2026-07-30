@@ -18,9 +18,10 @@ Exact factorization의 'exact'는 분해와 연속 방정식을 뜻하며, 이 �
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import numpy as np
+
+from result_paths import dated_results_dir
 
 from .core import (
     AU_PER_FS,
@@ -149,7 +150,7 @@ def output_gauge(phi, lam, chi, fields, time_au, model, args):
 
 def run(args):
     """초기화, direct nested EF 전파, NPZ 저장을 수행한다."""
-    outdir = Path(args.outdir)
+    outdir = dated_results_dir(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     model = build_model(args)
     phi, lam, chi = initial_factors(model, args)

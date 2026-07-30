@@ -16,11 +16,11 @@ smaller integration steps between two frames.
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import numpy as np
 
 from shin_metiu_1d import AU_PER_FS
+from result_paths import dated_results_dir
 
 from .core import (
     apply_hbo,
@@ -156,7 +156,7 @@ def factorize_A_zero(psi_frames, times_au, model, threshold, boundary):
 
 def run(args):
     """Propagate full ``Psi(nr,nR)``, factorize its frames, and save them."""
-    outdir = Path(args.outdir)
+    outdir = dated_results_dir(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     if args.boundary != "periodic":
         raise ValueError("The FFT full-TDSE reference currently requires --boundary periodic")

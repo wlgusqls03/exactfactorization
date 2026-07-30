@@ -9,10 +9,11 @@ CPU로 복사하므로 기존 visualization/analysis 프로그램이 같은 NPZ�
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import time
 
 import numpy as np
+
+from result_paths import dated_results_dir
 
 from multi_component_exact_factorization.core import (
     AU_PER_FS,
@@ -56,7 +57,7 @@ def run(args):
     print(device_description(args.device))
     print(f"계산 정밀도: {args.precision}")
 
-    outdir = Path(args.outdir)
+    outdir = dated_results_dir(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
     # Local BO diagonalization은 CPU SciPy가 효율적이고 처음 한 번만 필요하다.

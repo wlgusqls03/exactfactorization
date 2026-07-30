@@ -29,6 +29,8 @@ import numpy as np
 from scipy.linalg import eigh
 from scipy.special import erf
 
+from result_paths import dated_results_dir
+
 AU_PER_FS = 41.3413745758
 STATE_COLORS = ("#0F766E", "#E76F51")
 TEXT_COLOR = "#25313C"
@@ -159,7 +161,7 @@ def project_bo(
 
 
 def run_simulation(args: argparse.Namespace) -> dict[str, np.ndarray]:
-    outdir = Path(args.outdir)
+    outdir = dated_results_dir(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
     r = np.linspace(args.r_min, args.r_max, args.nr, endpoint=False)
@@ -492,7 +494,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    outdir = Path(args.outdir)
+    outdir = dated_results_dir(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     data = load_results(args.render_from) if args.render_from else run_simulation(args)
     plot_summary(data, outdir)

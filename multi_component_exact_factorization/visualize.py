@@ -18,6 +18,8 @@ from matplotlib.animation import FFMpegWriter, FuncAnimation, PillowWriter
 from matplotlib.ticker import FuncFormatter
 import numpy as np
 
+from result_paths import dated_results_dir
+
 
 def readable_number(value, _position=None):
     """1e-3 order 이하는 과학 표기, 나머지는 소수점 둘째 자리까지 표시."""
@@ -878,7 +880,8 @@ def make_gauge_potential_animation(
 
 def run(args):
     data = load_archive(args.archive)
-    outdir = Path(args.outdir) if args.outdir else Path(args.archive).parent/"figures"
+    requested_outdir = Path(args.outdir) if args.outdir else Path(args.archive).parent/"figures"
+    outdir = dated_results_dir(requested_outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     plot_initial_state(data, outdir, dpi=args.dpi)
     plot_snapshots(data, outdir, count=args.snapshots, dpi=args.dpi)
