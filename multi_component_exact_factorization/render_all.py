@@ -18,6 +18,7 @@ import numpy as np
 from result_paths import dated_results_dir
 
 from . import (
+    compact_report,
     dynamics_analysis,
     excited_state_analysis,
     potential_analysis,
@@ -162,6 +163,29 @@ def run(args):
         data, n_states
     )
 
+    # The default output is intentionally focused: four question-oriented PNGs
+    # and two synchronized movies.  The former exhaustive gallery remains
+    # available for method development through --all-products.
+    if not getattr(args, "all_products", False):
+        print("[compact] 핵심 PNG 4장과 목적별 dynamics 영상 2개 생성")
+        compact_report.run(
+            data=data,
+            decomposition=decomposition,
+            outdir=output_root/"report",
+            n_states=n_states,
+            frame=-1,
+            support_floor=args.potential_support_floor,
+            dpi=args.dpi,
+            no_animation=args.no_animation,
+            fps=args.fps,
+            max_frames=max_frames,
+            animation_dpi=animation_dpi,
+            fmt=args.format,
+        )
+        print(f"핵심 분석 완료: {output_root/'report'}")
+        print("세부/개발용 전체 gallery가 필요하면 --all-products를 사용하세요.")
+        return
+
     common_animation = dict(
         dpi=args.dpi,
         animation_dpi=animation_dpi,
@@ -258,6 +282,10 @@ def parse_args(argv=None):
     parser.add_argument("--format", choices=("mp4", "gif"), default="mp4")
     parser.add_argument("--no-animation", action="store_true")
     parser.add_argument("--no-3d", action="store_true")
+    parser.add_argument(
+        "--all-products", action="store_true",
+        help="기본 핵심 report 외에 기존 세부 PNG/영상/3D gallery를 모두 생성",
+    )
     parser.add_argument(
         "--fast", action="store_true",
         help="모든 결과 종류는 유지하면서 animation frame/DPI와 3D 복잡도를 줄임",
