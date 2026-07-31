@@ -116,6 +116,37 @@ def regularized_ratio(numerator, denominator, relative_floor):
     return numerator*cp.conj(denominator)/(density+floor)
 
 
+def remove_local_norm_generator(
+    factor, action, spacing, axis, model, norm_floor=1.0e-14,
+):
+    """고정밀도 reduction으로 local anti-Hermitian norm generator를 제거."""
+    norm2 = cp.sum(
+        cp.real(factor*cp.conj(factor)), axis=axis,
+        dtype=model.reduction_real_dtype,
+    )*spacing
+    expectation = cp.sum(
+        cp.conj(factor)*action, axis=axis,
+        dtype=model.reduction_complex_dtype,
+    )*spacing
+    floor = cp.asarray(norm_floor, dtype=model.reduction_real_dtype)
+    gamma_reduction = expectation.imag/cp.maximum(norm2, floor)
+    gamma = gamma_reduction.astype(model.real_dtype, copy=False)
+    imaginary_unit = cp.asarray(1j, dtype=model.complex_dtype)
+    corrected = (
+        action-imaginary_unit*cp.expand_dims(gamma, axis=axis)*factor
+    ).astype(model.complex_dtype, copy=False)
+    corrected_expectation = cp.sum(
+        cp.conj(factor)*corrected, axis=axis,
+        dtype=model.reduction_complex_dtype,
+    )*spacing
+    return (
+        corrected,
+        gamma,
+        2.0*expectation.imag,
+        2.0*corrected_expectation.imag,
+    )
+
+
 def dst1_ortho(values, axis=0):
     """복소 배열의 orthonormal DST-I를 odd-extension FFT로 구현한다.
 
@@ -247,19 +278,34 @@ def instantaneous_functionals(phi, lam, chi, model, floor=1.0e-10):
     )/model.heavy_mass
     u_phi = u_q_phi+u_R_phi
 
+    u_phi, gamma_phi, raw_rate_phi, corrected_rate_phi = (
+        remove_local_norm_generator(
+            phi, u_phi, model.dx, axis=0, model=model
+        )
+    )
+
     hbo_phi = apply_electronic_hamiltonian(phi, model)
     epsilon_1 = _real_inner_sum(
         cp.conj(phi)*(hbo_phi+u_phi), axis=0, model=model
     )*model.dx
 
     base_lam = proton_base_operator(lam, chi, a, b, alpha, model, floor)
-    hpr_lam = base_lam+epsilon_1*lam
+    hpr_lam_raw = base_lam+epsilon_1*lam
+    hpr_lam, gamma_lam, raw_rate_lam, corrected_rate_lam = (
+        remove_local_norm_generator(
+            lam, hpr_lam_raw, model.dq, axis=0, model=model
+        )
+    )
     epsilon_2 = _real_inner_sum(
         cp.conj(lam)*hpr_lam, axis=0, model=model
     )*model.dq
     return dict(
         a=a, b=b, alpha=alpha, epsilon_1=epsilon_1, epsilon_2=epsilon_2,
         u_phi=u_phi, hpr_lam=hpr_lam,
+        gamma_phi=gamma_phi, gamma_lam=gamma_lam,
+        raw_rate_phi=raw_rate_phi, raw_rate_lam=raw_rate_lam,
+        corrected_rate_phi=corrected_rate_phi,
+        corrected_rate_lam=corrected_rate_lam,
     )
 
 
@@ -313,39 +359,72 @@ def coupled_rhs(phi, lam, chi, model, density_threshold):
     pchi = -1j*derivative(chi, model.dR, axis=0)+alpha*chi
     p2chi = -1j*derivative(pchi, model.dR, axis=0)+alpha*pchi
     dchi = -1j*(0.5*p2chi/model.heavy_mass+fields["epsilon_2"]*chi)
-    return dphi, dlam, dchi
+    return dphi, dlam, dchi, field_maxima(fields)
+
+
+DIAGNOSTIC_FIELDS = {
+    "max_abs_gamma_phi": "gamma_phi",
+    "max_abs_gamma_lam": "gamma_lam",
+    "max_raw_rate_phi": "raw_rate_phi",
+    "max_raw_rate_lam": "raw_rate_lam",
+    "max_corrected_rate_phi": "corrected_rate_phi",
+    "max_corrected_rate_lam": "corrected_rate_lam",
+}
+
+
+def field_maxima(fields):
+    """GPU 동기화 없이 현재 RHS field의 진단 최대 scalar를 만든다."""
+    return {
+        name: cp.max(cp.abs(fields[field_name]))
+        for name, field_name in DIAGNOSTIC_FIELDS.items()
+    }
+
+
+def merge_maxima(*diagnostics):
+    """GPU scalar 진단을 RK stage/step 전체에서 key별 최대값으로 합친다."""
+    merged = {}
+    for name in DIAGNOSTIC_FIELDS:
+        maximum = cp.asarray(0.0)
+        for values in diagnostics:
+            maximum = cp.maximum(maximum, values.get(name, 0.0))
+        merged[name] = maximum
+    return merged
 
 
 def rk4_coupled_step(phi, lam, chi, dt, model, density_threshold):
     """GPU에서 네 번의 RHS를 평가하는 고전 RK4 coupled substep."""
-    k1p, k1l, k1c = coupled_rhs(phi, lam, chi, model, density_threshold)
-    k2p, k2l, k2c = coupled_rhs(
+    k1p, k1l, k1c, d1 = coupled_rhs(phi, lam, chi, model, density_threshold)
+    k2p, k2l, k2c, d2 = coupled_rhs(
         phi+0.5*dt*k1p, lam+0.5*dt*k1l, chi+0.5*dt*k1c,
         model, density_threshold,
     )
-    k3p, k3l, k3c = coupled_rhs(
+    k3p, k3l, k3c, d3 = coupled_rhs(
         phi+0.5*dt*k2p, lam+0.5*dt*k2l, chi+0.5*dt*k2c,
         model, density_threshold,
     )
-    k4p, k4l, k4c = coupled_rhs(
+    k4p, k4l, k4c, d4 = coupled_rhs(
         phi+dt*k3p, lam+dt*k3l, chi+dt*k3c,
         model, density_threshold,
     )
     phi = phi+dt*(k1p+2*k2p+2*k3p+k4p)/6.0
     lam = lam+dt*(k1l+2*k2l+2*k3l+k4l)/6.0
     chi = chi+dt*(k1c+2*k2c+2*k3c+k4c)/6.0
-    return pnc_project(phi, lam, chi, model)
+    phi, lam, chi, pnc_error = pnc_project(phi, lam, chi, model)
+    diagnostics = merge_maxima(d1, d2, d3, d4)
+    return phi, lam, chi, pnc_error, diagnostics
 
 
 def full_step(phi, lam, chi, dt, model, density_threshold):
     """``H_BO 반 -> coupled RK4 -> H_BO 반`` 한 time step."""
     phi = electronic_split_step(phi, 0.5*dt, model)
-    phi, lam, chi, first_error = rk4_coupled_step(
+    phi, lam, chi, first_error, diagnostics = rk4_coupled_step(
         phi, lam, chi, dt, model, density_threshold
     )
     phi = electronic_split_step(phi, 0.5*dt, model)
     phi, lam, chi, final_error = pnc_project(phi, lam, chi, model)
-    return phi, lam, chi, cp.maximum(first_error, final_error)
+    return (
+        phi, lam, chi, cp.maximum(first_error, final_error), diagnostics
+    )
 
 
 def all_finite(phi, lam, chi):

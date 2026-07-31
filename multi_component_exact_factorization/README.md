@@ -84,7 +84,23 @@ nt = 저장 frame 수
 | `epsilon_gd_2` | `(nt,nR)` | composite 두 번째 time connection 진단 |
 | `pnc_error` | `(nt,)` | 저장된 factor의 실제 PNC 잔차 |
 | `pnc_projection_correction` | `(nt,)` | RK substep 뒤 PNC 투영 전 최대 이탈 |
+| `max_abs_gamma_phi`, `max_abs_gamma_lam` | `(nt,)` | 이전 저장 이후 모든 RK4 stage의 local-norm correction 최대값 |
+| `max_raw_rate_phi`, `max_raw_rate_lam` | `(nt,)` | 보정 전 local norm 생성률의 구간 최대값 |
+| `max_corrected_rate_phi`, `max_corrected_rate_lam` | `(nt,)` | 보정 후 남은 local norm 생성률의 구간 최대값 |
 | `psi` | `(nt,nx,nq,nR)` | 선택 저장하는 full wavefunction |
+
+유한차분과 node regularization이 coupled action에 남기는 수치적
+anti-Hermitian 성분은 매 RK4 stage에서
+
+```text
+gamma = Im <f|A_f> / <f|f>,   A_f <- A_f - i gamma f
+```
+
+로 제거한다. RK4 중간 factor는 PNC가 정확히 1이 아닐 수 있으므로 현재 local
+norm으로 나눈다. 이 보정은 전체 `Psi`를 매 step 강제 정규화하는 처리가
+아니며, continuum 식에서 0이어야 하는 local norm 생성 방향만 제거한다.
+위 진단 배열과 `pnc_projection_correction`은 저장 frame 한 점의 값이 아니라
+이전 저장 이후 네 RK stage와 모든 step에서 관측한 최대값이다.
 
 ## 기본 초기상태
 

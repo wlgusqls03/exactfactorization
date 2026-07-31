@@ -368,6 +368,32 @@ def regularized_ratio(numerator, denominator, relative_floor):
     return numerator*np.conj(denominator)/(density+floor)
 
 
+def remove_local_norm_generator(
+    factor, action, spacing, axis=0, norm_floor=1.0e-14,
+):
+    """Remove the local anti-Hermitian component parallel to ``factor``.
+
+    RK4 intermediate factors do not satisfy the PNC exactly, so the imaginary
+    expectation value is divided by the current local norm rather than
+    assuming it equals one. The returned raw/corrected rates are
+    ``2 Im <factor|action>`` before and after correction.
+    """
+    norm2 = np.sum(np.abs(factor)**2, axis=axis)*spacing
+    expectation = np.sum(np.conj(factor)*action, axis=axis)*spacing
+    safe_norm2 = np.maximum(norm2, norm_floor)
+    gamma = expectation.imag/safe_norm2
+    corrected = action-1j*np.expand_dims(gamma, axis=axis)*factor
+    corrected_expectation = (
+        np.sum(np.conj(factor)*corrected, axis=axis)*spacing
+    )
+    return (
+        corrected,
+        gamma,
+        2.0*expectation.imag,
+        2.0*corrected_expectation.imag,
+    )
+
+
 def electronic_kinetic_energies(model: Model):
     """Dirichlet 중앙차분 전자 kinetic의 DST-I 고유값 ``(nx,)``.
 
@@ -524,6 +550,12 @@ def instantaneous_functionals(phi, lam, chi, model: Model, floor=1.0e-10):
     )/model.heavy_mass
     u_phi = u_q_phi+u_R_phi                                         # (nx,nq,nR)
 
+    # 유한차분/regularized ratio가 남긴 local anti-Hermitian residual을
+    # 제거한다. RK4 중간 stage에서는 PNC가 1이 아니므로 현재 norm으로 나눈다.
+    u_phi, gamma_phi, raw_rate_phi, corrected_rate_phi = (
+        remove_local_norm_generator(phi, u_phi, model.dx, axis=0)
+    )
+
     hbo_phi = apply_electronic_hamiltonian(phi, model)
     epsilon_1 = (
         np.sum(np.conj(phi)*(hbo_phi+u_phi), axis=0)*model.dx
@@ -533,7 +565,12 @@ def instantaneous_functionals(phi, lam, chi, model: Model, floor=1.0e-10):
     base_lam = proton_base_operator(
         lam, chi, a, b, alpha, model, floor
     )                                                               # (nq,nR)
-    hpr_lam = base_lam+epsilon_1*lam
+    hpr_lam_raw = base_lam+epsilon_1*lam
+    hpr_lam, gamma_lam, raw_rate_lam, corrected_rate_lam = (
+        remove_local_norm_generator(lam, hpr_lam_raw, model.dq, axis=0)
+    )
+    # base_lam과 hpr_lam=base_lam+epsilon_1*lam의 의미를 일치시킨다.
+    base_lam = hpr_lam-epsilon_1*lam
     epsilon_2 = (
         np.sum(np.conj(lam)*hpr_lam, axis=0)*model.dq
     ).real                                                          # (nR,)
@@ -542,6 +579,10 @@ def instantaneous_functionals(phi, lam, chi, model: Model, floor=1.0e-10):
         a=a, b=b, alpha=alpha, epsilon_1=epsilon_1,
         epsilon_2=epsilon_2, u_phi=u_phi, base_lam=base_lam,
         hbo_phi=hbo_phi, hpr_lam=hpr_lam,
+        gamma_phi=gamma_phi, gamma_lam=gamma_lam,
+        raw_rate_phi=raw_rate_phi, raw_rate_lam=raw_rate_lam,
+        corrected_rate_phi=corrected_rate_phi,
+        corrected_rate_lam=corrected_rate_lam,
     )
 
 

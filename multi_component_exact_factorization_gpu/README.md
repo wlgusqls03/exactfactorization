@@ -81,6 +81,12 @@ CUDA_VISIBLE_DEVICES=0 python -m \
 | `single` | complex64 | FP32 |
 | `mixed` | complex64 | FP64로 합한 뒤 propagation field는 FP32 |
 
+세 precision 모두 CPU와 같은 local-norm constraint correction을 RK4의 네
+stage마다 적용한다. `mixed`에서는 norm과 expectation을 FP64/complex128로
+합산한 뒤 correction field에 곱하는 `gamma`만 float32로 되돌린다. 결과
+archive의 `max_abs_gamma_*`, `max_raw_rate_*`, `max_corrected_rate_*`와
+`pnc_projection_correction`은 각 저장 간격 전체의 최댓값이다.
+
 기본값은 `mixed`다. 처음부터 single 결과를 신뢰하지 말고 CPU double 또는 GPU
 double과 비교한다.
 

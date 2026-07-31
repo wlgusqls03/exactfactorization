@@ -24,11 +24,14 @@ from multi_component_exact_factorization.core import (
 from multi_component_exact_factorization.propagate import output_gauge
 
 from .gpu_core import (
+    DIAGNOSTIC_FIELDS,
     all_finite,
     cp,
+    field_maxima,
     full_step,
     instantaneous_functionals,
     make_gpu_model,
+    merge_maxima,
     pnc_error,
     to_gpu_factors,
 )
@@ -100,9 +103,12 @@ def run(args):
     norm = np.empty(nt)
     pnc = np.empty(nt)
     projection_correction = np.empty(nt)
+    diagnostic_history = {
+        name: np.empty(nt) for name in DIAGNOSTIC_FIELDS
+    }
     psis = []
 
-    def save_frame(frame, step, correction=0.0):
+    def save_frame(frame, step, correction=0.0, interval_diagnostics=None):
         """저장 시점에만 GPU factor/field를 CPU로 내려 동일 NPZ 형식으로 기록."""
         fields_gpu = instantaneous_functionals(
             phi, lam, chi, gpu_model, floor=args.density_threshold
@@ -135,20 +141,32 @@ def run(args):
         projection_correction[frame] = float(
             correction.get() if hasattr(correction, "get") else correction
         )
+        saved_diagnostics = merge_maxima(
+            field_maxima(fields_gpu), interval_diagnostics or {}
+        )
+        for name, values in diagnostic_history.items():
+            values[frame] = float(saved_diagnostics[name].get())
         if args.save_psi:
             psis.append(psi.copy())
 
     save_frame(0, 0)
     frame = 1
-    last_correction = cp.asarray(0.0)
+    interval_correction = cp.asarray(0.0)
+    interval_diagnostics = merge_maxima()
     start = cp.cuda.Event()
     stop = cp.cuda.Event()
     wall_start = time.perf_counter()
     start.record()
 
     for step in range(1, n_steps+1):
-        phi, lam, chi, last_correction = full_step(
+        phi, lam, chi, step_correction, step_diagnostics = full_step(
             phi, lam, chi, args.dt_au, gpu_model, args.density_threshold
+        )
+        interval_correction = cp.maximum(
+            interval_correction, step_correction
+        )
+        interval_diagnostics = merge_maxima(
+            interval_diagnostics, step_diagnostics
         )
         must_save = frame < nt and step == save_steps[frame]
         must_check = (
@@ -160,8 +178,12 @@ def run(args):
                 "dt를 줄이거나 density-threshold를 키우세요."
             )
         if must_save:
-            save_frame(frame, step, last_correction)
+            save_frame(
+                frame, step, interval_correction, interval_diagnostics
+            )
             frame += 1
+            interval_correction = cp.asarray(0.0)
+            interval_diagnostics = merge_maxima()
         if step % max(1, args.progress_every) == 0 or step == n_steps:
             print(
                 f"step {step:7d}/{n_steps}  "
@@ -212,6 +234,9 @@ def run(args):
         representation=np.array(
             "nested_realspace_independent_harmonic_hardwall_electron"
         ),
+        local_norm_correction=np.array(
+            "remove_antihermitian_parallel_component_with_current_local_norm"
+        ),
         backend=np.array("cupy_single_gpu"),
         precision=np.array(args.precision),
         cuda_device=np.array(args.device),
@@ -225,6 +250,7 @@ def run(args):
         epsilon_gd_1=epsilon_gd_1, epsilon_gd_2=epsilon_gd_2,
         norm=norm, pnc_error=pnc,
         pnc_projection_correction=projection_correction,
+        **diagnostic_history,
         gpu_seconds=np.array(gpu_seconds), wall_seconds=np.array(wall_seconds),
         args=np.array([vars(args)], dtype=object),
     )
@@ -243,6 +269,8 @@ def run(args):
     print(f"최대 norm 오차: {np.max(np.abs(norm-1.0)):.3e}")
     print(f"최대 저장 PNC 오차:       {np.max(pnc):.3e}")
     print(f"최대 PNC projection 보정: {np.max(projection_correction):.3e}")
+    for name, values in diagnostic_history.items():
+        print(f"{name}: {np.max(values):.3e}")
     return path
 
 

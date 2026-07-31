@@ -36,6 +36,32 @@ from .core import (
 )
 
 
+DIAGNOSTIC_FIELDS = {
+    "max_abs_gamma_phi": "gamma_phi",
+    "max_abs_gamma_lam": "gamma_lam",
+    "max_raw_rate_phi": "raw_rate_phi",
+    "max_raw_rate_lam": "raw_rate_lam",
+    "max_corrected_rate_phi": "corrected_rate_phi",
+    "max_corrected_rate_lam": "corrected_rate_lam",
+}
+
+
+def field_maxima(fields):
+    """현재 RHS 평가의 local-norm correction 진단 최댓값."""
+    return {
+        name: float(np.max(np.abs(fields[field_name])))
+        for name, field_name in DIAGNOSTIC_FIELDS.items()
+    }
+
+
+def merge_maxima(*diagnostics):
+    """여러 RK stage/step의 진단값을 key별 최댓값으로 합친다."""
+    return {
+        name: max((values.get(name, 0.0) for values in diagnostics), default=0.0)
+        for name in DIAGNOSTIC_FIELDS
+    }
+
+
 def coupled_rhs(phi, lam, chi, model, args):
     """H_BO를 제외한 전자 RHS와 양성자/무거운 핵 RHS를 동시에 계산."""
     fields = instantaneous_functionals(
@@ -59,37 +85,39 @@ def coupled_rhs(phi, lam, chi, model, args):
     dchi = -1j*(
         0.5*p2chi/model.heavy_mass+fields["epsilon_2"]*chi
     )                                                               # (nR,)
-    return dphi, dlam, dchi, fields
+    return dphi, dlam, dchi, field_maxima(fields)
 
 
 def rk4_coupled_step(phi, lam, chi, dt, model, args):
     """세 factor의 coupled subflow를 고전적인 RK4로 한 스텝 전파."""
-    k1p, k1l, k1c, _ = coupled_rhs(phi, lam, chi, model, args)
-    k2p, k2l, k2c, _ = coupled_rhs(
+    k1p, k1l, k1c, d1 = coupled_rhs(phi, lam, chi, model, args)
+    k2p, k2l, k2c, d2 = coupled_rhs(
         phi+0.5*dt*k1p, lam+0.5*dt*k1l, chi+0.5*dt*k1c, model, args
     )
-    k3p, k3l, k3c, _ = coupled_rhs(
+    k3p, k3l, k3c, d3 = coupled_rhs(
         phi+0.5*dt*k2p, lam+0.5*dt*k2l, chi+0.5*dt*k2c, model, args
     )
-    k4p, k4l, k4c, _ = coupled_rhs(
+    k4p, k4l, k4c, d4 = coupled_rhs(
         phi+dt*k3p, lam+dt*k3l, chi+dt*k3c, model, args
     )
     phi = phi+dt*(k1p+2*k2p+2*k3p+k4p)/6.0
     lam = lam+dt*(k1l+2*k2l+2*k3l+k4l)/6.0
     chi = chi+dt*(k1c+2*k2c+2*k3c+k4c)/6.0
-    return pnc_project(phi, lam, chi, model)
+    phi, lam, chi, pnc_error = pnc_project(phi, lam, chi, model)
+    diagnostics = merge_maxima(d1, d2, d3, d4)
+    return phi, lam, chi, pnc_error, diagnostics
 
 
 def full_step(phi, lam, chi, dt, model, args):
     """``H_BO 반 -> coupled full -> H_BO 반`` 대칭 한 time step."""
     phi = electronic_split_step(phi, 0.5*dt, model)
-    phi, lam, chi, pnc_error = rk4_coupled_step(
+    phi, lam, chi, pnc_error, diagnostics = rk4_coupled_step(
         phi, lam, chi, dt, model, args
     )
     phi = electronic_split_step(phi, 0.5*dt, model)
     # Split-transform roundoff까지 제거하되 세 factor의 곱 Psi는 보존한다.
     phi, lam, chi, final_error = pnc_project(phi, lam, chi, model)
-    return phi, lam, chi, max(pnc_error, final_error)
+    return phi, lam, chi, max(pnc_error, final_error), diagnostics
 
 
 def output_gauge(phi, lam, chi, fields, time_au, model, args):
@@ -195,9 +223,12 @@ def run(args):
     norm = np.empty(nt)
     pnc = np.empty(nt)                                               # 저장 factor의 실제 PNC 잔차
     projection_correction = np.empty(nt)                             # substep 투영 전 최대 이탈
+    diagnostic_history = {
+        name: np.empty(nt) for name in DIAGNOSTIC_FIELDS
+    }
     psis = []                                                       # 선택 저장 (nt,nx,nq,nR)
 
-    def save_frame(frame, step, step_projection_correction=0.0):
+    def save_frame(frame, step, interval_projection=0.0, interval_diagnostics=None):
         """현재 base-gauge factor를 선택 gauge로 바꾸어 한 frame 저장."""
         # 1) 현재 factor로부터 base-gauge의 모든 EF potential을 계산한다.
         fields = instantaneous_functionals(
@@ -231,16 +262,26 @@ def run(args):
             np.abs(np.sum(np.abs(lam)**2, axis=0)*model.dq-1.0)
         )
         pnc[frame] = max(float(phi_err), float(lam_err))
-        projection_correction[frame] = step_projection_correction
+        projection_correction[frame] = interval_projection
+        saved_diagnostics = merge_maxima(
+            field_maxima(fields), interval_diagnostics or {}
+        )
+        for name, values in diagnostic_history.items():
+            values[frame] = saved_diagnostics[name]
         if args.save_psi:
             psis.append(psi.copy())
 
     save_frame(0, 0)
     frame = 1
-    last_pnc = 0.0
+    interval_projection = 0.0
+    interval_diagnostics = merge_maxima()
     for step in range(1, n_steps+1):
-        phi, lam, chi, last_pnc = full_step(
+        phi, lam, chi, step_projection, step_diagnostics = full_step(
             phi, lam, chi, args.dt_au, model, args
+        )
+        interval_projection = max(interval_projection, step_projection)
+        interval_diagnostics = merge_maxima(
+            interval_diagnostics, step_diagnostics
         )
         if not (
             np.all(np.isfinite(phi))
@@ -252,8 +293,12 @@ def run(args):
                 "dt를 줄이거나 density-threshold를 키우세요."
             )
         if frame < nt and step == save_steps[frame]:
-            save_frame(frame, step, last_pnc)
+            save_frame(
+                frame, step, interval_projection, interval_diagnostics
+            )
             frame += 1
+            interval_projection = 0.0
+            interval_diagnostics = merge_maxima()
         if step % max(1, args.progress_every) == 0 or step == n_steps:
             print(
                 f"step {step:6d}/{n_steps}  "
@@ -300,6 +345,9 @@ def run(args):
         representation=np.array(
             "nested_realspace_independent_harmonic_hardwall_electron"
         ),
+        local_norm_correction=np.array(
+            "remove_antihermitian_parallel_component_with_current_local_norm"
+        ),
         gauge=np.array(gauge_name),
         base_gauge=np.array("parallel_transport_two_level"),
         x=model.x, q=model.q, R=model.R, times_fs=times_fs,
@@ -310,6 +358,7 @@ def run(args):
         epsilon_gd_1=epsilon_gd_1, epsilon_gd_2=epsilon_gd_2,
         norm=norm, pnc_error=pnc,
         pnc_projection_correction=projection_correction,
+        **diagnostic_history,
         args=np.array([vars(args)], dtype=object),
     )
     if args.save_psi:
@@ -320,6 +369,8 @@ def run(args):
     print(f"최대 norm 오차: {np.max(np.abs(norm-1.0)):.3e}")
     print(f"최대 저장 PNC 오차:       {np.max(pnc):.3e}")
     print(f"최대 PNC projection 보정: {np.max(projection_correction):.3e}")
+    for name, values in diagnostic_history.items():
+        print(f"{name}: {np.max(values):.3e}")
     return path
 
 
