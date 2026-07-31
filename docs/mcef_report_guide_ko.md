@@ -25,9 +25,10 @@
 - A의 가로축은 시간, 세로축은 BO population이다. `P_n`은 local BO 상태
   `n`으로 투영한 전역 확률이다. `outside basis`가 작아야 사용한 BO basis가
   충분하다.
-- B는 양성자 평균 이동, 양성자 폭 변화, 초기 대비 전자 rearranged density를
-  같은 시간축에서 비교한다. 전자 population 변화와 핵 운동이 같은 시점에
-  시작하는지 보는 패널이다.
+- B는 양성자 평균 이동과 폭 변화를 왼쪽 y축(`a0`), 초기 대비 전자
+  rearranged density를 오른쪽 y축(무차원)으로 같은 시간축에서 비교한다.
+  서로의 숫자 크기가 아니라 전자 population 변화와 핵 운동이 같은 시점에
+  시작하는지를 보는 패널이다.
 - C와 D의 가로축은 `R`, 세로축은 `q`다. 색은 각각 BO gap `E1-E0`, `E2-E1`이고
   노란 등고선은 q 방향 derivative coupling `|d^q_01|`, `|d^q_12|`다.
 - 흰 외곽선 안쪽만 실제 nuclear packet이 점유한 영역이다. 흰 영역 밖의

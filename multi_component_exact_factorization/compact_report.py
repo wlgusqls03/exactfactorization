@@ -227,13 +227,33 @@ def plot_electronic_transitions(
     ax.legend(frameon=False, ncol=4, fontsize=8)
 
     ax = axes[0, 1]
-    ax.plot(times, means[1]-means[1][0], lw=2, color=COLORS[0], label=r"$\Delta\langle q\rangle$ ($a_0$)")
-    ax.plot(times, widths[1]-widths[1][0], lw=2, color=COLORS[1], label=r"$\Delta\sigma_q$ ($a_0$)")
-    ax.plot(times, rearranged, lw=2, color=COLORS[2], label=r"electron $D_{\rm rearr}$")
+    mean_line, = ax.plot(
+        times, means[1]-means[1][0], lw=2, color=COLORS[0],
+        label=r"$\Delta\langle q\rangle$",
+    )
+    width_line, = ax.plot(
+        times, widths[1]-widths[1][0], lw=2, color=COLORS[1],
+        label=r"$\Delta\sigma_q$",
+    )
     ax.axhline(0.0, color="0.6", lw=0.8)
     _mark_stress(ax, onset)
-    _style_time_axis(ax, "Motion that accompanies the state mixing", "change")
-    ax.legend(frameon=False, fontsize=8)
+    _style_time_axis(
+        ax, "Motion that accompanies the state mixing",
+        r"proton position change ($a_0$)",
+    )
+    rearrange_axis = ax.twinx()
+    rearrange_line, = rearrange_axis.plot(
+        times, rearranged, lw=2, color=COLORS[2],
+        label=r"electron $D_{\rm rearr}$",
+    )
+    rearrange_axis.set_ylabel(
+        r"electron rearrangement (dimensionless)", color=COLORS[2]
+    )
+    rearrange_axis.tick_params(axis="y", labelcolor=COLORS[2])
+    ax.legend(
+        handles=[mean_line, width_line, rearrange_line],
+        frameon=False, fontsize=8, loc="upper left",
+    )
 
     for ax, lower, upper in ((axes[1, 0], 0, 1), (axes[1, 1], 1, 2)):
         pair = f"{lower}{upper}"
