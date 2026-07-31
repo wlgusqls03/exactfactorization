@@ -13,6 +13,7 @@ import shutil
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as path_effects
 from matplotlib.animation import FFMpegWriter, FuncAnimation, PillowWriter
 from matplotlib.colors import SymLogNorm
 import numpy as np
@@ -24,6 +25,7 @@ from .potential_analysis import gauge_invariant_diagnostics, nonadiabatic_coupli
 from .visualize import (
     NUMBER_FORMATTER,
     archive_arguments,
+    common_position_limits,
     robust_limits,
     selected_frames,
 )
@@ -100,15 +102,42 @@ def plot_particle_motion(data, densities, means, widths, outdir, dpi):
     grids = (data["x"], data["q"], data["R"])
     names = ("Electron", "Proton", "Heavy nucleus")
     symbols = ("x", "q", "R")
+    options = archive_arguments(data)
+    common_min, common_max = common_position_limits(data)
+    box_limits = (
+        (float(options.get("x_min", grids[0][0])), float(options.get("x_max", grids[0][-1]))),
+        (float(options.get("q_min", grids[1][0])), float(options.get("q_max", grids[1][-1]))),
+        (float(options.get("R_min", grids[2][0])), float(options.get("R_max", grids[2][-1]))),
+    )
     fig, axes = plt.subplots(2, 2, figsize=(12.8, 8.5), constrained_layout=True)
     onset = _stress_onset(data)
-    for ax, grid, density, name, symbol in zip(
-        axes.flat[:3], grids, densities, names, symbols
-    ):
+    for index, (ax, grid, density, name, symbol, limits) in enumerate(zip(
+        axes.flat[:3], grids, densities, names, symbols, box_limits
+    )):
+        ax.set_facecolor("#E8ECEF")
         image = ax.pcolormesh(
             times, grid, density.T, shading="nearest", cmap="magma",
             rasterized=True,
         )
+        ax.set_ylim(common_min, common_max)
+        if index > 0:
+            # A white line alone disappears on the uncomputed grey area.  The
+            # dark outline keeps the exact periodic-box boundary visible on
+            # both the density map and the outside background.
+            for boundary in limits:
+                line = ax.axhline(
+                    boundary, color="white", lw=1.35, ls="--", zorder=5,
+                )
+                line.set_path_effects([
+                    path_effects.Stroke(linewidth=2.5, foreground="0.25"),
+                    path_effects.Normal(),
+                ])
+            ax.text(
+                0.985, 0.025,
+                f"dashed: {symbol}-grid [{limits[0]:.2f}, {limits[1]:.2f}]",
+                transform=ax.transAxes, ha="right", va="bottom", fontsize=7.5,
+                color="0.2", bbox=dict(fc="white", ec="none", alpha=0.78, pad=2),
+            )
         ax.plot(times, means[symbols.index(symbol)], color="white", lw=1.4)
         ax.set_title(f"{name} probability", loc="left", fontweight="semibold")
         ax.set_xlabel("time (fs)")
