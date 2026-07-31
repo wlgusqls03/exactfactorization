@@ -17,7 +17,13 @@ import numpy as np
 
 from result_paths import dated_results_dir
 
-from . import dynamics_analysis, excited_state_analysis, visualize, visualize_3d
+from . import (
+    dynamics_analysis,
+    excited_state_analysis,
+    potential_analysis,
+    visualize,
+    visualize_3d,
+)
 
 
 ARCHIVE_NAMES = (
@@ -117,7 +123,7 @@ def run(args):
     resolved = resolve_run_input(args.run)
     archive, run_dir = find_archive(resolved)
     excitation, state_label = archive_state(archive)
-    n_states = args.n_states or max(3, excitation+2)
+    n_states = args.n_states or max(6, excitation+2)
     output_root = dated_results_dir(run_dir)
 
     snapshots = args.snapshots
@@ -166,17 +172,19 @@ def run(args):
         low_memory=args.low_memory,
     )
 
-    print("[1/4] 기본 factor/density/potential 그림 생성")
+    print("[1/5] 기본 factor/density/potential 그림 생성")
     visualize.run(Namespace(
         archive=str(archive),
         outdir=str(output_root/"figures"),
         snapshots=snapshots,
         profile_frame=-1,
         animation_style="all",
+        potential_support_floor=getattr(args, "potential_support_floor", 1.0e-3),
+        show_potential_tails=getattr(args, "show_potential_tails", False),
         **common_animation,
     ), data=data)
 
-    print("[2/4] 실제 marginal 및 nonadiabatic dynamics 분석")
+    print("[2/5] 실제 marginal 및 nonadiabatic dynamics 분석")
     dynamics_analysis.run(Namespace(
         archive=str(archive),
         outdir=str(output_root/"dynamics_analysis"),
@@ -188,7 +196,7 @@ def run(args):
         low_memory=args.low_memory,
     ), data=data, decomposition=decomposition)
 
-    print("[3/4] local electronic-state population 분석")
+    print("[3/5] local electronic-state population 분석")
     excited_state_analysis.run(Namespace(
         archive=str(archive),
         outdir=str(output_root/"excited_state_analysis"),
@@ -196,10 +204,24 @@ def run(args):
         **common_animation,
     ), data=data, decomposition=decomposition)
 
-    if args.no_3d:
-        print("[4/4] 3D HTML 생략 (--no-3d)")
+    if getattr(args, "no_potential_analysis", True):
+        print("[4/5] support/NAC/gauge-invariant potential 분석 생략")
     else:
-        print("[4/4] interactive 3D configuration-density HTML 생성")
+        print("[4/5] support/NAC/gauge-invariant potential 분석")
+        potential_analysis.run(Namespace(
+            archive=str(archive),
+            outdir=str(output_root/"potential_analysis"),
+            frame=-1,
+            support_floor=args.potential_support_floor,
+            nac_states=3,
+            dpi=args.dpi,
+            low_memory=args.low_memory,
+        ), data=data)
+
+    if args.no_3d:
+        print("[5/5] 3D HTML 생략 (--no-3d)")
+    else:
+        print("[5/5] interactive 3D configuration-density HTML 생성")
         visualize_3d.run(Namespace(
             archive=str(archive),
             outdir=str(output_root/"visualization_3d"),
@@ -226,7 +248,7 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--n-states", type=int, default=0,
-        help="0이면 초기 excitation에서 분석 상태 수를 자동 선택",
+        help="0이면 최소 6개 상태를 자동 선택",
     )
     parser.add_argument("--snapshots", type=int, default=5)
     parser.add_argument("--dpi", type=int, default=180)
@@ -247,6 +269,9 @@ def parse_args(argv=None):
     parser.add_argument("--max-axis-points", type=int, default=24)
     parser.add_argument("--max-3d-frames", type=int, default=80)
     parser.add_argument("--surface-count", type=int, default=7)
+    parser.add_argument("--potential-support-floor", type=float, default=1.0e-3)
+    parser.add_argument("--show-potential-tails", action="store_true")
+    parser.add_argument("--no-potential-analysis", action="store_true")
     return parser.parse_args(argv)
 
 

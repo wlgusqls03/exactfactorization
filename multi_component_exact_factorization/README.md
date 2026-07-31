@@ -269,11 +269,12 @@ python -m multi_component_exact_factorization.render_all \
 
 날짜가 포함된 전체 폴더나 NPZ를 직접 입력해도 된다. 폴더 이름만 입력하면
 ``results/YYYYMMDD`` 아래에서 같은 이름의 가장 최근 계산을 자동 선택한다.
-Archive metadata의 ``electron_excitation``을 읽어 ground/excited 상태와 분석할
-BO 상태 수를 자동으로 결정한다. 영상 없이 정적 분석만 빠르게 만들려면
+Archive metadata의 ``electron_excitation``을 읽어 ground/excited 상태를
+판별하고, residual 검사를 위해 기본적으로 낮은 BO 상태 6개를 분석한다.
+영상 없이 정적 분석만 빠르게 만들려면
 ``--no-animation --no-3d``를 덧붙인다.
 
-압축 NPZ의 큰 field는 기본적으로 한 번만 RAM에 풀어 네 분석에서 공유한다.
+압축 NPZ의 큰 field는 기본적으로 한 번만 RAM에 풀어 통합 분석에서 공유한다.
 모든 영상 종류를 유지하면서 frame 수와 해상도만 줄이는 빠른 preview는
 다음처럼 만든다.
 
@@ -313,6 +314,10 @@ factor_wavefunction_profiles.png    peak configuration의 Re/Im/density
 multi_component_wavefunction_dynamics.mp4  Re/Im/density 6분할 영상
 multi_component_density_dynamics.mp4       논문식 colormap 6분할 영상
 multi_component_gauge_potential_dynamics.mp4  gauge/TDPES/vector dynamics
+coupled_dynamics_correlation.png       population/좌표 변화와 수치진단 비교
+potential_analysis/bo_gap_and_nac_maps.png  E1-E0, E2-E1, q/R NAC
+potential_analysis/gauge_invariant_potential_diagnostics.png  current/exact force
+potential_analysis/potential_diagnostics.npz  위 진단의 수치 배열
 *.gif                                      ffmpeg이 없을 때 자동 대체
 ```
 
@@ -353,19 +358,32 @@ Full wavefunction panel은
 `1e-3` order 이하처럼 두 자리 고정소수점에서 `0.00`으로 뭉개지는 값은
 `1.00e-03` 형식으로 표시한다.
 
-`epsilon_1` 그림은 이제 계산된 `(q,R)` 격자 전체를 표시한다. Low-density
-tail의 값도 흰색으로 자르지 않지만, 이 영역은 `1/Lambda`, `1/chi`가 들어간
-logarithmic derivative를 regularization하여 얻은 값이므로 점유된 영역보다
-물리적 해석의 신뢰도가 낮다. 제목의 `regularized tails`가 이를 표시한다.
+Density 영상의 `epsilon_1`은 계산된 `(q,R)` 격자 전체를 표시한다. 이 그림의
+tail은 `1/Lambda`, `1/chi`가 들어간 logarithmic derivative를 regularization한
+값이므로 점유된 영역보다 물리적 해석의 신뢰도가 낮다.
 
 복소 3D wavefunction 자체는 2D 화면에 직접 표시할 수 없기 때문에, 논문의
 conditional-density 방식처럼 물리적으로 해석 가능한 reduced density를 쓴다.
 
 세 번째 분석 영상은 raw `epsilon_1`, raw `epsilon_2`, `a`, `b`, `alpha`,
-`theta_1`, `theta_2`를 같은 frame에서 보여준다. `|Lambda chi|^2` panel을
-함께 두어 potential의 어느 영역이 실제 wavepacket support인지 판단할 수
-있다. 기존 wavefunction 영상의 TDPES는 매 frame의 peak에서 0으로 shift한
-모양 비교용인 반면, 이 영상은 선택한 gauge의 시간 offset까지 유지한다.
+`theta_1`, `theta_2`를 같은 frame에서 보여준다. Scalar 값은 shift하지 않지만
+기본적으로 frame별 `|Lambda chi|^2 >= 1e-3 peak` support 밖을 가린다. cutoff는
+`--potential-support-floor`로 바꾸며, 수치 tail까지 확인할 때만
+`--show-potential-tails`를 사용한다. 별도 potential 분석은 gauge-invariant
+current와 `-d_q epsilon_1+d_t a`, `-d_R epsilon_2+d_t alpha`, 인접 BO gap과
+Hellmann--Feynman derivative coupling을 저장한다.
+
+두 `dynamics_observables.npz`의 공통 저장 시간에서 density, 평균·폭, BO
+population 수렴을 비교하려면 다음 명령을 사용한다.
+
+```bash
+python -m multi_component_exact_factorization.compare_observables \
+  results/20260731/run_dt005 \
+  results/20260731/run_dt0025
+```
+
+서로 다른 grid의 density L1은 계산하지 않고 `grid shape 다름`으로 표시하지만,
+평균·폭과 population 차이는 계속 보고한다.
 
 ## Excited-state dynamics와 population 분석
 

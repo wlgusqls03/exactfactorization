@@ -268,6 +268,32 @@ def shifted_epsilon_1(data, frame, density_floor=1.0e-5, mask_tails=False):
     return eps
 
 
+def supported_potential_fields(data, frame, support_floor=1.0e-3, show_tails=False):
+    """Raw potential을 유지하되 probability가 없는 tail은 NaN으로 가린다."""
+    if not 0.0 < support_floor < 1.0:
+        raise ValueError("potential support floor는 0과 1 사이여야 합니다.")
+    support = (
+        np.abs(data["lambda_wavefunction"][frame])**2
+        *np.abs(data["chi"][frame])[None, :]**2
+    )
+    heavy = np.abs(data["chi"][frame])**2
+    fields = {
+        key: np.asarray(data[key][frame], float).copy()
+        for key in ("epsilon_1", "a", "b", "epsilon_2", "alpha")
+    }
+    if not show_tails:
+        joint_cutoff = support_floor*max(float(np.max(support)), 1.0e-300)
+        heavy_cutoff = support_floor*max(float(np.max(heavy)), 1.0e-300)
+        joint_mask = support >= joint_cutoff
+        heavy_mask = heavy >= heavy_cutoff
+        for key in ("epsilon_1", "a", "b"):
+            fields[key][~joint_mask] = np.nan
+        for key in ("epsilon_2", "alpha"):
+            fields[key][~heavy_mask] = np.nan
+    fields["support"] = support
+    return fields
+
+
 def selected_frames(nt, count):
     """처음과 끝을 포함해 균일한 snapshot index를 고른다."""
     count = min(max(1, count), nt)
@@ -723,7 +749,8 @@ def make_density_animation(
 
 
 def make_gauge_potential_animation(
-    data, outdir, fps=12, max_frames=180, dpi=130, fmt="mp4"
+    data, outdir, fps=12, max_frames=180, dpi=130, fmt="mp4",
+    support_floor=1.0e-3, show_tails=False,
 ):
     """두 TDPES, 세 vector potential, 두 gauge function의 시간 변화를 표시.
 
@@ -761,9 +788,13 @@ def make_gauge_potential_animation(
     # Scalar epsilon_1은 부호 비대칭 범위를, vector/gauge field는 0을 중심으로
     # 한 대칭 범위를 사용한다. 극단적인 tail spike의 지배를 줄이기 위해
     # robust_limits는 전체 유한값의 2--98 percentile을 사용한다.
-    eps1_values = [np.asarray(data["epsilon_1"][i], float) for i in frames]
-    a_values = [np.asarray(data["a"][i], float) for i in frames]
-    b_values = [np.asarray(data["b"][i], float) for i in frames]
+    displayed = [
+        supported_potential_fields(data, int(i), support_floor, show_tails)
+        for i in frames
+    ]
+    eps1_values = [item["epsilon_1"] for item in displayed]
+    a_values = [item["a"] for item in displayed]
+    b_values = [item["b"] for item in displayed]
     th1_values = [np.asarray(theta1[i], float) for i in frames]
     eps1_lim = robust_limits(eps1_values)
     a_lim = robust_limits(a_values, symmetric=True)
@@ -795,14 +826,12 @@ def make_gauge_potential_animation(
         return low-pad, high+pad
 
     # epsilon_2, alpha, theta_2는 모두 R만의 함수이므로 1D line으로 그린다.
-    eps2_lim = line_limits(data["epsilon_2"][frames])
-    alpha_lim = line_limits(data["alpha"][frames])
+    eps2_lim = line_limits([item["epsilon_2"] for item in displayed])
+    alpha_lim = line_limits([item["alpha"] for item in displayed])
     th2_lim = line_limits(theta2[frames])
     first = int(frames[0])
-    support = (
-        np.abs(data["lambda_wavefunction"][first])**2
-        *np.abs(data["chi"][first])[None, :]**2
-    )
+    first_fields = displayed[0]
+    support = first_fields["support"]
 
     # ------------------------------------------------------------------
     # 3. 첫 frame의 artist를 만든다. 이후 update()는 데이터만 교체한다.
@@ -810,15 +839,15 @@ def make_gauge_potential_animation(
     fig, axes = plt.subplots(2, 4, figsize=(18.0, 8.1), constrained_layout=True)
     extent = [R[0], R[-1], q[0], q[-1]]
     eps1_image = axes[0, 0].imshow(
-        data["epsilon_1"][first], origin="lower", aspect="auto",
+        first_fields["epsilon_1"], origin="lower", aspect="auto",
         extent=extent, cmap="coolwarm", vmin=eps1_lim[0], vmax=eps1_lim[1],
     )
     a_image = axes[0, 1].imshow(
-        data["a"][first], origin="lower", aspect="auto", extent=extent,
+        first_fields["a"], origin="lower", aspect="auto", extent=extent,
         cmap="coolwarm", vmin=a_lim[0], vmax=a_lim[1],
     )
     b_image = axes[0, 2].imshow(
-        data["b"][first], origin="lower", aspect="auto", extent=extent,
+        first_fields["b"], origin="lower", aspect="auto", extent=extent,
         cmap="coolwarm", vmin=b_lim[0], vmax=b_lim[1],
     )
     support_image = axes[0, 3].imshow(
@@ -833,8 +862,8 @@ def make_gauge_potential_animation(
     axes[0, 2].set_title(r"Vector potential $b(q,R,t)$")
     axes[0, 3].set_title(r"Occupied support $|\Lambda_R\chi|^2$")
 
-    eps2_line, = axes[1, 0].plot(R, data["epsilon_2"][first], lw=2)
-    alpha_line, = axes[1, 1].plot(R, data["alpha"][first], lw=2, color="#8C4F9E")
+    eps2_line, = axes[1, 0].plot(R, first_fields["epsilon_2"], lw=2)
+    alpha_line, = axes[1, 1].plot(R, first_fields["alpha"], lw=2, color="#8C4F9E")
     theta1_image = axes[1, 2].imshow(
         theta1[first], origin="lower", aspect="auto", extent=extent,
         cmap="twilight", vmin=th1_lim[0], vmax=th1_lim[1],
@@ -873,27 +902,27 @@ def make_gauge_potential_animation(
     gauge_name = str(data["gauge"].item()) if "gauge" in data.files else "unknown"
     title = fig.suptitle(
         f"Gauge and exact-potential dynamics   t={times[first]:.4f} fs\n"
-        f"gauge={gauge_name}; raw (unshifted) scalar potentials",
+        f"gauge={gauge_name}; raw values; "
+        +("tails shown" if show_tails else f"support >= {support_floor:g} peak"),
         fontsize=12,
     )
 
     def update(number):
         """선택된 저장 frame의 일곱 field와 support를 한꺼번에 갱신."""
         frame = int(frames[number])
-        eps1_image.set_data(data["epsilon_1"][frame])
-        a_image.set_data(data["a"][frame])
-        b_image.set_data(data["b"][frame])
-        support_image.set_data(
-            np.abs(data["lambda_wavefunction"][frame])**2
-            *np.abs(data["chi"][frame])[None, :]**2
-        )
-        eps2_line.set_ydata(data["epsilon_2"][frame])
-        alpha_line.set_ydata(data["alpha"][frame])
+        fields = displayed[number]
+        eps1_image.set_data(fields["epsilon_1"])
+        a_image.set_data(fields["a"])
+        b_image.set_data(fields["b"])
+        support_image.set_data(fields["support"])
+        eps2_line.set_ydata(fields["epsilon_2"])
+        alpha_line.set_ydata(fields["alpha"])
         theta1_image.set_data(theta1[frame])
         theta2_line.set_ydata(theta2[frame])
         title.set_text(
             f"Gauge and exact-potential dynamics   t={times[frame]:.4f} fs\n"
-            f"gauge={gauge_name}; raw (unshifted) scalar potentials"
+            f"gauge={gauge_name}; raw values; "
+            +("tails shown" if show_tails else f"support >= {support_floor:g} peak")
         )
         return (
             eps1_image, a_image, b_image, support_image,
@@ -938,6 +967,8 @@ def run(args, data=None):
             make_gauge_potential_animation(
                 data, outdir, fps=args.fps, max_frames=args.max_frames,
                 dpi=args.animation_dpi, fmt=args.format,
+                support_floor=getattr(args, "potential_support_floor", 1.0e-3),
+                show_tails=getattr(args, "show_potential_tails", False),
             )
 
 
@@ -959,6 +990,14 @@ def parse_args():
         help="all은 wavefunction/density/gauge-potential 영상 세 개를 만든다",
     )
     parser.add_argument("--no-animation", action="store_true")
+    parser.add_argument(
+        "--potential-support-floor", type=float, default=1.0e-3,
+        help="gauge-potential 영상에서 표시할 frame별 occupied-support 상대 cutoff",
+    )
+    parser.add_argument(
+        "--show-potential-tails", action="store_true",
+        help="gauge-potential 영상에서 probability가 없는 tail도 표시",
+    )
     parser.add_argument(
         "--low-memory", action="store_true",
         help="큰 배열을 RAM에 유지하지 않지만 compressed NPZ 반복 접근은 느려질 수 있음",

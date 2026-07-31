@@ -235,10 +235,9 @@ def run(args, data=None, decomposition=None):
     )
     options = archive_arguments(data)
 
-    # 기본값 0은 사용자가 초기화한 excited index보다 한 상태 위까지 포함한다.
-    # 영상은 state 0,1,2 세 장을 사용하므로 최소 3개를 보장한다.
+    # 영상은 첫 세 상태를 보여주지만 residual 판정은 최소 여섯 상태로 한다.
     initial_excitation = int(options.get("electron_excitation", 0))
-    n_states = args.n_states or max(3, initial_excitation+2)
+    n_states = args.n_states or max(6, initial_excitation+2)
     if decomposition is None:
         decomposition = calculate_state_decomposition(data, n_states)
     energies, resolved, populations, residual = decomposition
@@ -275,7 +274,7 @@ def parse_args():
     parser.add_argument("--outdir", default="")
     parser.add_argument(
         "--n-states", type=int, default=0,
-        help="0이면 max(3, initial excitation+2)를 자동 선택",
+        help="0이면 max(6, initial excitation+2)를 자동 선택",
     )
     parser.add_argument("--dpi", type=int, default=180)
     parser.add_argument("--animation-dpi", type=int, default=120)

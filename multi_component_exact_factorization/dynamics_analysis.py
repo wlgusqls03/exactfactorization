@@ -269,6 +269,87 @@ def save_nonadiabatic_figure(data, joint, energies, resolved, populations, frame
     print(f"nonadiabatic 요약 저장: {path}")
 
 
+def support_weighted_rms(field, weight):
+    """각 frame에서 probability-weighted RMS를 계산한다."""
+    axes = tuple(range(1, field.ndim))
+    denominator = np.sum(weight, axis=axes)
+    numerator = np.sum(weight*np.abs(field)**2, axis=axes)
+    return np.sqrt(numerator/np.maximum(denominator, 1.0e-300))
+
+
+def save_correlation_figure(
+    data, means, widths, rearranged, populations, residual, joint, outdir, dpi,
+):
+    """물리 변화와 constraint correction의 시작 시점을 함께 그린다."""
+    times = data["times_fs"]
+    heavy = np.abs(data["chi"])**2
+    rms_a = support_weighted_rms(data["a"], joint)
+    rms_b = support_weighted_rms(data["b"], joint)
+    rms_alpha = support_weighted_rms(data["alpha"], heavy)
+    fig, axes = plt.subplots(3, 2, figsize=(13.5, 11.0), constrained_layout=True)
+
+    for state in range(populations.shape[1]):
+        axes[0, 0].plot(times, populations[:, state], lw=1.6, label=rf"$P_{state}$")
+    axes[0, 0].plot(times, residual, color="0.3", ls="--", label="outside basis")
+    axes[0, 0].set_title("BO-state composition")
+    axes[0, 0].legend(frameon=False, ncol=4, fontsize=7)
+
+    axes[0, 1].plot(times, means[1], lw=2, label=r"$\langle q\rangle$")
+    axes[0, 1].plot(times, widths[1], lw=2, label=r"$\sigma_q$")
+    axes[0, 1].plot(times, rearranged, lw=2, label=r"$D_{\rm rearr}$")
+    axes[0, 1].set_title("Proton motion and electron rearrangement")
+    axes[0, 1].legend(frameon=False, fontsize=8)
+
+    axes[1, 0].plot(times, rms_a, label=r"RMS$_\rho(a)$")
+    axes[1, 0].plot(times, rms_b, label=r"RMS$_\rho(b)$")
+    axes[1, 0].plot(times, rms_alpha, label=r"RMS$_\rho(\alpha)$")
+    axes[1, 0].set_yscale("symlog", linthresh=1.0e-4)
+    axes[1, 0].set_title("Occupied-support vector connections")
+    axes[1, 0].legend(frameon=False, fontsize=8)
+
+    for key in (
+        "pnc_projection_correction", "max_abs_gamma_phi", "max_abs_gamma_lam",
+    ):
+        if key in data.files:
+            axes[1, 1].semilogy(
+                times, np.maximum(data[key], 1.0e-18), label=key,
+            )
+    axes[1, 1].set_title("Constraint-correction diagnostics")
+    axes[1, 1].legend(frameon=False, fontsize=7)
+
+    if "max_corrected_rate_phi" in data.files:
+        axes[2, 0].semilogy(
+            times, np.maximum(data["max_corrected_rate_phi"], 1.0e-20),
+            label=r"corrected $r_\Phi$",
+        )
+        axes[2, 0].semilogy(
+            times, np.maximum(data["max_corrected_rate_lam"], 1.0e-20),
+            label=r"corrected $r_\Lambda$",
+        )
+    axes[2, 0].semilogy(
+        times, np.maximum(np.abs(data["norm"]-1.0), 1.0e-20),
+        label="|norm-1|",
+    )
+    axes[2, 0].set_title("Preserved constraints")
+    axes[2, 0].legend(frameon=False, fontsize=8)
+
+    for values, label in zip(
+        means, (r"$\Delta\langle x\rangle$", r"$\Delta\langle q\rangle$", r"$\Delta\langle R\rangle$"),
+    ):
+        axes[2, 1].plot(times, values-values[0], label=label)
+    axes[2, 1].set_title("Mean-position changes")
+    axes[2, 1].legend(frameon=False, fontsize=8)
+
+    for ax in axes.flat:
+        ax.set_xlabel("time (fs)")
+        ax.grid(alpha=0.2)
+    path = outdir/"coupled_dynamics_correlation.png"
+    fig.savefig(path, dpi=dpi)
+    plt.close(fig)
+    print(f"물리량-수치진단 correlation 저장: {path}")
+    return rms_a, rms_b, rms_alpha
+
+
 def run(args, data=None, decomposition=None):
     data = data if data is not None else load_archive(
         args.archive, materialize=not getattr(args, "low_memory", False)
@@ -297,7 +378,8 @@ def run(args, data=None, decomposition=None):
     )
 
     payload = dict(
-        times_fs=data["times_fs"], electron_density=electron,
+        times_fs=data["times_fs"], x=data["x"], q=data["q"], R=data["R"],
+        electron_density=electron,
         proton_density=proton, heavy_density=heavy, nuclear_joint_density=joint,
         electron_mean=means[0], proton_mean=means[1], heavy_mean=means[2],
         electron_width=widths[0], proton_width=widths[1], heavy_width=widths[2],
@@ -320,6 +402,14 @@ def run(args, data=None, decomposition=None):
             bo_energies=energies, state_resolved_density=resolved,
             state_populations=populations, state_basis_residual=residual,
         )
+        rms_a, rms_b, rms_alpha = save_correlation_figure(
+            data, means, widths, rearranged, populations, residual, joint,
+            outdir, args.dpi,
+        )
+        payload.update(
+            support_rms_a=rms_a, support_rms_b=rms_b,
+            support_rms_alpha=rms_alpha,
+        )
 
     archive = outdir/"dynamics_observables.npz"
     np.savez_compressed(archive, **payload)
@@ -331,7 +421,7 @@ def parse_args():
     parser.add_argument("archive", help="multi_component_direct_ef.npz 경로")
     parser.add_argument("--outdir", default="")
     parser.add_argument("--dpi", type=int, default=180)
-    parser.add_argument("--n-states", type=int, default=3, help="분석할 낮은 BO 상태 수")
+    parser.add_argument("--n-states", type=int, default=6, help="분석할 낮은 BO 상태 수")
     parser.add_argument("--frame", type=int, default=-1, help="BO/joint snapshot frame; -1은 마지막")
     parser.add_argument(
         "--electron-divider", type=float, default=None,

@@ -115,8 +115,8 @@ class RenderAllDiscoveryTests(unittest.TestCase):
             dynamics_run.assert_called_once()
             excited_run.assert_called_once()
             visualize_3d_run.assert_called_once()
-            self.assertEqual(dynamics_run.call_args.args[0].n_states, 4)
-            self.assertEqual(excited_run.call_args.args[0].n_states, 4)
+            self.assertEqual(dynamics_run.call_args.args[0].n_states, 6)
+            self.assertEqual(excited_run.call_args.args[0].n_states, 6)
             self.assertIs(dynamics_run.call_args.kwargs["decomposition"], decomposition)
             self.assertIs(excited_run.call_args.kwargs["decomposition"], decomposition)
 

@@ -147,7 +147,9 @@ python -m multi_component_exact_factorization.render_all gpu_mixed_1fs
 
 명령은 날짜별 ``results/YYYYMMDD`` 폴더에서 가장 최근의 동일 이름을 찾고,
 NPZ metadata로 초기 ground/excited state와 분석 상태 수를 자동 판별한다.
-기본 실행은 archive를 RAM에 한 번만 풀고 BO decomposition도 공유한다. 빠른
+기본 분석은 residual 판정을 위해 BO 상태 6개를 사용하고, occupied-support
+potential, 인접 gap/NAC, gauge-invariant current/force 진단도 생성한다. 기본
+실행은 archive를 RAM에 한 번만 풀고 BO decomposition도 공유한다. 빠른
 preview에는 ``--fast``를, RAM이 부족할 때만 ``--low-memory``를 사용한다.
 
 ```bash
