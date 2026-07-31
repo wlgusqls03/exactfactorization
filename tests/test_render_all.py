@@ -64,9 +64,24 @@ class RenderAllDiscoveryTests(unittest.TestCase):
                 run=str(run_dir), n_states=0, snapshots=5, dpi=180,
                 animation_dpi=120, fps=12, max_frames=180, format="mp4",
                 no_animation=False, no_3d=False, max_axis_points=24,
-                max_3d_frames=80, surface_count=7,
+                max_3d_frames=80, surface_count=7, fast=False,
+                low_memory=False,
             )
-            render_all.run(args)
+            loaded = render_all.visualize.LoadedArchive({
+                "args": np.array([{"electron_excitation": 2}], dtype=object),
+            })
+            decomposition = (
+                np.empty((4, 1, 1)), np.empty((1, 4, 1, 1)),
+                np.empty((1, 4)), np.empty(1),
+            )
+            with patch.object(
+                render_all.visualize, "load_archive", return_value=loaded
+            ), patch.object(
+                render_all.excited_state_analysis,
+                "calculate_state_decomposition",
+                return_value=decomposition,
+            ):
+                render_all.run(args)
 
             visualize_run.assert_called_once()
             dynamics_run.assert_called_once()
@@ -74,6 +89,8 @@ class RenderAllDiscoveryTests(unittest.TestCase):
             visualize_3d_run.assert_called_once()
             self.assertEqual(dynamics_run.call_args.args[0].n_states, 4)
             self.assertEqual(excited_run.call_args.args[0].n_states, 4)
+            self.assertIs(dynamics_run.call_args.kwargs["decomposition"], decomposition)
+            self.assertIs(excited_run.call_args.kwargs["decomposition"], decomposition)
 
 
 if __name__ == "__main__":

@@ -257,6 +257,18 @@ Archive metadata의 ``electron_excitation``을 읽어 ground/excited 상태와 �
 BO 상태 수를 자동으로 결정한다. 영상 없이 정적 분석만 빠르게 만들려면
 ``--no-animation --no-3d``를 덧붙인다.
 
+압축 NPZ의 큰 field는 기본적으로 한 번만 RAM에 풀어 네 분석에서 공유한다.
+모든 영상 종류를 유지하면서 frame 수와 해상도만 줄이는 빠른 preview는
+다음처럼 만든다.
+
+```bash
+python -m multi_component_exact_factorization.render_all \
+  mcef_exc1_gpu_double_10fs --fast
+```
+
+Archive가 너무 커서 RAM에 유지할 수 없는 서버에서만 ``--low-memory``를
+사용한다. 이 option은 같은 compressed member를 다시 읽을 수 있어 훨씬 느리다.
+
 ```bash
 python -m multi_component_exact_factorization.visualize \
   results/multi_component_exact_factorization/study_direct/multi_component_direct_ef.npz \

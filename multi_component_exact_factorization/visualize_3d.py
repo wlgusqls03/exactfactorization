@@ -24,6 +24,8 @@ import plotly.graph_objects as go
 
 from result_paths import dated_results_dir
 
+from .visualize import load_archive
+
 
 def load_density(data, frame):
     """한 frame의 full molecular probability density ``(nx,nq,nR)``."""
@@ -66,8 +68,10 @@ def initial_summary(data):
     )
 
 
-def run(args):
-    data = np.load(args.archive, allow_pickle=True)
+def run(args, data=None):
+    data = data if data is not None else load_archive(
+        args.archive, materialize=not getattr(args, "low_memory", False)
+    )
     required = {"x", "q", "R", "times_fs", "phi", "lambda_wavefunction", "chi"}
     missing = sorted(required.difference(data.files))
     if missing:
@@ -261,6 +265,7 @@ def parse_args():
     parser.add_argument("--fps", type=float, default=8.0)
     parser.add_argument("--width", type=int, default=1050)
     parser.add_argument("--height", type=int, default=820)
+    parser.add_argument("--low-memory", action="store_true")
     return parser.parse_args()
 
 

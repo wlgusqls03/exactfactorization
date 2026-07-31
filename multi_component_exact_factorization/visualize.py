@@ -34,16 +34,45 @@ def readable_number(value, _position=None):
 NUMBER_FORMATTER = FuncFormatter(readable_number)
 
 
-def load_archive(path):
-    data = np.load(path, allow_pickle=True)
+class LoadedArchive(dict):
+    """Materialized NPZ data with a small cache for reduced animation frames."""
+
+    def __init__(self, values):
+        super().__init__(values)
+        self.reduced_frames = {}
+
+    @property
+    def files(self):
+        return tuple(self.keys())
+
+
+def load_archive(path, materialize=True):
+    """Load an archive once, avoiding repeated decompression of large fields.
+
+    ``numpy.lib.npyio.NpzFile`` reads a compressed member again on every
+    ``data[key]`` access. Animation and analysis loops access ``phi`` hundreds
+    of times, so the default materialized representation decompresses every
+    needed member exactly once. The optional full ``psi`` is skipped because
+    all visualizations reconstruct its density from the three factors.
+    """
+    archive = np.load(path, allow_pickle=True)
     required = {
         "x", "q", "R", "times_fs", "phi", "lambda_wavefunction",
         "chi", "epsilon_2",
     }
-    missing = sorted(required.difference(data.files))
+    missing = sorted(required.difference(archive.files))
     if missing:
+        archive.close()
         raise KeyError(f"archive에 필요한 key가 없습니다: {missing}")
-    return data
+    if not materialize:
+        return archive
+    values = {
+        key: archive[key]
+        for key in archive.files
+        if key != "psi"
+    }
+    archive.close()
+    return LoadedArchive(values)
 
 
 def archive_arguments(data):
@@ -101,6 +130,9 @@ def initial_summary(data):
 
 def reduced_frame(data, frame):
     """한 frame의 네 factor/joint density를 계산한다."""
+    cache = getattr(data, "reduced_frames", None)
+    if cache is not None and frame in cache:
+        return cache[frame]
     x, q = data["x"], data["q"]
     dq = float(q[1]-q[0])
     phi = data["phi"][frame]                                      # (nx,nq,nR)
@@ -111,10 +143,13 @@ def reduced_frame(data, frame):
         np.abs(phi)**2*lam2[None, :, :], axis=1
     )*dq                                                            # (nx,nR)
     full_xR = electron_given_R*chi2[None, :]                        # (nx,nR)
-    return dict(
+    result = dict(
         phi=phi, lam=lam, chi=chi, heavy=chi2,
         proton=lam2, electron=electron_given_R, full=full_xR,
     )
+    if cache is not None:
+        cache[frame] = result
+    return result
 
 
 def plot_initial_state(data, outdir, dpi=180):
@@ -878,8 +913,10 @@ def make_gauge_potential_animation(
     print(f"Gauge/TDPES/vector-potential dynamics 저장: {path}")
 
 
-def run(args):
-    data = load_archive(args.archive)
+def run(args, data=None):
+    data = data if data is not None else load_archive(
+        args.archive, materialize=not getattr(args, "low_memory", False)
+    )
     requested_outdir = Path(args.outdir) if args.outdir else Path(args.archive).parent/"figures"
     outdir = dated_results_dir(requested_outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -922,6 +959,10 @@ def parse_args():
         help="all은 wavefunction/density/gauge-potential 영상 세 개를 만든다",
     )
     parser.add_argument("--no-animation", action="store_true")
+    parser.add_argument(
+        "--low-memory", action="store_true",
+        help="큰 배열을 RAM에 유지하지 않지만 compressed NPZ 반복 접근은 느려질 수 있음",
+    )
     return parser.parse_args()
 
 

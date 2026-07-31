@@ -44,6 +44,11 @@ def normalized_marginals(data):
     x, q, R = data["x"], data["q"], data["R"]
     dx, dq, dR = x[1]-x[0], q[1]-q[0], R[1]-R[0]
     nt = len(data["times_fs"])
+    # Compressed NPZ members are expensive to reopen for every frame. Keep
+    # these three trajectory arrays alive for the complete reduction pass.
+    phi_frames = data["phi"]
+    lam_frames = data["lambda_wavefunction"]
+    chi_frames = data["chi"]
     electron = np.empty((nt, len(x)))
     proton = np.empty((nt, len(q)))
     heavy = np.empty((nt, len(R)))
@@ -51,13 +56,13 @@ def normalized_marginals(data):
 
     # 큰 phi(nt,nx,nq,nR)의 중간 복사본을 만들지 않도록 frame별로 적분한다.
     for frame in range(nt):
-        lam2 = np.abs(data["lambda_wavefunction"][frame])**2       # (nq,nR)
-        chi2 = np.abs(data["chi"][frame])**2                      # (nR,)
+        lam2 = np.abs(lam_frames[frame])**2                        # (nq,nR)
+        chi2 = np.abs(chi_frames[frame])**2                        # (nR,)
         joint_frame = lam2*chi2[None, :]                            # (nq,nR)
         norm = max(float(np.sum(joint_frame)*dq*dR), 1.0e-300)
         joint[frame] = joint_frame/norm
         electron[frame] = np.sum(
-            np.abs(data["phi"][frame])**2*joint[frame][None, :, :],
+            np.abs(phi_frames[frame])**2*joint[frame][None, :, :],
             axis=(1, 2),
         )*dq*dR                                                     # (nx,)
         proton[frame] = np.sum(joint[frame], axis=1)*dR            # (nq,)
@@ -264,8 +269,10 @@ def save_nonadiabatic_figure(data, joint, energies, resolved, populations, frame
     print(f"nonadiabatic 요약 저장: {path}")
 
 
-def run(args):
-    data = load_archive(args.archive)
+def run(args, data=None, decomposition=None):
+    data = data if data is not None else load_archive(
+        args.archive, materialize=not getattr(args, "low_memory", False)
+    )
     requested_outdir = (
         Path(args.outdir)
         if args.outdir
@@ -300,7 +307,9 @@ def run(args):
     )
     if not args.no_bo:
         n_states = max(2, args.n_states)
-        energies, resolved, populations, residual = calculate_state_decomposition(data, n_states)
+        if decomposition is None:
+            decomposition = calculate_state_decomposition(data, n_states)
+        energies, resolved, populations, residual = decomposition
         frame = args.frame if args.frame >= 0 else len(data["times_fs"])+args.frame
         if not 0 <= frame < len(data["times_fs"]):
             raise IndexError(f"--frame {args.frame}가 저장 frame 범위를 벗어납니다.")
@@ -329,6 +338,7 @@ def parse_args():
         help="전자 좌/우 population 경계; 생략하면 초기 q0와 R0의 중점",
     )
     parser.add_argument("--no-bo", action="store_true", help="빠른 marginal/transfer 분석만 수행")
+    parser.add_argument("--low-memory", action="store_true")
     return parser.parse_args()
 
 

@@ -29,7 +29,7 @@ import numpy as np
 from result_paths import dated_results_dir
 
 from .core import build_model, local_electronic_basis
-from .visualize import NUMBER_FORMATTER, archive_arguments, selected_frames
+from .visualize import NUMBER_FORMATTER, archive_arguments, load_archive, selected_frames
 
 
 def calculate_state_decomposition(data, n_states):
@@ -67,12 +67,16 @@ def calculate_state_decomposition(data, n_states):
     nq, nR = len(model.q), len(model.R)
     resolved = np.empty((nt, n_states, nq, nR))                    # (nt,state,nq,nR)
     populations = np.empty((nt, n_states))                         # (nt,state)
+    phi_frames = data["phi"]
+    lam_frames = data["lambda_wavefunction"]
+    chi_frames = data["chi"]
+    norm_frames = data["norm"] if "norm" in data.files else None
 
     # ------------------------------------------------------------------
     # 3. 매 시간의 conditional electron Phi를 local basis에 투영한다.
     # ------------------------------------------------------------------
     for frame in range(nt):
-        phi = data["phi"][frame]                                   # (nx,nq,nR)
+        phi = phi_frames[frame]                                     # (nx,nq,nR)
 
         # c_n(q,R,t)=int dx varphi_n^*(x;q,R) Phi(x;q,R,t)
         coefficients = np.sum(
@@ -82,14 +86,14 @@ def calculate_state_decomposition(data, n_states):
         # EF의 nested probability 해석에 따라 proton-heavy joint weight는
         # |Lambda_R(q,t)|^2 |chi(R,t)|^2이다.
         nuclear_weight = (
-            np.abs(data["lambda_wavefunction"][frame])**2
-            *np.abs(data["chi"][frame])[None, :]**2
+            np.abs(lam_frames[frame])**2
+            *np.abs(chi_frames[frame])[None, :]**2
         )                                                            # (nq,nR)
         resolved[frame] = np.abs(coefficients)**2*nuclear_weight[None, :, :]
         # Direct discretization의 작은 global norm drift가 state composition으로
         # 오해되지 않도록 각 frame의 population은 해당 full norm으로 나눈다.
         frame_norm = (
-            float(data["norm"][frame]) if "norm" in data.files
+            float(norm_frames[frame]) if norm_frames is not None
             else float(np.sum(nuclear_weight)*model.dq*model.dR)
         )
         resolved[frame] /= max(frame_norm, 1.0e-300)
@@ -224,18 +228,20 @@ def save_population_animation(
     print(f"전자 상태 분해 dynamics 저장: {path}")
 
 
-def run(args):
+def run(args, data=None, decomposition=None):
     """Archive 읽기 -> state projection -> NPZ/그림/영상 저장의 전체 흐름."""
-    data = np.load(args.archive, allow_pickle=True)
+    data = data if data is not None else load_archive(
+        args.archive, materialize=not getattr(args, "low_memory", False)
+    )
     options = archive_arguments(data)
 
     # 기본값 0은 사용자가 초기화한 excited index보다 한 상태 위까지 포함한다.
     # 영상은 state 0,1,2 세 장을 사용하므로 최소 3개를 보장한다.
     initial_excitation = int(options.get("electron_excitation", 0))
     n_states = args.n_states or max(3, initial_excitation+2)
-    energies, resolved, populations, residual = calculate_state_decomposition(
-        data, n_states
-    )
+    if decomposition is None:
+        decomposition = calculate_state_decomposition(data, n_states)
+    energies, resolved, populations, residual = decomposition
     requested_outdir = Path(args.outdir) if args.outdir else Path(args.archive).parent/"figures"
     outdir = dated_results_dir(requested_outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -277,6 +283,7 @@ def parse_args():
     parser.add_argument("--max-frames", type=int, default=180)
     parser.add_argument("--format", choices=("mp4", "gif"), default="mp4")
     parser.add_argument("--no-animation", action="store_true")
+    parser.add_argument("--low-memory", action="store_true")
     return parser.parse_args()
 
 
