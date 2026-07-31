@@ -285,6 +285,19 @@ python -m multi_component_exact_factorization.render_all \
 Archive가 너무 커서 RAM에 유지할 수 없는 서버에서만 ``--low-memory``를
 사용한다. 이 option은 같은 compressed member를 다시 읽을 수 있어 훨씬 느리다.
 
+전파 명령에 ``--render-after``를 추가하면 NPZ 저장이 성공한 직후 위 통합
+렌더링을 자동으로 실행한다. 날짜가 붙은 실제 저장 경로가 직접 전달되므로
+동일한 폴더 이름을 검색할 필요가 없다. 모든 출력 종류를 유지하면서 렌더링
+시간을 줄이려면 ``--render-fast``도 함께 지정한다. 전파 함수가 반환되어 큰
+저장 배열을 해제한 다음 archive를 읽으므로 계산 자료와 렌더링 자료가 RAM에
+중복 상주하는 것을 피한다.
+
+```bash
+python -m multi_component_exact_factorization.propagate \
+  --t-final-fs 1.0 --outdir mcef_cpu_1fs \
+  --render-after --render-fast
+```
+
 ```bash
 python -m multi_component_exact_factorization.visualize \
   results/multi_component_exact_factorization/study_direct/multi_component_direct_ef.npz \

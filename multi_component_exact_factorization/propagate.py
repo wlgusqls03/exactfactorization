@@ -391,6 +391,15 @@ def parse_args():
         "--save-psi", action="store_true",
         help="큰 full Psi 배열도 archive에 저장한다",
     )
+    render = parser.add_argument_group("계산 완료 후 자동 렌더링")
+    render.add_argument(
+        "--render-after", action="store_true",
+        help="NPZ 저장이 성공하면 전체 그래프·동영상을 이어서 생성",
+    )
+    render.add_argument(
+        "--render-fast", action="store_true",
+        help="--render-after 출력 종류는 유지하고 frame/DPI/3D 복잡도를 줄임",
+    )
     gauge = parser.add_argument_group("두 단계 gauge (parallel-transport 기준)")
     gauge.add_argument(
         "--theta1-q-gradient", type=float, default=0.0,
@@ -416,5 +425,16 @@ def parse_args():
     return parser.parse_args()
 
 
+def main(args=None):
+    """전파가 반환되어 큰 배열이 해제된 뒤 선택적으로 렌더링한다."""
+    args = parse_args() if args is None else args
+    path = run(args)
+    if getattr(args, "render_after", False):
+        from .render_all import render_completed_run
+        print("계산 완료 후 전체 결과 렌더링을 시작합니다.")
+        render_completed_run(path, fast=getattr(args, "render_fast", False))
+    return path
+
+
 if __name__ == "__main__":
-    run(parse_args())
+    main()

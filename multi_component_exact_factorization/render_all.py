@@ -218,7 +218,7 @@ def run(args):
     print(f"모든 분석 완료: {output_root}")
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "run",
@@ -247,7 +247,16 @@ def parse_args():
     parser.add_argument("--max-axis-points", type=int, default=24)
     parser.add_argument("--max-3d-frames", type=int, default=80)
     parser.add_argument("--surface-count", type=int, default=7)
-    return parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def render_completed_run(archive: str | Path, fast: bool = False):
+    """Render a just-written propagation archive with the standard defaults."""
+    argv = [str(Path(archive))]
+    if fast:
+        argv.append("--fast")
+    args = parse_args(argv)
+    run(args)
 
 
 if __name__ == "__main__":

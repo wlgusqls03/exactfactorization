@@ -6,10 +6,38 @@ from unittest.mock import patch
 
 import numpy as np
 
-from multi_component_exact_factorization import render_all
+from multi_component_exact_factorization import propagate, render_all
 
 
 class RenderAllDiscoveryTests(unittest.TestCase):
+    @patch.object(render_all, "render_completed_run")
+    @patch.object(propagate, "run", return_value=Path("saved/result.npz"))
+    def test_propagation_main_renders_only_after_run_returns(
+        self, propagation_run, render_completed_run
+    ):
+        args = Namespace(render_after=True, render_fast=True)
+
+        result = propagate.main(args)
+
+        self.assertEqual(result, Path("saved/result.npz"))
+        propagation_run.assert_called_once_with(args)
+        render_completed_run.assert_called_once_with(
+            Path("saved/result.npz"), fast=True
+        )
+
+    @patch.object(render_all, "run")
+    def test_completed_run_uses_standard_fast_render_arguments(self, run):
+        archive = Path("results/20260731/test/result.npz")
+
+        render_all.render_completed_run(archive, fast=True)
+
+        run.assert_called_once()
+        args = run.call_args.args[0]
+        self.assertEqual(args.run, str(archive))
+        self.assertTrue(args.fast)
+        self.assertFalse(args.no_animation)
+        self.assertFalse(args.no_3d)
+
     def test_bare_name_selects_newest_dated_run(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)/"results"

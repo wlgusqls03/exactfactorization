@@ -120,6 +120,22 @@ CUDA_VISIBLE_DEVICES=0 python -m \
 간격이다. 저장 frame과 마지막 step에서는 항상 검사한다. `--save-every`는
 출력 크기와 CPU 전송 횟수를 줄이지만 time step 수는 줄이지 않는다.
 
+계산이 정상 종료되어 NPZ 저장까지 성공한 뒤 모든 그림·영상·분석·3D HTML을
+곧바로 만들려면 ``--render-after``를 덧붙인다. 렌더링 시간과 파일 크기를
+줄이는 preview 설정은 ``--render-fast``를 함께 사용한다. GPU 전파 함수가
+반환되어 계산 배열이 해제된 다음 CPU 렌더링을 시작한다.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m \
+  multi_component_exact_factorization_gpu.propagate_gpu \
+  --device 0 --precision double --electron-excitation 1 \
+  --dt-au 0.005 --t-final-fs 10.0 \
+  --save-every 400 --progress-every 1000 --check-every 200 \
+  --outdir mcef_exc1_double_10fs --render-after --render-fast
+```
+
+렌더링 중 오류가 나더라도 그 전에 계산 archive는 이미 저장되어 있다.
+
 ## 5. 기존 그림 생성
 
 완료된 GPU 계산의 폴더 이름만 지정해 모든 그림·영상·상태 분석·3D HTML을
