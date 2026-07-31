@@ -35,9 +35,9 @@ def dated_results_dir(outdir: str | Path, date: str | None = None) -> Path:
         try:
             results_index = parts.index("results")
         except ValueError:
-            parent, name = path.parent, path.name
-            if _DATE_DIRECTORY.fullmatch(parent.name):
+            if any(_DATE_DIRECTORY.fullmatch(part) for part in parts):
                 return path
+            parent, name = path.parent, path.name
             return parent / run_date / name
 
         date_index = results_index + 1

@@ -116,6 +116,16 @@ CUDA_VISIBLE_DEVICES=0 python -m \
 
 ## 5. 기존 그림 생성
 
+완료된 GPU 계산의 폴더 이름만 지정해 모든 그림·영상·상태 분석·3D HTML을
+한 번에 생성할 수 있다.
+
+```bash
+python -m multi_component_exact_factorization.render_all gpu_mixed_1fs
+```
+
+명령은 날짜별 ``results/YYYYMMDD`` 폴더에서 가장 최근의 동일 이름을 찾고,
+NPZ metadata로 초기 ground/excited state와 분석 상태 수를 자동 판별한다.
+
 ```bash
 python -m multi_component_exact_factorization.visualize \
   results/gpu_mixed_1fs/multi_component_direct_ef_gpu.npz

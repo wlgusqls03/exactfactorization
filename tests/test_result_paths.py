@@ -33,6 +33,10 @@ class DatedResultsDirTests(unittest.TestCase):
             Path("/scratch/20260730/run_name"),
         )
 
+    def test_does_not_redate_descendant_of_absolute_dated_directory(self):
+        path = Path("/scratch/20260730/run_name/figures")
+        self.assertEqual(dated_results_dir(path, "20260730"), path)
+
     def test_rejects_invalid_explicit_date(self):
         with self.assertRaises(ValueError):
             dated_results_dir("results/run_name", "2026-07-30")

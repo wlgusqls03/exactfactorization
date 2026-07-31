@@ -242,6 +242,21 @@ gauge-invariant한 full-Psi fidelity와 marginal density를 비교한다.
 
 ## 3. 논문형 그림과 6분할 dynamics
 
+완료된 계산 폴더 하나에서 모든 기본 그림, 세 종류의 영상, marginal/BO
+dynamics 분석, electronic-state population 분석, interactive 3D HTML을 한 번에
+만들려면 다음 통합 명령을 사용한다.
+
+```bash
+python -m multi_component_exact_factorization.render_all \
+  mcef_exc1_gpu_double_10fs
+```
+
+날짜가 포함된 전체 폴더나 NPZ를 직접 입력해도 된다. 폴더 이름만 입력하면
+``results/YYYYMMDD`` 아래에서 같은 이름의 가장 최근 계산을 자동 선택한다.
+Archive metadata의 ``electron_excitation``을 읽어 ground/excited 상태와 분석할
+BO 상태 수를 자동으로 결정한다. 영상 없이 정적 분석만 빠르게 만들려면
+``--no-animation --no-3d``를 덧붙인다.
+
 ```bash
 python -m multi_component_exact_factorization.visualize \
   results/multi_component_exact_factorization/study_direct/multi_component_direct_ef.npz \
