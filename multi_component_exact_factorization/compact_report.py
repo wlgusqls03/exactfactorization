@@ -32,6 +32,14 @@ from .visualize import (
 
 
 COLORS = ("#2878B5", "#E07A2D", "#3A9654", "#B05279", "#7B61A8", "#8C6D31")
+MASK_COLOR = "#D7DCE0"
+
+
+def _masked_cmap(name):
+    """Colormap where masked/unoccupied cells differ clearly from value zero."""
+    cmap = plt.get_cmap(name).copy()
+    cmap.set_bad(MASK_COLOR)
+    return cmap
 
 
 def _joint_normalized(joint, q, R):
@@ -177,7 +185,7 @@ def _gap_nac_panel(ax, q, R, gap, nac, joint, pair, support_floor):
     shown = _support_mask(gap, joint, support_floor)
     image = ax.imshow(
         shown, origin="lower", aspect="auto",
-        extent=[R[0], R[-1], q[0], q[-1]], cmap="viridis",
+        extent=[R[0], R[-1], q[0], q[-1]], cmap=_masked_cmap("viridis"),
     )
     cutoff = support_floor*float(np.max(joint))
     ax.contour(R, q, joint, levels=[cutoff], colors="white", linewidths=1.2)
@@ -238,7 +246,7 @@ def plot_electronic_transitions(
     _label_panels(axes)
     fig.suptitle(
         f"2 | Did electronic mixing occur, and where could it come from?\n"
-        f"composition (A) -> correlated motion (B) -> occupied gap/NAC paths (C-D), t={times[frame]:.3f} fs",
+        f"composition (A) -> correlated motion (B) -> occupied gap/NAC paths (C-D), t={times[frame]:.3f} fs; gray=unoccupied",
         fontsize=14, fontweight="bold",
     )
     path = outdir/"02_electronic_transitions.png"
@@ -282,7 +290,8 @@ def plot_exact_potentials(data, diagnostics, joint, frame, support_floor, outdir
         if limits is not None:
             image_kwargs.update(vmin=limits[0], vmax=limits[1])
         image = ax.imshow(
-            values, origin="lower", aspect="auto", extent=extent, cmap=cmap,
+            values, origin="lower", aspect="auto", extent=extent,
+            cmap=_masked_cmap(cmap),
             **image_kwargs,
         )
         ax.contour(
@@ -316,7 +325,7 @@ def plot_exact_potentials(data, diagnostics, joint, frame, support_floor, outdir
     _label_panels(axes)
     fig.suptitle(
         f"3 | How do the exact potentials act?  Scalar (A) + connection (B) -> force (C); outer level (D)\n"
-        f"t={times[frame]:.3f} fs; occupied region only; scalar offsets removed",
+        f"t={times[frame]:.3f} fs; gray=unoccupied grid cells; scalar offsets removed",
         fontsize=14, fontweight="bold",
     )
     path = outdir/"03_exact_potentials.png"
@@ -440,7 +449,10 @@ def make_overview_animation(
     axes[1, 0].set_title("BO-state composition", loc="left", fontweight="semibold")
     axes[1, 0].legend(frameon=False, ncol=4, fontsize=7)
 
-    eps_image = axes[1, 1].imshow(displayed_eps[0], origin="lower", aspect="auto", extent=extent, cmap="viridis", vmin=eps_limits[0], vmax=eps_limits[1])
+    eps_image = axes[1, 1].imshow(
+        displayed_eps[0], origin="lower", aspect="auto", extent=extent,
+        cmap=_masked_cmap("viridis"), vmin=eps_limits[0], vmax=eps_limits[1],
+    )
     axes[1, 1].set(xlabel=r"heavy $R$ ($a_0$)", ylabel=r"proton $q$ ($a_0$)")
     axes[1, 1].set_title(r"First TDPES $\epsilon^{(1)}$", loc="left", fontweight="semibold")
     fig.colorbar(eps_image, ax=axes[1, 1], label="shifted energy (Hartree)", pad=0.012)
@@ -520,7 +532,8 @@ def make_potential_animation(
         (axes[0, 2], fields[0][2], b_lim, r"Electron connection $b$ along $R$", "coolwarm", r"$a_0^{-1}$"),
     ):
         image = ax.imshow(
-            values, origin="lower", aspect="auto", extent=extent, cmap=cmap,
+            values, origin="lower", aspect="auto", extent=extent,
+            cmap=_masked_cmap(cmap),
             vmin=limits[0], vmax=limits[1],
         )
         ax.set_xlabel(r"heavy $R$ ($a_0$)")
@@ -550,7 +563,7 @@ def make_potential_animation(
     _label_panels(axes)
     title = fig.suptitle(
         f"Nested exact potentials | electron level (A-C) -> proton-heavy level (D-E); support (F)\n"
-        f"t={times[first]:.3f} fs; density >= {support_floor:g} of peak",
+        f"t={times[first]:.3f} fs; gray=unoccupied cells (< {support_floor:g} of peak)",
         fontsize=14, fontweight="bold",
     )
 
@@ -564,7 +577,7 @@ def make_potential_animation(
         support_image.set_data(item[5])
         title.set_text(
             f"Nested exact potentials | electron level (A-C) -> proton-heavy level (D-E); support (F)\n"
-            f"t={times[frame]:.3f} fs; density >= {support_floor:g} of peak"
+            f"t={times[frame]:.3f} fs; gray=unoccupied cells (< {support_floor:g} of peak)"
         )
         return (*images, eps2_line, alpha_line, support_image, title)
 

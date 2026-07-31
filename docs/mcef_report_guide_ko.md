@@ -33,6 +33,10 @@
 - 흰 외곽선 안쪽만 실제 nuclear packet이 점유한 영역이다. 흰 영역 밖의
   gap이나 coupling은 현재 dynamics가 방문하지 않았으므로 직접적인 원인으로
   해석하지 않는다.
+- 회색 cell은 값이 0이라는 뜻이 아니라 nuclear density가 frame peak의
+  `1e-3`보다 작아 해석에서 가린 곳이다. 내부의 작은 회색 구멍은 interference
+  node 등으로 특정 cell의 density가 threshold 아래로 내려갔다는 뜻이다.
+  작은 네모 하나는 한 `(q,R)` grid cell이며 현재 `dq=dR=0.08 a0`이다.
 
 작은 gap과 큰 NAC를 nuclear density가 실제로 점유하면서 population이 변하면
 비단열 혼합의 물리적 통로가 존재한다. 그러나 이것은 가능성을 보여주는
@@ -60,8 +64,10 @@ Nested exact factorization은
   epsilon2는 두 번째 전자상태나 두 번째 BO surface가 아니다.
 
 Scalar potential은 gauge에 따라 시간별 상수만큼 이동할 수 있으므로 그림은
-점유 peak의 값을 빼서 경사와 구조를 보여준다. 흰 부분은 density가 peak의
-`1e-3`보다 작은 곳이며, 그곳의 ratio-based potential은 해석하지 않는다.
+점유 peak의 값을 빼서 경사와 구조를 보여준다. Mask 대상은 density가 peak의
+`1e-3`보다 작은 곳이며, 새 report에서는 이를 회색 cell로 구분한다. 그곳의
+ratio-based potential은 해석하지 않는다. Diverging colormap의 실제 값 0은
+흰색이고, 회색은 mask이므로 두 경우를 구별할 수 있다.
 
 ## 4. `04_numerical_reliability.png`: 이 trajectory를 믿을 수 있는가?
 
