@@ -23,6 +23,8 @@ from multi_component_exact_factorization.core import (
 )
 from multi_component_exact_factorization.propagate import output_gauge
 
+from .throttle import gpu_util_percent, throttle_delay
+
 from .gpu_core import (
     DIAGNOSTIC_FIELDS,
     all_finite,
@@ -59,6 +61,13 @@ def run(args):
     cp.cuda.Device(args.device).use()
     print(device_description(args.device))
     print(f"계산 정밀도: {args.precision}")
+    gpu_util_limit = getattr(args, "gpu_util_limit", 100.0)
+    gpu_throttle_every = max(1, getattr(args, "gpu_throttle_every", 20))
+    if gpu_util_limit < 100.0:
+        print(
+            f"GPU 평균 duty-cycle 제한: {gpu_util_limit:g}% "
+            f"({gpu_throttle_every} step마다 조절; nvidia-smi 표시는 변동 가능)"
+        )
 
     outdir = dated_results_dir(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -156,9 +165,14 @@ def run(args):
     start = cp.cuda.Event()
     stop = cp.cuda.Event()
     wall_start = time.perf_counter()
+    throttle_active_seconds = 0.0
+    throttle_sleep_seconds = 0.0
+    throttle_chunk_start = None
     start.record()
 
     for step in range(1, n_steps+1):
+        if gpu_util_limit < 100.0 and throttle_chunk_start is None:
+            throttle_chunk_start = time.perf_counter()
         phi, lam, chi, step_correction, step_diagnostics = full_step(
             phi, lam, chi, args.dt_au, gpu_model, args.density_threshold
         )
@@ -168,6 +182,21 @@ def run(args):
         interval_diagnostics = merge_maxima(
             interval_diagnostics, step_diagnostics
         )
+        throttle_now = (
+            gpu_util_limit < 100.0
+            and (step % gpu_throttle_every == 0 or step == n_steps)
+        )
+        if throttle_now:
+            # CuPy launches asynchronously. Synchronize only at coarse intervals
+            # so the measured active time reflects completed GPU work.
+            cp.cuda.get_current_stream().synchronize()
+            active_seconds = time.perf_counter()-throttle_chunk_start
+            delay = throttle_delay(active_seconds, gpu_util_limit)
+            throttle_active_seconds += active_seconds
+            if delay > 0.0:
+                time.sleep(delay)
+                throttle_sleep_seconds += delay
+            throttle_chunk_start = None
         must_save = frame < nt and step == save_steps[frame]
         must_check = (
             step % max(1, args.check_every) == 0 or must_save or step == n_steps
@@ -252,6 +281,8 @@ def run(args):
         pnc_projection_correction=projection_correction,
         **diagnostic_history,
         gpu_seconds=np.array(gpu_seconds), wall_seconds=np.array(wall_seconds),
+        gpu_util_limit=np.array(gpu_util_limit),
+        gpu_throttle_sleep_seconds=np.array(throttle_sleep_seconds),
         args=np.array([vars(args)], dtype=object),
     )
     if args.save_psi:
@@ -265,6 +296,16 @@ def run(args):
     print(f"GPU event 시간: {gpu_seconds:.3f} s; wall 시간: {wall_seconds:.3f} s")
     if n_steps:
         print(f"평균 wall 시간: {wall_seconds/n_steps:.6f} s/step")
+    if gpu_util_limit < 100.0:
+        controlled_seconds = throttle_active_seconds+throttle_sleep_seconds
+        measured_duty = (
+            100.0*throttle_active_seconds/controlled_seconds
+            if controlled_seconds else 0.0
+        )
+        print(
+            f"GPU throttle 대기: {throttle_sleep_seconds:.3f} s; "
+            f"계산/대기 duty cycle: {measured_duty:.1f}%"
+        )
     print(f"CuPy memory pool: used={used:.2f} GiB, reserved={total:.2f} GiB")
     print(f"최대 norm 오차: {np.max(np.abs(norm-1.0)):.3e}")
     print(f"최대 저장 PNC 오차:       {np.max(pnc):.3e}")
@@ -283,6 +324,17 @@ def parse_args():
     parser.add_argument(
         "--precision", choices=("double", "single", "mixed"), default="mixed",
         help="mixed는 큰 배열 FP32, inner-product/norm reduction FP64",
+    )
+    parser.add_argument(
+        "--gpu-util-limit", type=gpu_util_percent, default=100.0,
+        help=(
+            "step 사이 대기로 맞출 평균 GPU duty cycle(0 < percent <= 100); "
+            "기본 100은 제한 없음"
+        ),
+    )
+    parser.add_argument(
+        "--gpu-throttle-every", type=int, default=20,
+        help="GPU duty-cycle을 측정하고 대기할 step 간격(기본 20)",
     )
     parser.add_argument("--dt-au", type=float, default=0.005)
     parser.add_argument("--t-final-fs", type=float, default=0.05)

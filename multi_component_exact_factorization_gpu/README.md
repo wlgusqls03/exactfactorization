@@ -120,6 +120,27 @@ CUDA_VISIBLE_DEVICES=0 python -m \
 간격이다. 저장 frame과 마지막 step에서는 항상 검사한다. `--save-every`는
 출력 크기와 CPU 전송 횟수를 줄이지만 time step 수는 줄이지 않는다.
 
+공용 서버에서 평균 GPU 부하를 낮추려면 `--gpu-util-limit`을 사용한다. 예를
+들어 다음 옵션은 20 step 단위의 계산 시간 뒤에 짧게 대기하여 계산/대기
+duty cycle을 약 60%로 맞춘다.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m \
+  multi_component_exact_factorization_gpu.propagate_gpu \
+  --device 0 --precision double --gpu-util-limit 60 \
+  --electron-excitation 1 --nR 60 \
+  --dt-au 0.005 --t-final-fs 5.0 \
+  --save-every 400 --progress-every 2000 --check-every 200 \
+  --outdir mcef_nR60_double_5fs
+```
+
+이는 `nvidia-smi`의 순간 측정값을 고정하는 하드웨어 제한이 아니라 평균
+duty-cycle 제한이다. 따라서 표시되는 순간 사용률은 목표보다 높거나 낮을 수
+있지만 장시간 평균 부하와 발열은 감소한다. 계산 결과에는 영향을 주지 않고
+wall time은 대략 `100/limit`배로 증가한다. 기본값 100은 대기 없는 기존
+동작이다. 더 짧은 부하 burst가 필요할 때만 `--gpu-throttle-every 10`처럼
+조절한다.
+
 계산이 정상 종료되어 NPZ 저장까지 성공한 뒤 모든 그림·영상·분석·3D HTML을
 곧바로 만들려면 ``--render-after``를 덧붙인다. 렌더링 시간과 파일 크기를
 줄이는 preview 설정은 ``--render-fast``를 함께 사용한다. GPU 전파 함수가
