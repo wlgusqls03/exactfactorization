@@ -7,6 +7,7 @@ import numpy as np
 from multi_component_exact_factorization.compare_observables import compare
 from multi_component_exact_factorization.potential_analysis import (
     gauge_invariant_diagnostics,
+    phase_gradient,
 )
 from multi_component_exact_factorization.visualize import (
     LoadedArchive,
@@ -49,8 +50,51 @@ class GaugeInvariantDiagnosticsTests(unittest.TestCase):
             "args": np.array([{"proton_mass": 2.0, "heavy_mass": 5.0}], dtype=object),
         })
         diagnostics = gauge_invariant_diagnostics(data)
-        for key in ("proton_current", "heavy_current", "force_q", "force_R"):
+        for key in (
+            "momentum_q", "momentum_R_outer", "proton_current",
+            "heavy_current", "force_q", "force_R", "curvature_qR",
+        ):
             self.assertLess(float(np.max(np.abs(diagnostics[key]))), 1.0e-14)
+
+    def test_nested_periodic_gauge_preserves_mechanical_momenta(self):
+        nt, nq, nR = 3, 12, 10
+        q = np.linspace(-1.0, 1.0, nq, endpoint=False)
+        R = np.linspace(3.0, 5.0, nR, endpoint=False)
+        dq, dR = q[1]-q[0], R[1]-R[0]
+        theta1 = (
+            0.23*np.sin(2*np.pi*(q[:, None]-q[0])/(nq*dq))
+            +0.17*np.sin(2*np.pi*(R[None, :]-R[0])/(nR*dR))
+        )
+        theta2 = 0.19*np.sin(2*np.pi*(R-R[0])/(nR*dR))
+        lam = np.ones((nt, nq, nR), complex)/np.sqrt(nq*dq)
+        chi = np.ones((nt, nR), complex)/np.sqrt(nR*dR)
+        phase1 = np.exp(1j*theta1)[None, :, :]
+        phase2 = np.exp(1j*theta2)[None, :]
+        transformed_lam = lam*phase2[:, None, :]/phase1
+        transformed_chi = chi/phase2
+        a = np.broadcast_to(
+            phase_gradient(phase1, dq, axis=1), (nt, nq, nR)
+        ).copy()
+        b = np.broadcast_to(
+            phase_gradient(phase1, dR, axis=2), (nt, nq, nR)
+        ).copy()
+        alpha = np.broadcast_to(
+            phase_gradient(phase2, dR, axis=1), (nt, nR)
+        ).copy()
+        data = LoadedArchive({
+            "times_fs": np.linspace(0.0, 0.1, nt), "q": q, "R": R,
+            "lambda_wavefunction": transformed_lam, "chi": transformed_chi,
+            "a": a, "b": b, "alpha": alpha,
+            "epsilon_1": np.zeros((nt, nq, nR)),
+            "epsilon_2": np.zeros((nt, nR)),
+            "args": np.array([{"proton_mass": 2.0, "heavy_mass": 5.0}], dtype=object),
+        })
+        diagnostics = gauge_invariant_diagnostics(data)
+        for key in (
+            "momentum_q", "momentum_R_outer", "proton_current",
+            "heavy_current", "curvature_qR",
+        ):
+            self.assertLess(float(np.max(np.abs(diagnostics[key]))), 1.0e-13)
 
 
 class ObservableComparisonTests(unittest.TestCase):

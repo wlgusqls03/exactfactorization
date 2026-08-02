@@ -429,25 +429,42 @@ def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
 
 
 def make_overview_animation(
-    data, decomposition, electron, joint, support_floor, outdir, fps,
-    max_frames, dpi, fmt,
+    data, decomposition, electron, joint, diagnostics, support_floor, outdir,
+    fps, max_frames, dpi, fmt,
 ):
-    """One synchronized movie: electron, nuclei, BO populations, and TDPES1."""
+    """Observed dynamics followed by proton momentum, transport, and drive."""
     times, x, q, R = data["times_fs"], data["x"], data["q"], data["R"]
     _energies, _resolved, populations, residual = decomposition
     frames = selected_frames(len(times), min(max_frames, len(times)))
-    displayed_eps = []
+    momentum_fields, current_fields, drive_fields = [], [], []
     for frame in frames:
         density = joint[frame]
-        values = _shift_at_peak(data["epsilon_1"][frame], density)
-        displayed_eps.append(_support_mask(values, density, support_floor))
-    eps_limits = robust_limits(displayed_eps)
+        momentum_fields.append(_support_mask(
+            diagnostics["momentum_q"][frame], density, support_floor
+        ))
+        current_fields.append(_support_mask(
+            diagnostics["proton_current"][frame], density, support_floor
+        ))
+        drive_fields.append(_support_mask(
+            diagnostics["force_q"][frame], density, support_floor
+        ))
+    momentum_limits = robust_limits(momentum_fields, symmetric=True)
+    current_limits = robust_limits(current_fields, symmetric=True)
+    drive_values = np.concatenate([
+        np.abs(field[np.isfinite(field)]).ravel() for field in drive_fields
+    ])
+    drive_max = max(float(np.max(drive_values)), 1.0e-14)
+    drive_typical = max(float(np.percentile(drive_values, 80.0)), 1.0e-6)
+    drive_norm = SymLogNorm(
+        linthresh=max(0.2*drive_typical, 1.0e-5), linscale=0.8,
+        vmin=-drive_max, vmax=drive_max, base=10,
+    )
     joint_max = max(float(np.max(joint[i])) for i in frames)
     electron_max = max(float(np.max(electron[i])) for i in frames)
     extent = [R[0], R[-1], q[0], q[-1]]
     first = int(frames[0])
 
-    fig, axes = plt.subplots(2, 2, figsize=(12.8, 8.5), constrained_layout=True)
+    fig, axes = plt.subplots(2, 3, figsize=(16.2, 8.4), constrained_layout=True)
     axes[0, 0].plot(
         x, electron[0], color="0.65", ls="--", lw=1.3, label="initial"
     )
@@ -462,24 +479,41 @@ def make_overview_animation(
     fig.colorbar(nuclear_image, ax=axes[0, 1], label=r"$\rho_{qR}$", pad=0.012)
 
     for state in range(populations.shape[1]):
-        axes[1, 0].plot(times, populations[:, state], color=COLORS[state % len(COLORS)], lw=1.8, label=rf"$P_{state}$")
-    axes[1, 0].plot(times, residual, color="0.3", ls="--", label="outside")
-    marker = axes[1, 0].axvline(times[first], color="black", lw=1.2)
-    axes[1, 0].set(xlabel="time (fs)", ylabel="population", ylim=(-0.02, 1.02))
-    axes[1, 0].set_title("BO-state composition", loc="left", fontweight="semibold")
-    axes[1, 0].legend(frameon=False, ncol=4, fontsize=7)
+        axes[0, 2].plot(times, populations[:, state], color=COLORS[state % len(COLORS)], lw=1.7, label=rf"$P_{state}$")
+    axes[0, 2].plot(times, residual, color="0.3", ls="--", label="outside")
+    marker = axes[0, 2].axvline(times[first], color="black", lw=1.2)
+    axes[0, 2].set(xlabel="time (fs)", ylabel="population", ylim=(-0.02, 1.02))
+    axes[0, 2].set_title("BO-state composition", loc="left", fontweight="semibold")
+    axes[0, 2].legend(frameon=False, ncol=4, fontsize=7)
 
-    eps_image = axes[1, 1].imshow(
-        displayed_eps[0], origin="lower", aspect="auto", extent=extent,
-        cmap=_masked_cmap("viridis"), vmin=eps_limits[0], vmax=eps_limits[1],
-    )
-    axes[1, 1].set(xlabel=r"heavy $R$ ($a_0$)", ylabel=r"proton $q$ ($a_0$)")
-    axes[1, 1].set_title(r"First TDPES $\epsilon^{(1)}$", loc="left", fontweight="semibold")
-    fig.colorbar(eps_image, ax=axes[1, 1], label="shifted energy (Hartree)", pad=0.012)
+    images = []
+    for ax, values, title_text, label, limits, norm in (
+        (axes[1, 0], momentum_fields[0],
+         r"Mechanical proton momentum $K_q=\partial_qT+a$",
+         r"momentum ($a_0^{-1}$)", momentum_limits, None),
+        (axes[1, 1], current_fields[0],
+         r"Actual probability transport $j_q=\rho_{qR}K_q/m_p$",
+         "probability current", current_limits, None),
+        (axes[1, 2], drive_fields[0],
+         r"Gauge-invariant drive $E_q=-\partial_q\epsilon^{(1)}+\partial_ta$",
+         r"force (Hartree/$a_0$)", None, drive_norm),
+    ):
+        kwargs = {"norm": norm} if norm is not None else {
+            "vmin": limits[0], "vmax": limits[1]
+        }
+        image = ax.imshow(
+            values, origin="lower", aspect="auto", extent=extent,
+            cmap=_masked_cmap("coolwarm"), **kwargs,
+        )
+        ax.set(xlabel=r"heavy $R$ ($a_0$)", ylabel=r"proton $q$ ($a_0$)")
+        ax.set_title(title_text, loc="left", fontweight="semibold", fontsize=9.5)
+        fig.colorbar(image, ax=ax, label=label, pad=0.01, fraction=0.046)
+        images.append(image)
     _label_panels(axes)
     title = fig.suptitle(
-        f"Coupled MCEF story | electron (A) <-> nuclei (B) <-> BO composition (C); exact surface (D)\n"
-        f"t={times[first]:.3f} fs", fontsize=13.5, fontweight="bold",
+        "Physical dynamics (A-C) -> proton momentum (D) -> transport (E) -> drive (F)\n"
+        f"t={times[first]:.3f} fs; gray=unoccupied cells",
+        fontsize=13.5, fontweight="bold",
     )
 
     def update(number):
@@ -487,12 +521,16 @@ def make_overview_animation(
         electron_line.set_ydata(electron[frame])
         nuclear_image.set_data(joint[frame])
         marker.set_xdata([times[frame], times[frame]])
-        eps_image.set_data(displayed_eps[number])
+        for image, values in zip(
+            images,
+            (momentum_fields[number], current_fields[number], drive_fields[number]),
+        ):
+            image.set_data(values)
         title.set_text(
-            f"Coupled MCEF story | electron (A) <-> nuclei (B) <-> BO composition (C); exact surface (D)\n"
-            f"t={times[frame]:.3f} fs"
+            "Physical dynamics (A-C) -> proton momentum (D) -> transport (E) -> drive (F)\n"
+            f"t={times[frame]:.3f} fs; gray=unoccupied cells"
         )
-        return electron_line, nuclear_image, marker, eps_image, title
+        return electron_line, nuclear_image, marker, *images, title
 
     animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
     if fmt == "mp4" and shutil.which("ffmpeg"):
@@ -508,14 +546,9 @@ def make_overview_animation(
 
 
 def make_potential_animation(
-    data, joint, support_floor, outdir, fps, max_frames, dpi, fmt,
+    data, joint, diagnostics, support_floor, outdir, fps, max_frames, dpi, fmt,
 ):
-    """One five-field movie arranged by the two nested EF levels.
-
-    Top row belongs to the conditional electronic factor Phi.  Bottom-row
-    epsilon2/alpha belong to the proton-heavy and outer-heavy factorization;
-    the final panel states where any of those fields are actually occupied.
-    """
+    """Nested scalar/connections followed by their outer-heavy consequence."""
     times, q, R = data["times_fs"], data["q"], data["R"]
     frames = selected_frames(len(times), min(max_frames, len(times)))
     extent = [R[0], R[-1], q[0], q[-1]]
@@ -534,14 +567,31 @@ def make_potential_animation(
         eps2 -= eps2[int(np.argmax(heavy))]
         eps2[~heavy_mask] = np.nan
         alpha = np.where(heavy_mask, data["alpha"][frame], np.nan)
-        fields.append((eps1, avec, bvec, eps2, alpha, density))
+        phase_R = np.where(
+            heavy_mask, diagnostics["phase_gradient_R_chi"][frame], np.nan
+        )
+        momentum_R = np.where(
+            heavy_mask, diagnostics["momentum_R_outer"][frame], np.nan
+        )
+        current_R = np.where(
+            heavy_mask, diagnostics["heavy_current"][frame], np.nan
+        )
+        force_R = np.where(heavy_mask, diagnostics["force_R"][frame], np.nan)
+        fields.append((
+            eps1, avec, bvec, eps2, alpha, phase_R, momentum_R,
+            current_R, force_R, heavy,
+        ))
 
     eps1_lim = robust_limits([item[0] for item in fields])
     a_lim = robust_limits([item[1] for item in fields], symmetric=True)
     b_lim = robust_limits([item[2] for item in fields], symmetric=True)
     eps2_lim = robust_limits([item[3] for item in fields])
-    alpha_lim = robust_limits([item[4] for item in fields], symmetric=True)
-    density_max = max(float(np.max(item[5])) for item in fields)
+    momentum_R_lim = robust_limits(
+        [item[index] for item in fields for index in (4, 5, 6)],
+        symmetric=True,
+    )
+    current_R_lim = robust_limits([item[7] for item in fields], symmetric=True)
+    force_R_lim = robust_limits([item[8] for item in fields], symmetric=True)
     first = int(frames[0])
 
     fig, axes = plt.subplots(2, 3, figsize=(15.5, 8.3), constrained_layout=True)
@@ -566,23 +616,46 @@ def make_potential_animation(
     axes[1, 0].set(xlabel=r"heavy $R$ ($a_0$)", ylabel="shifted energy (Hartree)", ylim=eps2_lim)
     axes[1, 0].set_title(r"Proton-heavy level: $\epsilon^{(2)}$", loc="left", fontweight="semibold", fontsize=10)
     axes[1, 0].grid(alpha=0.18)
-
-    alpha_line, = axes[1, 1].plot(R, fields[0][4], color=COLORS[3], lw=2)
-    axes[1, 1].set(xlabel=r"heavy $R$ ($a_0$)", ylabel=r"$\alpha$ ($a_0^{-1}$)", ylim=alpha_lim)
-    axes[1, 1].set_title(r"Outer connection $\alpha$ along $R$", loc="left", fontweight="semibold", fontsize=10)
-    axes[1, 1].grid(alpha=0.18)
-
-    support_image = axes[1, 2].imshow(
-        fields[0][5], origin="lower", aspect="auto", extent=extent,
-        cmap="magma", vmin=0.0, vmax=density_max,
+    density_axis = axes[1, 0].twinx()
+    heavy_density_line, = density_axis.plot(
+        R, fields[0][9]/max(float(np.max(fields[0][9])), 1.0e-300),
+        color="0.45", lw=1.2, alpha=0.65, label=r"$\rho_R$ (scaled)",
     )
-    axes[1, 2].set(xlabel=r"heavy $R$ ($a_0$)", ylabel=r"proton $q$ ($a_0$)")
-    axes[1, 2].set_title("Where the nuclear packet is occupied", loc="left", fontweight="semibold", fontsize=10)
-    fig.colorbar(support_image, ax=axes[1, 2], label=r"$\rho_{qR}$", pad=0.01, fraction=0.046)
+    density_axis.set_ylim(0.0, 1.08)
+    density_axis.set_yticks([])
+
+    alpha_line, = axes[1, 1].plot(R, fields[0][4], color=COLORS[3], lw=1.8, label=r"$\alpha$")
+    phase_R_line, = axes[1, 1].plot(R, fields[0][5], color=COLORS[1], lw=1.6, ls="--", label=r"$\partial_RS$")
+    momentum_R_line, = axes[1, 1].plot(R, fields[0][6], color="black", lw=2.1, label=r"$K_R^{(\chi)}$")
+    axes[1, 1].set(xlabel=r"heavy $R$ ($a_0$)", ylabel=r"momentum ($a_0^{-1}$)", ylim=momentum_R_lim)
+    axes[1, 1].set_title(r"Heavy momentum: $\partial_RS+\alpha=K_R^{(\chi)}$", loc="left", fontweight="semibold", fontsize=10)
+    axes[1, 1].grid(alpha=0.18)
+    axes[1, 1].legend(frameon=False, fontsize=8)
+
+    current_R_line, = axes[1, 2].plot(
+        R, fields[0][7], color=COLORS[0], lw=2, label=r"$j_R^{(\chi)}$"
+    )
+    axes[1, 2].set(
+        xlabel=r"heavy $R$ ($a_0$)", ylabel="heavy probability current",
+        ylim=current_R_lim,
+    )
+    force_axis = axes[1, 2].twinx()
+    force_R_line, = force_axis.plot(
+        R, fields[0][8], color=COLORS[3], lw=1.8,
+        label=r"$F_R=-\partial_R\epsilon^{(2)}+\partial_t\alpha$",
+    )
+    force_axis.set_ylabel(r"heavy force (Hartree/$a_0$)", color=COLORS[3])
+    force_axis.tick_params(axis="y", labelcolor=COLORS[3])
+    force_axis.set_ylim(force_R_lim)
+    axes[1, 2].set_title("Actual heavy transport and drive", loc="left", fontweight="semibold", fontsize=10)
+    axes[1, 2].grid(alpha=0.18)
+    axes[1, 2].legend(
+        handles=[current_R_line, force_R_line], frameon=False, fontsize=7,
+    )
 
     _label_panels(axes)
     title = fig.suptitle(
-        f"Nested exact potentials | electron level (A-C) -> proton-heavy level (D-E); support (F)\n"
+        "Nested fields (A-D) -> heavy mechanical momentum (E) -> transport/drive (F)\n"
         f"t={times[first]:.3f} fs; gray=unoccupied cells (< {support_floor:g} of peak)",
         fontsize=14, fontweight="bold",
     )
@@ -593,13 +666,23 @@ def make_potential_animation(
         for image, values in zip(images, item[:3]):
             image.set_data(values)
         eps2_line.set_ydata(item[3])
+        heavy_density_line.set_ydata(
+            item[9]/max(float(np.max(item[9])), 1.0e-300)
+        )
         alpha_line.set_ydata(item[4])
-        support_image.set_data(item[5])
+        phase_R_line.set_ydata(item[5])
+        momentum_R_line.set_ydata(item[6])
+        current_R_line.set_ydata(item[7])
+        force_R_line.set_ydata(item[8])
         title.set_text(
-            f"Nested exact potentials | electron level (A-C) -> proton-heavy level (D-E); support (F)\n"
+            "Nested fields (A-D) -> heavy mechanical momentum (E) -> transport/drive (F)\n"
             f"t={times[frame]:.3f} fs; gray=unoccupied cells (< {support_floor:g} of peak)"
         )
-        return (*images, eps2_line, alpha_line, support_image, title)
+        return (
+            *images, eps2_line, heavy_density_line,
+            alpha_line, phase_R_line, momentum_R_line,
+            current_R_line, force_R_line, title,
+        )
 
     animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
     if fmt == "mp4" and shutil.which("ffmpeg"):
@@ -646,11 +729,11 @@ def run(
     plot_numerical_reliability(data, diagnostics, densities, outdir, dpi)
     if not no_animation:
         make_overview_animation(
-            data, decomposition, electron, joint, support_floor, outdir, fps,
-            max_frames, animation_dpi, fmt,
+            data, decomposition, electron, joint, diagnostics, support_floor,
+            outdir, fps, max_frames, animation_dpi, fmt,
         )
         make_potential_animation(
-            data, joint, support_floor, outdir, fps, max_frames,
+            data, joint, diagnostics, support_floor, outdir, fps, max_frames,
             animation_dpi, fmt,
         )
 

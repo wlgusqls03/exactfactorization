@@ -24,6 +24,19 @@ def weighted_rms(field, weight):
     return np.sqrt(numerator/np.maximum(denominator, 1.0e-300))
 
 
+def phase_gradient(wavefunction, spacing, axis, density_floor=1.0e-14):
+    """Return ``Im(f* df)/|f|^2`` without explicitly unwrapping its phase.
+
+    For ``f=A exp(iT)`` this is ``dT``.  The ratio is only interpreted after
+    applying an occupied-density mask, but the floor keeps node cells finite.
+    """
+    density = np.abs(wavefunction)**2
+    numerator = np.imag(
+        np.conj(wavefunction)*derivative(wavefunction, spacing, axis=axis)
+    )
+    return numerator/np.maximum(density, density_floor)
+
+
 def gauge_invariant_diagnostics(data):
     """Return covariant currents and electric-field-like exact forces."""
     options = archive_arguments(data)
@@ -32,10 +45,18 @@ def gauge_invariant_diagnostics(data):
     times_au = np.asarray(data["times_fs"])*AU_PER_FS
     lam = np.asarray(data["lambda_wavefunction"])
     chi = np.asarray(data["chi"])
-    a, alpha = np.asarray(data["a"]), np.asarray(data["alpha"])
+    a, b = np.asarray(data["a"]), np.asarray(data["b"])
+    alpha = np.asarray(data["alpha"])
     eps1, eps2 = np.asarray(data["epsilon_1"]), np.asarray(data["epsilon_2"])
     joint = np.abs(lam)**2*np.abs(chi)[:, None, :]**2
     heavy = np.abs(chi)**2
+
+    phase_q_lam = phase_gradient(lam, dq, axis=1)
+    phase_R_lam = phase_gradient(lam, dR, axis=2)
+    phase_R_chi = phase_gradient(chi, dR, axis=1)
+    momentum_q = phase_q_lam+a
+    momentum_R_first = phase_R_lam+phase_R_chi[:, None, :]+b
+    momentum_R_outer = phase_R_chi+alpha
 
     p_q_lam = -1j*derivative(lam, dq, axis=1)
     proton_current = (
@@ -47,23 +68,39 @@ def gauge_invariant_diagnostics(data):
     heavy_current = np.real(np.conj(chi)*(p_R_chi+alpha*chi))/float(
         options["heavy_mass"]
     )
+    first_heavy_current = joint*momentum_R_first/float(options["heavy_mass"])
 
     if len(times_au) >= 2:
         edge_order = 2 if len(times_au) >= 3 else 1
         da_dt = np.gradient(a, times_au, axis=0, edge_order=edge_order)
+        db_dt = np.gradient(b, times_au, axis=0, edge_order=edge_order)
         dalpha_dt = np.gradient(alpha, times_au, axis=0, edge_order=edge_order)
     else:
         da_dt = np.zeros_like(a)
+        db_dt = np.zeros_like(b)
         dalpha_dt = np.zeros_like(alpha)
     force_q = -derivative(eps1, dq, axis=1)+da_dt
+    force_R_first = -derivative(eps1, dR, axis=2)+db_dt
     force_R = -derivative(eps2, dR, axis=1)+dalpha_dt
+    curvature_qR = derivative(a, dR, axis=2)-derivative(b, dq, axis=1)
     return dict(
         joint_density=joint, heavy_density=heavy,
+        phase_gradient_q_lam=phase_q_lam,
+        phase_gradient_R_lam=phase_R_lam,
+        phase_gradient_R_chi=phase_R_chi,
+        momentum_q=momentum_q,
+        momentum_R_first=momentum_R_first,
+        momentum_R_outer=momentum_R_outer,
         proton_current=proton_current, heavy_current=heavy_current,
-        force_q=force_q, force_R=force_R,
+        first_heavy_current=first_heavy_current,
+        force_q=force_q, force_R_first=force_R_first, force_R=force_R,
+        curvature_qR=curvature_qR,
         support_rms_a=weighted_rms(a, joint),
-        support_rms_b=weighted_rms(np.asarray(data["b"]), joint),
+        support_rms_b=weighted_rms(b, joint),
         support_rms_alpha=weighted_rms(alpha, heavy),
+        support_rms_momentum_q=weighted_rms(momentum_q, joint),
+        support_rms_momentum_R_outer=weighted_rms(momentum_R_outer, heavy),
+        support_rms_curvature_qR=weighted_rms(curvature_qR, joint),
         support_rms_force_q=weighted_rms(force_q, joint),
         support_rms_force_R=weighted_rms(force_R, heavy),
     )

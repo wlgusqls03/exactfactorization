@@ -92,16 +92,24 @@ nR을 바꾸었을 때 A-B의 correction과 spike가 감소하고, 동시에 den
 
 ### `mcef_dynamics_overview.mp4`
 
-A 전자 marginal, B q-R nuclear density, C 전 시간 BO population과 현재 시간선,
-D 첫 번째 TDPES를 동기화한다. “핵 packet이 어느 exact surface 영역을 지나며
-전자 density와 BO composition이 함께 어떻게 변했는가?”를 보는 영상이다.
+A 전자 marginal, B q-R nuclear density, C 전 시간 BO population과 현재
+시간선을 동기화한다. 아래 행은 같은 순간의 D proton mechanical momentum
+`Kq=dqT+a`, E 실제 probability current `jq=rho*Kq/mp`, F gauge-invariant drive
+`Eq=-dq epsilon1+dt a`다. 따라서 “무엇이 변했나?”에서 “현재 어느 방향으로
+흐르며 무엇이 그 momentum을 바꾸는가?”까지 한 영상에서 읽는다.
 
 ### `mcef_exact_potentials.mp4`
 
-위 행 A-C는 전자 factor에서 생기는 `epsilon1`, `a`, `b`이고, 아래 D-E는
-proton-heavy/outer factorization의 `epsilon2`, `alpha`다. F는 같은 순간의
-nuclear support다. Potential의 요동이 F의 점유영역 안인지 밖인지 반드시
-함께 확인한다.
+위 행 A-C는 전자 factor에서 생기는 `epsilon1`, `a`, `b`다. 아래 D는
+`epsilon2`와 scaled heavy density, E는 `alpha`, `dR S`, 그리고 둘의 합인
+heavy mechanical momentum `KR= dR S+alpha`, F는 실제 heavy current와
+gauge-invariant force `FR=-dR epsilon2+dt alpha`다. 즉 raw connection을 보여준
+뒤 그것이 실제 heavy momentum/transport에 얼마나 남는지 바로 확인한다.
+
+기본 영상에는 `Omega_qR=dR a-dq b`와 loop geometric phase를 넣지 않는다.
+현재 결과에서는 `a,b`가 grid scale로 거칠어 추가 공간미분이 noise를 더
+증폭하며, packet이 만드는 유일하고 자연스러운 closed loop도 없기 때문이다.
+이 둘은 `nq,nR` 수렴 후 advanced 분석으로 계산하는 편이 안전하다.
 
 ## 생성 명령
 
