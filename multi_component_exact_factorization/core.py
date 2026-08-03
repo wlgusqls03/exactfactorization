@@ -328,63 +328,30 @@ def initial_factors(model: Model, args):
 
 
 def derivative(values, spacing, axis, order=1):
-    """비주기 격자의 독립적인 5점 1·2차 유한차분.
+    """주기 격자의 독립적인 4차 정확도 5점 1·2차 유한차분.
 
-    내부에는 4차 정확도 central stencil을, 양쪽 두 점에는 대응하는
-    one-sided stencil을 쓴다. 특히 2차 미분은 1차 미분을 두 번 적용하지
-    않는다. ``D1(D1(f))``는 Nyquist checkerboard를 보지 못해 짝수/홀수
-    격자를 분리하기 때문이다.
+    모든 점에서 같은 central stencil을 쓰고 인덱스를 주기적으로 감싼다.
+    따라서 균일 격자의 표준 내적에서 ``D1^H=-D1`` 및 ``D2^H=D2``가
+    성립한다. 2차 미분은 ``D1(D1(f))``가 아니라 독립 stencil을 사용해
+    Nyquist checkerboard에도 유한한 kinetic penalty를 준다.
     """
-    source = np.moveaxis(values, axis, 0)
-    if source.shape[0] < 5:
+    if values.shape[axis] < 5:
         raise ValueError("5점 미분에는 해당 축에 최소 5개 격자점이 필요합니다.")
-    result = np.empty_like(source)
     if order == 1:
-        scale = 1.0/(12.0*spacing)
-        result[2:-2] = (
-            source[:-4]-8.0*source[1:-3]
-            +8.0*source[3:-1]-source[4:]
-        )*scale
-        result[0] = (
-            -25.0*source[0]+48.0*source[1]-36.0*source[2]
-            +16.0*source[3]-3.0*source[4]
-        )*scale
-        result[1] = (
-            -3.0*source[0]-10.0*source[1]+18.0*source[2]
-            -6.0*source[3]+source[4]
-        )*scale
-        result[-2] = (
-            -source[-5]+6.0*source[-4]-18.0*source[-3]
-            +10.0*source[-2]+3.0*source[-1]
-        )*scale
-        result[-1] = (
-            3.0*source[-5]-16.0*source[-4]+36.0*source[-3]
-            -48.0*source[-2]+25.0*source[-1]
-        )*scale
-        return np.moveaxis(result, 0, axis)
+        return (
+            np.roll(values, 2, axis=axis)
+            -8.0*np.roll(values, 1, axis=axis)
+            +8.0*np.roll(values, -1, axis=axis)
+            -np.roll(values, -2, axis=axis)
+        )/(12.0*spacing)
     if order == 2:
-        scale = 1.0/(12.0*spacing**2)
-        result[2:-2] = (
-            -source[:-4]+16.0*source[1:-3]-30.0*source[2:-2]
-            +16.0*source[3:-1]-source[4:]
-        )*scale
-        result[0] = (
-            35.0*source[0]-104.0*source[1]+114.0*source[2]
-            -56.0*source[3]+11.0*source[4]
-        )*scale
-        result[1] = (
-            11.0*source[0]-20.0*source[1]+6.0*source[2]
-            +4.0*source[3]-source[4]
-        )*scale
-        result[-2] = (
-            -source[-5]+4.0*source[-4]+6.0*source[-3]
-            -20.0*source[-2]+11.0*source[-1]
-        )*scale
-        result[-1] = (
-            11.0*source[-5]-56.0*source[-4]+114.0*source[-3]
-            -104.0*source[-2]+35.0*source[-1]
-        )*scale
-        return np.moveaxis(result, 0, axis)
+        return (
+            -np.roll(values, 2, axis=axis)
+            +16.0*np.roll(values, 1, axis=axis)
+            -30.0*values
+            +16.0*np.roll(values, -1, axis=axis)
+            -np.roll(values, -2, axis=axis)
+        )/(12.0*spacing**2)
     raise ValueError("order는 1 또는 2여야 합니다.")
 
 
@@ -548,13 +515,18 @@ def covariant_square(field, vector, spacing, axis, sign):
     ``sign=+1``은 ``p+A``, ``sign=-1``은 ``p-A``이다. 1차 covariant
     derivative를 연속 적용하지 않으므로 vector=0일 때 표준 5점
     ``-d^2``가 되고 one-cell checkerboard도 큰 kinetic 값을 갖는다.
+
+    유한차분에는 정확한 Leibniz product rule이 없으므로 연속 전개식의
+    ``(dA)f+2A(df)``를 직접 쓰지 않는다. 대신 ``pA+Ap``의 대칭
+    anticommutator 형태를 사용한다. 실수 vector와 periodic central
+    ``D1,D2``에 대해 이산 연산자도 정확히 Hermitian이다.
     """
-    first = derivative(field, spacing, axis=axis, order=1)
     second = derivative(field, spacing, axis=axis, order=2)
-    vector_first = derivative(vector, spacing, axis=axis, order=1)
+    p_field = momentum(field, spacing, axis=axis)
+    p_vector_field = momentum(vector*field, spacing, axis=axis)
     return (
         -second
-        -1j*sign*(vector_first*field+2.0*vector*first)
+        +sign*(p_vector_field+vector*p_field)
         +vector**2*field
     )
 

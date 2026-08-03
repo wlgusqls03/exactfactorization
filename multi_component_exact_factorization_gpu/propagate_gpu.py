@@ -91,7 +91,7 @@ def run(args):
         f"R0={args.R0:.4f}, sigma_R={args.heavy_sigma:.6f}"
     )
     print(
-        "수치 scheme: nonperiodic 5-point D1/D2; "
+        "수치 scheme: periodic 5-point central D1/D2; "
         "product-preserving gamma transfer; "
         f"ratio_floor={args.ratio_floor:.1e}, "
         f"mask(Phi,Lambda)=({args.mask_threshold_phi:.1e},"
@@ -276,7 +276,7 @@ def run(args):
         local_norm_correction=np.array(
             "product_preserving_nested_tangent_correction"
         ),
-        spatial_derivative=np.array("nonperiodic_five_point_D1_D2"),
+        spatial_derivative=np.array("periodic_five_point_central_D1_D2"),
         ratio_regularization=np.array(
             "joint_support_mask_on_log_amplitude_gradient_only"
         ),

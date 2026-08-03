@@ -170,14 +170,21 @@ box에서는 각 1차원 wavefunction을 격자 적분으로 다시 정규화한
 | 좌표 | 물리적 범위 | 점 수 | spacing | 경계 |
 |---|---:|---:|---:|---|
 | electron `x` | `(-6,8)` interior | 174 | 0.08 | 양쪽 Dirichlet hard wall |
-| proton `q` | `[-3.36,3.6)` | 87 | 0.08 | nonperiodic 5-point finite-difference box |
-| heavy `R` | `[3.0,5.4)` | 30 | 0.08 | nonperiodic 5-point finite-difference box |
+| proton `q` | `[-3.36,3.6)` | 87 | 0.08 | periodic 5-point central finite difference |
+| heavy `R` | `[3.0,5.4)` | 30 | 0.08 | periodic 5-point central finite difference |
 
 전자 왼쪽 경계는 항상 `--left-position`과 같으며 기본값은 `-6 a0`이다.
 경계점 자체에서는 `Phi=0`이고 배열에는 174개 interior point만 저장한다.
 전자 kinetic은 FFT가 아니라 DST-I sine basis를 사용하므로 왼쪽 벽을 넘어
 오른쪽으로 wrap-around하지 않는다. `--x-min` option은 없으며 오른쪽 벽만
 `--x-max`로 바꾼다.
+
+`q`, `R` 미분은 모든 점에서 동일한 4차 정확도 5점 central stencil을 쓰며
+양 끝 인덱스를 주기적으로 연결한다. 이 선택은 균일 격자 내적에서 1차
+미분의 anti-Hermiticity와 2차 미분의 Hermiticity를 보존한다. 실제 nuclear
+density가 경계에 도달하면 wrap-around가 물리에 영향을 주므로 reliability
+그림의 `outer 5 points` probability가 충분히 작은지 반드시 확인해야 한다.
+Propagation 중 작은 wavefunction 값을 임의로 0으로 자르지는 않는다.
 
 왼쪽 경계 위치와 고정 중심 전하는 서로 독립적인 option이다.
 

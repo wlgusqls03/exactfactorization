@@ -77,57 +77,24 @@ def to_gpu_factors(phi, lam, chi, model):
 
 
 def derivative(values, spacing, axis, order=1):
-    """GPU 비주기 격자의 독립적인 5점 1·2차 유한차분."""
-    source = cp.moveaxis(values, axis, 0)
-    if source.shape[0] < 5:
+    """GPU 주기 격자의 독립적인 4차 정확도 5점 1·2차 유한차분."""
+    if values.shape[axis] < 5:
         raise ValueError("5점 미분에는 해당 축에 최소 5개 격자점이 필요합니다.")
-    result = cp.empty_like(source)
     if order == 1:
-        scale = 1.0/(12.0*spacing)
-        result[2:-2] = (
-            source[:-4]-8.0*source[1:-3]
-            +8.0*source[3:-1]-source[4:]
-        )*scale
-        result[0] = (
-            -25.0*source[0]+48.0*source[1]-36.0*source[2]
-            +16.0*source[3]-3.0*source[4]
-        )*scale
-        result[1] = (
-            -3.0*source[0]-10.0*source[1]+18.0*source[2]
-            -6.0*source[3]+source[4]
-        )*scale
-        result[-2] = (
-            -source[-5]+6.0*source[-4]-18.0*source[-3]
-            +10.0*source[-2]+3.0*source[-1]
-        )*scale
-        result[-1] = (
-            3.0*source[-5]-16.0*source[-4]+36.0*source[-3]
-            -48.0*source[-2]+25.0*source[-1]
-        )*scale
-        return cp.moveaxis(result, 0, axis)
+        return (
+            cp.roll(values, 2, axis=axis)
+            -8.0*cp.roll(values, 1, axis=axis)
+            +8.0*cp.roll(values, -1, axis=axis)
+            -cp.roll(values, -2, axis=axis)
+        )/(12.0*spacing)
     if order == 2:
-        scale = 1.0/(12.0*spacing**2)
-        result[2:-2] = (
-            -source[:-4]+16.0*source[1:-3]-30.0*source[2:-2]
-            +16.0*source[3:-1]-source[4:]
-        )*scale
-        result[0] = (
-            35.0*source[0]-104.0*source[1]+114.0*source[2]
-            -56.0*source[3]+11.0*source[4]
-        )*scale
-        result[1] = (
-            11.0*source[0]-20.0*source[1]+6.0*source[2]
-            +4.0*source[3]-source[4]
-        )*scale
-        result[-2] = (
-            -source[-5]+4.0*source[-4]+6.0*source[-3]
-            -20.0*source[-2]+11.0*source[-1]
-        )*scale
-        result[-1] = (
-            11.0*source[-5]-56.0*source[-4]+114.0*source[-3]
-            -104.0*source[-2]+35.0*source[-1]
-        )*scale
-        return cp.moveaxis(result, 0, axis)
+        return (
+            -cp.roll(values, 2, axis=axis)
+            +16.0*cp.roll(values, 1, axis=axis)
+            -30.0*values
+            +16.0*cp.roll(values, -1, axis=axis)
+            -cp.roll(values, -2, axis=axis)
+        )/(12.0*spacing**2)
     raise ValueError("order는 1 또는 2여야 합니다.")
 
 
@@ -297,13 +264,13 @@ def _plus_covariant(field, vector, spacing, axis):
 
 
 def covariant_square(field, vector, spacing, axis, sign):
-    """독립적인 GPU 5점 ``D2``로 ``(-i d+sign*A)^2``를 조립."""
-    first = derivative(field, spacing, axis=axis, order=1)
+    """독립 5점 D2와 Hermitian anticommutator로 covariant square 조립."""
     second = derivative(field, spacing, axis=axis, order=2)
-    vector_first = derivative(vector, spacing, axis=axis, order=1)
+    p_field = momentum(field, spacing, axis=axis)
+    p_vector_field = momentum(vector*field, spacing, axis=axis)
     return (
         -second
-        -1j*sign*(vector_first*field+2.0*vector*first)
+        +sign*(p_vector_field+vector*p_field)
         +vector**2*field
     ).astype(field.dtype, copy=False)
 
