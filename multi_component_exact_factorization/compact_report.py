@@ -129,7 +129,7 @@ def plot_particle_motion(data, densities, means, widths, outdir, dpi):
         (float(options.get("q_min", grids[1][0])), float(options.get("q_max", grids[1][-1]))),
         (float(options.get("R_min", grids[2][0])), float(options.get("R_max", grids[2][-1]))),
     )
-    fig, axes = plt.subplots(2, 2, figsize=(12.8, 8.5), constrained_layout=True)
+    fig, axes = plt.subplots(2, 2, figsize=(14.5, 8.8), constrained_layout=True)
     onset = _stress_onset(data)
     for index, (ax, grid, density, name, symbol, limits) in enumerate(zip(
         axes.flat[:3], grids, densities, names, symbols, box_limits
@@ -410,13 +410,17 @@ def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
         ("max_abs_gamma_phi", r"raw $\max|\gamma_\Phi|$", COLORS[1]),
         ("max_abs_gamma_lam", r"raw $\max|\gamma_\Lambda|$", COLORS[2]),
     )
-    for key, label, color in (
-        ("pnc_projection_correction", "PNC redistribution", COLORS[0]),
-        *gamma_curves,
-    ):
+    for key, label, color in gamma_curves:
         if key in data.files:
-            ax.semilogy(times, np.maximum(data[key], 1.0e-18), color=color, label=label)
+            ax.semilogy(
+                times, np.maximum(data[key], 1.0e-18),
+                color=color, lw=2.0, label=label,
+            )
     if has_supported:
+        ax.axhline(
+            0.1, color="#C43C39", ls=":", lw=1.2,
+            label="warning: 10% transfer in one step",
+        )
         text = (
             rf"max support rate: $\Phi={np.max(data['max_abs_support_gamma_phi']):.1e}$, "
             rf"$\Lambda={np.max(data['max_abs_support_gamma_lam']):.1e}$ a.u.$^{{-1}}$"
@@ -426,7 +430,7 @@ def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
             bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.75", alpha=0.9),
         )
     _style_time_axis(
-        ax, "How large is the occupied-support tangent transfer per step?",
+        ax, "Occupied support: correction per step",
         "dimensionless step load (log scale)" if has_supported else "magnitude (log scale)",
     )
     _mark_stress(ax, onset, label=True)
@@ -434,15 +438,15 @@ def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
 
     ax = axes[0, 1]
     if "max_raw_logamp_phi" in data.files:
-        for key, label, color, style in (
-            ("max_raw_logamp_phi", r"raw $|\nabla\ln A|$: $\Phi$ layer", COLORS[1], ":"),
-            ("max_effective_logamp_phi", r"masked $|\nabla\ln A|$: $\Phi$ layer", COLORS[1], "-"),
-            ("max_raw_logamp_lam", r"raw $|\nabla\ln A|$: $\Lambda$ layer", COLORS[2], ":"),
-            ("max_effective_logamp_lam", r"masked $|\nabla\ln A|$: $\Lambda$ layer", COLORS[2], "-"),
+        for key, label, color, style, alpha, width in (
+            ("max_raw_logamp_phi", r"tail-sensitive raw: $\Phi$", COLORS[1], ":", 0.6, 1.4),
+            ("max_effective_logamp_phi", r"used by solver: $\Phi$", COLORS[1], "-", 1.0, 2.1),
+            ("max_raw_logamp_lam", r"tail-sensitive raw: $\Lambda$", COLORS[2], ":", 0.6, 1.4),
+            ("max_effective_logamp_lam", r"used by solver: $\Lambda$", COLORS[2], "-", 1.0, 2.1),
         ):
             ax.semilogy(
                 times, np.maximum(data[key], 1.0e-18), label=label,
-                color=color, ls=style,
+                color=color, ls=style, alpha=alpha, lw=width,
             )
         removed_phi = np.max(data["suppressed_probability_phi"])
         removed_lam = np.max(data["suppressed_probability_lam"])
@@ -452,7 +456,7 @@ def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
             transform=ax.transAxes, fontsize=8, va="bottom",
             bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.75", alpha=0.9),
         )
-        title = "Does the support mask remove only singular tail feedback?"
+        title = "Tail filter: dotted = raw, solid = used by solver"
         ylabel = r"max $|\nabla\ln A|$ (log scale)"
     else:
         for key, label, color in (
@@ -471,11 +475,40 @@ def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
 
     ax = axes[1, 0]
     if "max_raw_rate_phi" in data.files:
-        ax.semilogy(times, np.maximum(data["max_raw_rate_phi"], 1.0e-20), color=COLORS[1], label=r"raw $r_\Phi$")
-        ax.semilogy(times, np.maximum(data["max_corrected_rate_phi"], 1.0e-20), color=COLORS[0], label=r"corrected $r_\Phi$")
-        ax.semilogy(times, np.maximum(data["max_corrected_rate_lam"], 1.0e-20), color=COLORS[2], label=r"corrected $r_\Lambda$")
-    ax.semilogy(times, np.maximum(np.abs(data["norm"]-1.0), 1.0e-20), color="0.2", ls="--", label=r"$|N_\Psi-1|$")
-    _style_time_axis(ax, "What is preserved after correction", "error / rate (log scale)")
+        ax.semilogy(
+            times, np.maximum(data["max_corrected_rate_phi"], 1.0e-20),
+            color=COLORS[1], lw=1.6, label=r"corrected $r_\Phi$",
+        )
+        ax.semilogy(
+            times, np.maximum(data["max_corrected_rate_lam"], 1.0e-20),
+            color=COLORS[2], lw=1.6, label=r"corrected $r_\Lambda$",
+        )
+    if "pnc_projection_correction" in data.files:
+        ax.semilogy(
+            times, np.maximum(data["pnc_projection_correction"], 1.0e-20),
+            color=COLORS[0], ls=":", alpha=0.75,
+            label="global PNC before projection (tail-sensitive)",
+        )
+    if "pnc_error" in data.files:
+        ax.semilogy(
+            times, np.maximum(data["pnc_error"], 1.0e-20),
+            color=COLORS[3], ls="-.", label="saved PNC residual",
+        )
+    norm_error = np.abs(data["norm"]-1.0)
+    ax.semilogy(
+        times, np.maximum(norm_error, 1.0e-20), color="0.15", lw=2.2,
+        label=r"full $|N_\Psi-1|$ (physical invariant)",
+    )
+    ax.text(
+        0.97, 0.95,
+        rf"max full-norm error = {np.max(norm_error):.1e}",
+        transform=ax.transAxes, fontsize=8.5, va="top", ha="right",
+        bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.75", alpha=0.9),
+    )
+    _style_time_axis(
+        ax, "Conservation: norm drift vs tail-sensitive PNC",
+        "error / corrected rate (log scale)",
+    )
     _mark_stress(ax, onset)
     ax.legend(frameon=False, fontsize=8)
 
@@ -490,19 +523,27 @@ def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
     ax.semilogy(times, np.maximum(nyquist_R, 1.0e-20), color=COLORS[3], ls="--", label=r"$\chi$ R-Nyquist power")
     options = archive_arguments(data)
     dq, dR = float(q[1]-q[0]), float(R[1]-R[0])
+    q_growth = float(nyquist_q[-1]/max(nyquist_q[0], 1.0e-30))
+    R_growth = float(nyquist_R[-1]/max(nyquist_R[0], 1.0e-30))
     text = (
         rf"initial $\sigma_q/dq={options.get('proton_sigma', np.nan)/dq:.2f}$" "\n"
-        rf"initial $\sigma_R/dR={options.get('heavy_sigma', np.nan)/dR:.2f}$"
+        rf"initial $\sigma_R/dR={options.get('heavy_sigma', np.nan)/dR:.2f}$" "\n"
+        rf"Nyquist growth: $q\times{q_growth:.1e}$, $R\times{R_growth:.1e}$"
     )
     ax.text(0.03, 0.05, text, transform=ax.transAxes, fontsize=9, va="bottom",
             bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="0.75", alpha=0.9))
-    _style_time_axis(ax, "Are the box edges and one-cell grid modes quiet?", "probability / power (log scale)")
+    grid_title = (
+        "Grid warning: R one-cell mode grows; edges remain empty"
+        if R_growth > 100.0 and nyquist_R[-1] > 1.0e-12
+        else "Grid check: boundaries and one-cell modes"
+    )
+    _style_time_axis(ax, grid_title, "probability / power (log scale)")
     _mark_stress(ax, onset)
     ax.legend(frameon=False, fontsize=8)
 
     _label_panels(axes)
     fig.suptitle(
-        "4 | Can this trajectory be trusted?  Tangent transfer (A) -> mask load (B) -> invariants (C) -> grid modes (D)",
+        "4 | Numerical reliability: occupied dynamics (A), discarded tails (B), conservation (C), and grid artifacts (D)",
         fontsize=13.5, fontweight="bold",
     )
     path = outdir/"04_numerical_reliability.png"
