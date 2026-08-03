@@ -10,12 +10,16 @@ from types import SimpleNamespace
 import numpy as np
 from scipy.fft import dst
 
-from multi_component_exact_factorization.core import derivative as cpu_derivative
+from multi_component_exact_factorization.core import (
+    derivative as cpu_derivative,
+    project_discrete_product_residual as cpu_product_projection,
+)
 from .gpu_core import (
     cp,
     derivative,
     dst1_ortho,
     precision_types,
+    project_discrete_product_residual as gpu_product_projection,
     remove_local_norm_generator,
 )
 
@@ -91,6 +95,51 @@ def run(args):
             raise AssertionError(f"{precision} correction dtype 검증 실패")
         if max(gamma_error, rate_error, action_error) > tolerance:
             raise AssertionError(f"{precision} local-norm correction 검증 실패")
+
+    # Discrete product projection의 CPU/GPU double 결과와 projection 후
+    # full-norm rate를 작은 smooth factor에서 직접 비교한다.
+    nx, nq, nR = 7, 9, 8
+    projection_model_cpu = SimpleNamespace(
+        dx=0.2, dq=2.0*np.pi/nq, dR=2.0*np.pi/nR,
+        proton_mass=7.0, heavy_mass=19.0,
+    )
+    projection_model_gpu = SimpleNamespace(
+        **vars(projection_model_cpu), real_dtype=cp.float64,
+        complex_dtype=cp.complex128, reduction_real_dtype=cp.float64,
+        reduction_complex_dtype=cp.complex128,
+    )
+    shapes = ((nx, nq, nR), (nq, nR), (nR,))
+    factors = [
+        1.0+0.05*(rng.normal(size=shape)+1j*rng.normal(size=shape))
+        for shape in shapes
+    ]
+    rates = [
+        1.0e-3*(rng.normal(size=shape)+1j*rng.normal(size=shape))
+        for shape in shapes
+    ]
+    cpu_result = cpu_product_projection(
+        *factors, *rates, projection_model_cpu,
+        support_floor_phi=1.0e-10, support_floor_lam=1.0e-10,
+    )
+    gpu_result = gpu_product_projection(
+        *(cp.asarray(value) for value in factors),
+        *(cp.asarray(value) for value in rates),
+        projection_model_gpu,
+        support_floor_phi=1.0e-10, support_floor_lam=1.0e-10,
+    )
+    projection_error = max(
+        float(np.max(np.abs(cp.asnumpy(gpu_result[i])-cpu_result[i])))
+        for i in range(3)
+    )
+    gpu_norm_rate = float(
+        gpu_result[3]["full_norm_rate_after_product_projection"].get()
+    )
+    print(
+        f"product projection: CPU/GPU error={projection_error:.3e}, "
+        f"norm rate={gpu_norm_rate:.3e}"
+    )
+    if projection_error > 2.0e-11 or abs(gpu_norm_rate) > 2.0e-11:
+        raise AssertionError("GPU discrete product projection 검증 실패")
 
     benchmark = cp.asarray(
         rng.normal(size=(args.nx, args.nq, args.nR))

@@ -499,6 +499,93 @@ def reconstruct_psi(phi, lam, chi):
     return phi*lam[None, :, :]*chi[None, None, :]
 
 
+def project_discrete_product_residual(
+    phi, lam, chi, dphi, dlam, dchi, model: Model,
+    support_floor_phi=1.0e-10, support_floor_lam=1.0e-10,
+):
+    """Factor RHS를 Hermitian discrete nuclear kinetic의 tangent로 맞춘다.
+
+    연속 EF 유도에 쓰이는 Leibniz product rule은 finite difference에서
+    정확하지 않다. 따라서 factor RHS로 재구성한 ``dPsi``와 periodic 5점
+    ``D2``가 만드는 target nuclear ``dPsi``의 residual을 계산하고,
+    ``Phi -> Lambda -> chi`` 순서의 orthogonal nested tangent로 분해해
+    되돌린다. 점유 support에서는 product derivative가 target과 일치하고,
+    나눗셈이 위험한 tail에는 factor-orthogonal residual만 남으므로 full
+    norm 생성률은 만들지 않는다.
+    """
+    if support_floor_phi < 0.0 or support_floor_lam < 0.0:
+        raise ValueError("product projection support floor는 0 이상이어야 합니다.")
+    psi = reconstruct_psi(phi, lam, chi)
+    product_rhs = (
+        dphi*lam[None, :, :]*chi[None, None, :]
+        +phi*dlam[None, :, :]*chi[None, None, :]
+        +phi*lam[None, :, :]*dchi[None, None, :]
+    )
+    nuclear_action = (
+        -0.5*derivative(psi, model.dq, axis=1, order=2)/model.proton_mass
+        -0.5*derivative(psi, model.dR, axis=2, order=2)/model.heavy_mass
+    )
+    target_rhs = -1j*nuclear_action
+    residual = target_rhs-product_rhs
+
+    phi_norm2 = np.sum(np.abs(phi)**2, axis=0)*model.dx
+    safe_phi_norm2 = np.maximum(phi_norm2, 1.0e-14)
+    delta_xi = (
+        np.sum(np.conj(phi)*residual, axis=0)*model.dx/safe_phi_norm2
+    )
+    perpendicular_phi = residual-phi*delta_xi[None, :, :]
+
+    xi = lam*chi[None, :]
+    xi_density = np.abs(xi)**2
+    xi_peak = max(float(np.max(xi_density)), 1.0e-300)
+    # conj(xi)/(|xi|^2+eta*peak)는 (1/xi)에 smooth support weight를
+    # 곱한 것과 같다. Hard cutoff가 만드는 새 경계/spike를 피한다.
+    inverse_xi = np.conj(xi)/(
+        xi_density+support_floor_phi*xi_peak
+    )
+    delta_phi = perpendicular_phi*inverse_xi[None, :, :]
+
+    lam_norm2 = np.sum(np.abs(lam)**2, axis=0)*model.dq
+    safe_lam_norm2 = np.maximum(lam_norm2, 1.0e-14)
+    delta_chi = (
+        np.sum(np.conj(lam)*delta_xi, axis=0)*model.dq/safe_lam_norm2
+    )
+    perpendicular_lam = delta_xi-lam*delta_chi[None, :]
+    chi_density = np.abs(chi)**2
+    chi_peak = max(float(np.max(chi_density)), 1.0e-300)
+    inverse_chi = np.conj(chi)/(
+        chi_density+support_floor_lam*chi_peak
+    )
+    delta_lam = perpendicular_lam*inverse_chi[None, :]
+
+    dphi = dphi+delta_phi
+    dlam = dlam+delta_lam
+    dchi = dchi+delta_chi
+    corrected_product_rhs = (
+        dphi*lam[None, :, :]*chi[None, None, :]
+        +phi*dlam[None, :, :]*chi[None, None, :]
+        +phi*lam[None, :, :]*dchi[None, None, :]
+    )
+    effective_residual = target_rhs-corrected_product_rhs
+    volume = model.dx*model.dq*model.dR
+    diagnostics = dict(
+        product_residual_l2=np.sqrt(np.sum(np.abs(residual)**2)*volume),
+        effective_product_residual_l2=np.sqrt(
+            np.sum(np.abs(effective_residual)**2)*volume
+        ),
+        full_norm_rate_before_product_projection=(
+            2.0*np.real(np.sum(np.conj(psi)*product_rhs))*volume
+        ),
+        full_norm_rate_after_product_projection=(
+            2.0*np.real(np.sum(np.conj(psi)*corrected_product_rhs))*volume
+        ),
+        product_correction_phi=np.max(np.abs(delta_phi)),
+        product_correction_lam=np.max(np.abs(delta_lam)),
+        product_correction_chi=np.max(np.abs(delta_chi)),
+    )
+    return dphi, dlam, dchi, diagnostics
+
+
 def _minus_covariant(field, vector, spacing, axis):
     """``(-i d - vector) field``."""
     return momentum(field, spacing, axis)-vector*field

@@ -32,6 +32,7 @@ from .core import (
     initial_factors,
     instantaneous_functionals,
     pnc_project,
+    project_discrete_product_residual,
     reconstruct_psi,
 )
 
@@ -51,13 +52,27 @@ DIAGNOSTIC_FIELDS = {
     "max_effective_logamp_phi": "effective_logamp_phi",
     "max_raw_logamp_lam": "raw_logamp_lam",
     "max_effective_logamp_lam": "effective_logamp_lam",
+    "max_product_residual_l2": "product_residual_l2",
+    "max_effective_product_residual_l2": "effective_product_residual_l2",
+    "max_abs_full_norm_rate_before_product_projection": (
+        "full_norm_rate_before_product_projection"
+    ),
+    "max_abs_full_norm_rate_after_product_projection": (
+        "full_norm_rate_after_product_projection"
+    ),
+    "max_abs_product_correction_phi": "product_correction_phi",
+    "max_abs_product_correction_lam": "product_correction_lam",
+    "max_abs_product_correction_chi": "product_correction_chi",
 }
 
 
 def field_maxima(fields):
     """현재 RHS 평가의 local-norm correction 진단 최댓값."""
     return {
-        name: float(np.max(np.abs(fields[field_name])))
+        name: (
+            float(np.max(np.abs(fields[field_name])))
+            if field_name in fields else 0.0
+        )
         for name, field_name in DIAGNOSTIC_FIELDS.items()
     }
 
@@ -94,6 +109,12 @@ def coupled_rhs(phi, lam, chi, model, args):
     dchi = -1j*(
         0.5*p2chi/model.heavy_mass+fields["epsilon_2"]*chi
     )+fields["gamma_lam"]*chi                                      # (nR,)
+    dphi, dlam, dchi, product_diagnostics = project_discrete_product_residual(
+        phi, lam, chi, dphi, dlam, dchi, model,
+        support_floor_phi=args.mask_threshold_phi,
+        support_floor_lam=args.mask_threshold_lam,
+    )
+    fields.update(product_diagnostics)
     return dphi, dlam, dchi, field_maxima(fields)
 
 
@@ -212,7 +233,7 @@ def run(args):
     )
     print(
         "수치 scheme: periodic 5-point central D1/D2; "
-        "product-preserving gamma transfer; "
+        "product-preserving gamma transfer + discrete product projection; "
         f"ratio_floor={args.ratio_floor:.1e}, "
         f"mask(Phi,Lambda)=({args.mask_threshold_phi:.1e},"
         f"{args.mask_threshold_lam:.1e})"
@@ -375,6 +396,9 @@ def run(args):
         ),
         local_norm_correction=np.array(
             "product_preserving_nested_tangent_correction"
+        ),
+        discrete_product_projection=np.array(
+            "nested_tangent_projection_to_periodic_nuclear_D2"
         ),
         spatial_derivative=np.array("periodic_five_point_central_D1_D2"),
         ratio_regularization=np.array(

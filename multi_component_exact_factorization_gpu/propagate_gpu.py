@@ -92,7 +92,7 @@ def run(args):
     )
     print(
         "수치 scheme: periodic 5-point central D1/D2; "
-        "product-preserving gamma transfer; "
+        "product-preserving gamma transfer + discrete product projection; "
         f"ratio_floor={args.ratio_floor:.1e}, "
         f"mask(Phi,Lambda)=({args.mask_threshold_phi:.1e},"
         f"{args.mask_threshold_lam:.1e})"
@@ -282,6 +282,9 @@ def run(args):
         ),
         local_norm_correction=np.array(
             "product_preserving_nested_tangent_correction"
+        ),
+        discrete_product_projection=np.array(
+            "nested_tangent_projection_to_periodic_nuclear_D2"
         ),
         spatial_derivative=np.array("periodic_five_point_central_D1_D2"),
         ratio_regularization=np.array(

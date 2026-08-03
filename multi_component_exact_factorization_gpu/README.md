@@ -84,7 +84,14 @@ CUDA_VISIBLE_DEVICES=0 python -m \
 세 precision 모두 CPU와 같은 product-preserving nested tangent correction을
 RK4의 네 stage마다 적용한다. `mixed`에서는 norm과 expectation을
 FP64/complex128로 합산한 뒤 correction field에 곱하는 `gamma`만 float32로
-되돌린다. 결과
+되돌린다.
+
+또한 finite difference가 연속 Leibniz rule을 정확히 만족하지 않는 defect는
+각 RK stage에서 factor product RHS와 Hermitian periodic nuclear `D2`의 차이를
+계산해 occupied nested tangent에 되돌리는 discrete product projection으로
+제거한다. Tail correction은 기존 joint/heavy support mask와 같은 smooth
+weight로 감쇠한다.
+
 archive의 `max_abs_support_gamma_*`와 `max_abs_support_gamma_*_dt`가 각각
 점유 support 안의 correction rate와 한 step의 dimensionless tangent load다.
 빈 tail까지 포함하는 `max_abs_gamma_*`는 보조 디버깅용으로만 남긴다.

@@ -474,7 +474,28 @@ def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
     ax.legend(frameon=False, fontsize=8, ncol=2)
 
     ax = axes[1, 0]
-    if "max_raw_rate_phi" in data.files:
+    has_product_projection = "max_product_residual_l2" in data.files
+    if has_product_projection:
+        ax.semilogy(
+            times, np.maximum(data["max_product_residual_l2"], 1.0e-20),
+            color=COLORS[1], ls=":", alpha=0.75,
+            label=r"factor/full $D_2$ residual: before",
+        )
+        ax.semilogy(
+            times,
+            np.maximum(data["max_effective_product_residual_l2"], 1.0e-20),
+            color=COLORS[1], lw=1.8,
+            label=r"factor/full $D_2$ residual: after",
+        )
+        ax.semilogy(
+            times, np.maximum(
+                data["max_abs_full_norm_rate_after_product_projection"],
+                1.0e-20,
+            ),
+            color=COLORS[2], lw=1.6,
+            label=r"full norm-rate after projection",
+        )
+    elif "max_raw_rate_phi" in data.files:
         ax.semilogy(
             times, np.maximum(data["max_corrected_rate_phi"], 1.0e-20),
             color=COLORS[1], lw=1.6, label=r"corrected $r_\Phi$",
@@ -505,10 +526,12 @@ def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
         transform=ax.transAxes, fontsize=8.5, va="top", ha="right",
         bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.75", alpha=0.9),
     )
-    _style_time_axis(
-        ax, "Conservation: norm drift vs tail-sensitive PNC",
-        "error / corrected rate (log scale)",
+    conservation_title = (
+        "Conservation: discrete product residual before/after projection"
+        if has_product_projection
+        else "Conservation: norm drift vs tail-sensitive PNC"
     )
+    _style_time_axis(ax, conservation_title, "error / rate (log scale)")
     _mark_stress(ax, onset)
     ax.legend(frameon=False, fontsize=8)
 

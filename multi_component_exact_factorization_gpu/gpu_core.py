@@ -445,6 +445,101 @@ def pnc_error(phi, lam, model):
     )
 
 
+def project_discrete_product_residual(
+    phi, lam, chi, dphi, dlam, dchi, model,
+    support_floor_phi=1.0e-10, support_floor_lam=1.0e-10,
+):
+    """GPU factor RHS를 periodic full nuclear D2의 nested tangent에 투영."""
+    if support_floor_phi < 0.0 or support_floor_lam < 0.0:
+        raise ValueError("product projection support floor는 0 이상이어야 합니다.")
+    psi = phi*lam[None, :, :]*chi[None, None, :]
+    product_rhs = (
+        dphi*lam[None, :, :]*chi[None, None, :]
+        +phi*dlam[None, :, :]*chi[None, None, :]
+        +phi*lam[None, :, :]*dchi[None, None, :]
+    )
+    nuclear_action = (
+        -0.5*derivative(psi, model.dq, axis=1, order=2)/model.proton_mass
+        -0.5*derivative(psi, model.dR, axis=2, order=2)/model.heavy_mass
+    )
+    target_rhs = -1j*nuclear_action
+    residual = target_rhs-product_rhs
+
+    phi_norm2 = cp.sum(
+        cp.real(phi*cp.conj(phi)), axis=0,
+        dtype=model.reduction_real_dtype,
+    )*model.dx
+    phi_floor = cp.asarray(1.0e-14, dtype=phi_norm2.dtype)
+    delta_xi = cp.sum(
+        cp.conj(phi)*residual, axis=0,
+        dtype=model.reduction_complex_dtype,
+    )*model.dx/cp.maximum(phi_norm2, phi_floor)
+    delta_xi = delta_xi.astype(model.complex_dtype, copy=False)
+    perpendicular_phi = residual-phi*delta_xi[None, :, :]
+
+    xi = lam*chi[None, :]
+    xi_density = cp.real(xi*cp.conj(xi))
+    tiny = cp.asarray(1.0e-30, dtype=xi_density.dtype)
+    xi_peak = cp.maximum(cp.max(xi_density), tiny)
+    inverse_xi = cp.conj(xi)/(
+        xi_density+support_floor_phi*xi_peak
+    )
+    delta_phi = perpendicular_phi*inverse_xi[None, :, :]
+
+    lam_norm2 = cp.sum(
+        cp.real(lam*cp.conj(lam)), axis=0,
+        dtype=model.reduction_real_dtype,
+    )*model.dq
+    delta_chi = cp.sum(
+        cp.conj(lam)*delta_xi, axis=0,
+        dtype=model.reduction_complex_dtype,
+    )*model.dq/cp.maximum(lam_norm2, phi_floor)
+    delta_chi = delta_chi.astype(model.complex_dtype, copy=False)
+    perpendicular_lam = delta_xi-lam*delta_chi[None, :]
+    chi_density = cp.real(chi*cp.conj(chi))
+    chi_peak = cp.maximum(cp.max(chi_density), tiny)
+    inverse_chi = cp.conj(chi)/(
+        chi_density+support_floor_lam*chi_peak
+    )
+    delta_lam = perpendicular_lam*inverse_chi[None, :]
+
+    dphi = (dphi+delta_phi).astype(model.complex_dtype, copy=False)
+    dlam = (dlam+delta_lam).astype(model.complex_dtype, copy=False)
+    dchi = (dchi+delta_chi).astype(model.complex_dtype, copy=False)
+    corrected_product_rhs = (
+        dphi*lam[None, :, :]*chi[None, None, :]
+        +phi*dlam[None, :, :]*chi[None, None, :]
+        +phi*lam[None, :, :]*dchi[None, None, :]
+    )
+    effective_residual = target_rhs-corrected_product_rhs
+    volume = model.dx*model.dq*model.dR
+
+    def l2(values):
+        return cp.sqrt(cp.sum(
+            cp.real(values*cp.conj(values)),
+            dtype=model.reduction_real_dtype,
+        )*volume)
+
+    def norm_rate(values):
+        overlap = cp.sum(
+            cp.conj(psi)*values, dtype=model.reduction_complex_dtype
+        )
+        return 2.0*overlap.real*volume
+
+    diagnostics = dict(
+        product_residual_l2=l2(residual),
+        effective_product_residual_l2=l2(effective_residual),
+        full_norm_rate_before_product_projection=norm_rate(product_rhs),
+        full_norm_rate_after_product_projection=norm_rate(
+            corrected_product_rhs
+        ),
+        product_correction_phi=cp.max(cp.abs(delta_phi)),
+        product_correction_lam=cp.max(cp.abs(delta_lam)),
+        product_correction_chi=cp.max(cp.abs(delta_chi)),
+    )
+    return dphi, dlam, dchi, diagnostics
+
+
 def coupled_rhs(
     phi, lam, chi, model, ratio_floor, mask_threshold_phi,
     mask_threshold_lam,
@@ -467,6 +562,12 @@ def coupled_rhs(
         -1j*(0.5*p2chi/model.heavy_mass+fields["epsilon_2"]*chi)
         +fields["gamma_lam"]*chi
     )
+    dphi, dlam, dchi, product_diagnostics = project_discrete_product_residual(
+        phi, lam, chi, dphi, dlam, dchi, model,
+        support_floor_phi=mask_threshold_phi,
+        support_floor_lam=mask_threshold_lam,
+    )
+    fields.update(product_diagnostics)
     return dphi, dlam, dchi, field_maxima(fields)
 
 
@@ -485,13 +586,27 @@ DIAGNOSTIC_FIELDS = {
     "max_effective_logamp_phi": "effective_logamp_phi",
     "max_raw_logamp_lam": "raw_logamp_lam",
     "max_effective_logamp_lam": "effective_logamp_lam",
+    "max_product_residual_l2": "product_residual_l2",
+    "max_effective_product_residual_l2": "effective_product_residual_l2",
+    "max_abs_full_norm_rate_before_product_projection": (
+        "full_norm_rate_before_product_projection"
+    ),
+    "max_abs_full_norm_rate_after_product_projection": (
+        "full_norm_rate_after_product_projection"
+    ),
+    "max_abs_product_correction_phi": "product_correction_phi",
+    "max_abs_product_correction_lam": "product_correction_lam",
+    "max_abs_product_correction_chi": "product_correction_chi",
 }
 
 
 def field_maxima(fields):
     """GPU 동기화 없이 현재 RHS field의 진단 최대 scalar를 만든다."""
     return {
-        name: cp.max(cp.abs(fields[field_name]))
+        name: (
+            cp.max(cp.abs(fields[field_name]))
+            if field_name in fields else cp.asarray(0.0)
+        )
         for name, field_name in DIAGNOSTIC_FIELDS.items()
     }
 

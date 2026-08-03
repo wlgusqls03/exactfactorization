@@ -91,6 +91,9 @@ nt = 저장 frame 수
 | `max_corrected_rate_phi`, `max_corrected_rate_lam` | `(nt,)` | 보정 후 남은 local norm 생성률의 구간 최대값 |
 | `suppressed_probability_phi`, `suppressed_probability_lam` | `(nt,)` | support mask가 감쇠한 probability mass의 구간 최대값 |
 | `max_raw_logamp_*`, `max_effective_logamp_*` | `(nt,)` | amplitude logarithmic gradient의 mask 전/후 구간 최대값 |
+| `max_product_residual_l2`, `max_effective_product_residual_l2` | `(nt,)` | factor RHS와 full periodic nuclear `D2` tangent의 투영 전/후 L2 residual |
+| `max_abs_full_norm_rate_before_product_projection`, `max_abs_full_norm_rate_after_product_projection` | `(nt,)` | discrete product projection 전/후 full norm 생성률 |
+| `max_abs_product_correction_*` | `(nt,)` | nested tangent에 추가된 residual correction의 factor별 최대 크기 |
 | `psi` | `(nt,nx,nq,nR)` | 선택 저장하는 full wavefunction |
 
 유한차분과 node regularization이 coupled action에 남기는 수치적
