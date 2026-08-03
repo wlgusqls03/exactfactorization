@@ -90,6 +90,13 @@ def run(args):
         f"q0={args.q0:.4f}, sigma_q={args.proton_sigma:.6f}; "
         f"R0={args.R0:.4f}, sigma_R={args.heavy_sigma:.6f}"
     )
+    print(
+        "수치 scheme: nonperiodic 5-point D1/D2; "
+        "product-preserving gamma transfer; "
+        f"ratio_floor={args.ratio_floor:.1e}, "
+        f"mask(Phi,Lambda)=({args.mask_threshold_phi:.1e},"
+        f"{args.mask_threshold_lam:.1e})"
+    )
 
     n_steps = int(round(args.t_final_fs*AU_PER_FS/args.dt_au))
     save_steps = list(range(0, n_steps+1, max(1, args.save_every)))
@@ -120,7 +127,9 @@ def run(args):
     def save_frame(frame, step, correction=0.0, interval_diagnostics=None):
         """저장 시점에만 GPU factor/field를 CPU로 내려 동일 NPZ 형식으로 기록."""
         fields_gpu = instantaneous_functionals(
-            phi, lam, chi, gpu_model, floor=args.density_threshold
+            phi, lam, chi, gpu_model, floor=args.ratio_floor,
+            mask_threshold_phi=args.mask_threshold_phi,
+            mask_threshold_lam=args.mask_threshold_lam,
         )
         phi_base, lam_base, chi_base = cp.asnumpy(phi), cp.asnumpy(lam), cp.asnumpy(chi)
         fields_base = {
@@ -174,7 +183,8 @@ def run(args):
         if gpu_util_limit < 100.0 and throttle_chunk_start is None:
             throttle_chunk_start = time.perf_counter()
         phi, lam, chi, step_correction, step_diagnostics = full_step(
-            phi, lam, chi, args.dt_au, gpu_model, args.density_threshold
+            phi, lam, chi, args.dt_au, gpu_model, args.ratio_floor,
+            args.mask_threshold_phi, args.mask_threshold_lam,
         )
         interval_correction = cp.maximum(
             interval_correction, step_correction
@@ -204,7 +214,7 @@ def run(args):
         if must_check and not all_finite(phi, lam, chi):
             raise FloatingPointError(
                 f"step {step}에서 non-finite 값이 발생했습니다. "
-                "dt를 줄이거나 density-threshold를 키우세요."
+                "마지막 정상 frame과 dt/grid/mask 진단을 확인하세요."
             )
         if must_save:
             save_frame(
@@ -264,8 +274,15 @@ def run(args):
             "nested_realspace_independent_harmonic_hardwall_electron"
         ),
         local_norm_correction=np.array(
-            "remove_antihermitian_parallel_component_with_current_local_norm"
+            "product_preserving_nested_tangent_correction"
         ),
+        spatial_derivative=np.array("nonperiodic_five_point_D1_D2"),
+        ratio_regularization=np.array(
+            "joint_support_mask_on_log_amplitude_gradient_only"
+        ),
+        ratio_floor=np.array(args.ratio_floor),
+        mask_threshold_phi=np.array(args.mask_threshold_phi),
+        mask_threshold_lam=np.array(args.mask_threshold_lam),
         backend=np.array("cupy_single_gpu"),
         precision=np.array(args.precision),
         cuda_device=np.array(args.device),
@@ -344,7 +361,23 @@ def parse_args():
         "--check-every", type=int, default=100,
         help="non-finite GPU 검사를 수행할 step 간격; 저장 frame에서는 항상 검사",
     )
-    parser.add_argument("--density-threshold", type=float, default=1.0e-9)
+    regularization = parser.add_argument_group("node/tail regularization")
+    regularization.add_argument(
+        "--ratio-floor", type=float, default=1.0e-14,
+        help="logarithmic derivative의 zero division만 막는 numerical floor",
+    )
+    regularization.add_argument(
+        "--mask-threshold-phi", type=float, default=1.0e-10,
+        help="joint density 기반 Phi amplitude-gradient mask",
+    )
+    regularization.add_argument(
+        "--mask-threshold-lam", type=float, default=1.0e-10,
+        help="heavy density 기반 Lambda amplitude-gradient mask",
+    )
+    regularization.add_argument(
+        "--density-threshold", type=float, default=None,
+        help="deprecated: 지정하면 두 mask threshold에 같은 값을 사용",
+    )
     parser.add_argument("--save-psi", action="store_true")
     render = parser.add_argument_group("계산 완료 후 자동 렌더링")
     render.add_argument(
@@ -363,7 +396,11 @@ def parse_args():
     gauge.add_argument("--theta2-R-gradient", type=float, default=0.0)
     gauge.add_argument("--theta2-frequency", type=float, default=0.0)
     add_model_arguments(parser)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.density_threshold is not None:
+        args.mask_threshold_phi = args.density_threshold
+        args.mask_threshold_lam = args.density_threshold
+    return args
 
 
 def main(args=None):

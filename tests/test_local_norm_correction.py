@@ -34,7 +34,7 @@ class LocalNormCorrectionHelperTests(unittest.TestCase):
         self.assertTrue(np.allclose(corrected, hermitian_action, atol=2.0e-15))
 
 
-class PeriodicGaugeIntegrationTests(unittest.TestCase):
+class SmoothGaugeIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         with patch.object(sys, "argv", ["test", "--electron-excitation", "1"]):
@@ -42,7 +42,7 @@ class PeriodicGaugeIntegrationTests(unittest.TestCase):
         cls.model = build_model(cls.args)
         cls.phi, cls.lam, cls.chi = initial_factors(cls.model, cls.args)
 
-    def periodic_gauge_factors(self):
+    def smooth_gauge_factors(self):
         model = self.model
         Lq = len(model.q)*model.dq
         LR = len(model.R)*model.dR
@@ -56,14 +56,16 @@ class PeriodicGaugeIntegrationTests(unittest.TestCase):
         chi = self.chi*np.exp(-1j*theta2)
         return phi, lam, chi
 
-    def test_nested_periodic_gauge_preserves_psi_and_removes_raw_rates(self):
-        phi, lam, chi = self.periodic_gauge_factors()
+    def test_nested_smooth_gauge_preserves_psi_and_removes_raw_rates(self):
+        phi, lam, chi = self.smooth_gauge_factors()
         before = reconstruct_psi(self.phi, self.lam, self.chi)
         after = reconstruct_psi(phi, lam, chi)
         self.assertLess(float(np.max(np.abs(after-before))), 5.0e-16)
 
         fields = instantaneous_functionals(
-            phi, lam, chi, self.model, floor=self.args.density_threshold
+            phi, lam, chi, self.model, floor=self.args.ratio_floor,
+            mask_threshold_phi=self.args.mask_threshold_phi,
+            mask_threshold_lam=self.args.mask_threshold_lam,
         )
         self.assertGreater(
             max(
@@ -85,21 +87,24 @@ class PeriodicGaugeIntegrationTests(unittest.TestCase):
             rtol=2.0e-13,
         ))
 
-    def test_corrected_full_rhs_has_zero_instantaneous_norm_rate(self):
-        phi, lam, chi = self.periodic_gauge_factors()
-        dphi, dlam, dchi, _ = coupled_rhs(
-            phi, lam, chi, self.model, self.args
+    def test_nested_gamma_transfer_preserves_full_product_pointwise(self):
+        phi, lam, chi = self.smooth_gauge_factors()
+        fields = instantaneous_functionals(
+            phi, lam, chi, self.model, floor=self.args.ratio_floor,
+            mask_threshold_phi=self.args.mask_threshold_phi,
+            mask_threshold_lam=self.args.mask_threshold_lam,
         )
-        psi = reconstruct_psi(phi, lam, chi)
-        dpsi = (
-            dphi*lam[None, :, :]*chi[None, None, :]
-            +phi*dlam[None, :, :]*chi[None, None, :]
-            +phi*lam[None, :, :]*dchi[None, None, :]
+        gamma_phi = fields["gamma_phi"]
+        gamma_lam = fields["gamma_lam"]
+        delta_phi = -gamma_phi[None, :, :]*phi
+        delta_lam = (gamma_phi-gamma_lam[None, :])*lam
+        delta_chi = gamma_lam*chi
+        delta_psi = (
+            delta_phi*lam[None, :, :]*chi[None, None, :]
+            +phi*delta_lam[None, :, :]*chi[None, None, :]
+            +phi*lam[None, :, :]*delta_chi[None, None, :]
         )
-        rate = 2.0*np.real(np.sum(np.conj(psi)*dpsi))*(
-            self.model.dx*self.model.dq*self.model.dR
-        )
-        self.assertLess(abs(float(rate)), 1.0e-12)
+        self.assertLess(float(np.max(np.abs(delta_psi))), 2.0e-14)
 
 
 if __name__ == "__main__":

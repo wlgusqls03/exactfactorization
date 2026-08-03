@@ -27,7 +27,7 @@ from .core import (
     AU_PER_FS,
     add_model_arguments,
     build_model,
-    derivative,
+    covariant_square,
     electronic_split_step,
     initial_factors,
     instantaneous_functionals,
@@ -43,6 +43,12 @@ DIAGNOSTIC_FIELDS = {
     "max_raw_rate_lam": "raw_rate_lam",
     "max_corrected_rate_phi": "corrected_rate_phi",
     "max_corrected_rate_lam": "corrected_rate_lam",
+    "suppressed_probability_phi": "suppressed_probability_phi",
+    "suppressed_probability_lam": "suppressed_probability_lam",
+    "max_raw_logamp_phi": "raw_logamp_phi",
+    "max_effective_logamp_phi": "effective_logamp_phi",
+    "max_raw_logamp_lam": "raw_logamp_lam",
+    "max_effective_logamp_lam": "effective_logamp_lam",
 }
 
 
@@ -65,7 +71,9 @@ def merge_maxima(*diagnostics):
 def coupled_rhs(phi, lam, chi, model, args):
     """H_BO를 제외한 전자 RHS와 양성자/무거운 핵 RHS를 동시에 계산."""
     fields = instantaneous_functionals(
-        phi, lam, chi, model, floor=args.density_threshold
+        phi, lam, chi, model, floor=args.ratio_floor,
+        mask_threshold_phi=args.mask_threshold_phi,
+        mask_threshold_lam=args.mask_threshold_lam,
     )
 
     # 전자 H_BO Phi는 split step에서 처리하므로 여기에는 U_coup-epsilon_1만 둔다.
@@ -80,11 +88,10 @@ def coupled_rhs(phi, lam, chi, model, args):
 
     # 바깥 핵 방정식: [(-i d_R+alpha)^2/(2M)+epsilon_2] chi
     alpha = fields["alpha"]
-    pchi = -1j*derivative(chi, model.dR, axis=0)+alpha*chi
-    p2chi = -1j*derivative(pchi, model.dR, axis=0)+alpha*pchi
+    p2chi = covariant_square(chi, alpha, model.dR, axis=0, sign=+1)
     dchi = -1j*(
         0.5*p2chi/model.heavy_mass+fields["epsilon_2"]*chi
-    )                                                               # (nR,)
+    )+fields["gamma_lam"]*chi                                      # (nR,)
     return dphi, dlam, dchi, field_maxima(fields)
 
 
@@ -201,6 +208,13 @@ def run(args):
         f"k_R={args.initial_heavy_force_constant:.6f}; "
         f"p_q={args.proton_momentum:.4f}, p_R={args.heavy_momentum:.4f}"
     )
+    print(
+        "수치 scheme: nonperiodic 5-point D1/D2; "
+        "product-preserving gamma transfer; "
+        f"ratio_floor={args.ratio_floor:.1e}, "
+        f"mask(Phi,Lambda)=({args.mask_threshold_phi:.1e},"
+        f"{args.mask_threshold_lam:.1e})"
+    )
 
     n_steps = int(round(args.t_final_fs*AU_PER_FS/args.dt_au))
     save_steps = list(range(0, n_steps+1, max(1, args.save_every)))
@@ -232,7 +246,9 @@ def run(args):
         """현재 base-gauge factor를 선택 gauge로 바꾸어 한 frame 저장."""
         # 1) 현재 factor로부터 base-gauge의 모든 EF potential을 계산한다.
         fields = instantaneous_functionals(
-            phi, lam, chi, model, floor=args.density_threshold
+            phi, lam, chi, model, floor=args.ratio_floor,
+            mask_threshold_phi=args.mask_threshold_phi,
+            mask_threshold_lam=args.mask_threshold_lam,
         )
         time_au = step*args.dt_au
 
@@ -290,7 +306,7 @@ def run(args):
         ):
             raise FloatingPointError(
                 f"step {step}에서 non-finite 값이 발생했습니다. "
-                "dt를 줄이거나 density-threshold를 키우세요."
+                "마지막 정상 checkpoint와 dt/grid/mask 진단을 확인하세요."
             )
         if frame < nt and step == save_steps[frame]:
             save_frame(
@@ -346,8 +362,15 @@ def run(args):
             "nested_realspace_independent_harmonic_hardwall_electron"
         ),
         local_norm_correction=np.array(
-            "remove_antihermitian_parallel_component_with_current_local_norm"
+            "product_preserving_nested_tangent_correction"
         ),
+        spatial_derivative=np.array("nonperiodic_five_point_D1_D2"),
+        ratio_regularization=np.array(
+            "joint_support_mask_on_log_amplitude_gradient_only"
+        ),
+        ratio_floor=np.array(args.ratio_floor),
+        mask_threshold_phi=np.array(args.mask_threshold_phi),
+        mask_threshold_lam=np.array(args.mask_threshold_lam),
         gauge=np.array(gauge_name),
         base_gauge=np.array("parallel_transport_two_level"),
         x=model.x, q=model.q, R=model.R, times_fs=times_fs,
@@ -383,9 +406,22 @@ def parse_args():
     parser.add_argument("--t-final-fs", type=float, default=0.05)
     parser.add_argument("--save-every", type=int, default=20)
     parser.add_argument("--progress-every", type=int, default=100)
-    parser.add_argument(
-        "--density-threshold", type=float, default=1.0e-9,
-        help="chi/Lambda node에서 logarithmic derivative를 안정화하는 상대 floor",
+    regularization = parser.add_argument_group("node/tail regularization")
+    regularization.add_argument(
+        "--ratio-floor", type=float, default=1.0e-14,
+        help="logarithmic derivative의 zero division만 막는 numerical floor",
+    )
+    regularization.add_argument(
+        "--mask-threshold-phi", type=float, default=1.0e-10,
+        help="joint density |Lambda|^2|chi|^2 기반 Phi amplitude mask",
+    )
+    regularization.add_argument(
+        "--mask-threshold-lam", type=float, default=1.0e-10,
+        help="heavy density |chi|^2 기반 Lambda amplitude mask",
+    )
+    regularization.add_argument(
+        "--density-threshold", type=float, default=None,
+        help="deprecated: 지정하면 두 mask threshold에 같은 값을 사용",
     )
     parser.add_argument(
         "--save-psi", action="store_true",
@@ -422,7 +458,11 @@ def parse_args():
         help="d theta_2/dt; atomic-unit energy shift",
     )
     add_model_arguments(parser)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.density_threshold is not None:
+        args.mask_threshold_phi = args.density_threshold
+        args.mask_threshold_lam = args.density_threshold
+    return args
 
 
 def main(args=None):

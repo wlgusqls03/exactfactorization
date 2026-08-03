@@ -22,10 +22,13 @@ from .core import (
     AU_PER_FS,
     add_model_arguments,
     build_model,
+    covariant_square,
     electronic_kinetic_step,
     geometric_fields,
     initial_factors,
+    logarithmic_components,
     nested_factorize,
+    occupied_support_mask,
     proton_base_operator,
     reconstruct_psi,
     regularized_ratio,
@@ -139,28 +142,30 @@ def run(args):
     epsilon_2 = np.empty((nt, args.nR))
     epsilon_1 = np.empty((nt, args.nq, args.nR))
     for it in range(nt):
-        pchi = (
-            -1j*np.gradient(chis[it], model.dR, edge_order=2)
-            +alpha[it]*chis[it]
-        )
-        p2chi = (
-            -1j*np.gradient(pchi, model.dR, edge_order=2)
-            +alpha[it]*pchi
+        p2chi = covariant_square(
+            chis[it], alpha[it], model.dR, axis=0, sign=+1
         )
         nuclear_kinetic = 0.5*p2chi/model.heavy_mass
         eps2_complex = regularized_ratio(
             1j*dchi_dt[it]-nuclear_kinetic,
-            chis[it], args.density_threshold,
+            chis[it], args.ratio_floor,
         )
         epsilon_2[it] = eps2_complex.real
 
+        chi_phase_R, chi_logamp_R = logarithmic_components(
+            chis[it], model.dR, axis=0,
+            numerical_floor=args.ratio_floor,
+        )
+        mask_lam = occupied_support_mask(
+            np.abs(chis[it])**2, args.mask_threshold_lam
+        )
         base_lam = proton_base_operator(
-            lams[it], chis[it], avec[it], bvec[it], alpha[it], model,
-            args.density_threshold,
+            lams[it], avec[it], bvec[it], alpha[it],
+            chi_phase_R, chi_logamp_R, mask_lam, model,
         )
         eps1_complex = regularized_ratio(
             1j*dlam_dt[it]-base_lam+epsilon_2[it][None, :]*lams[it],
-            lams[it], args.density_threshold,
+            lams[it], args.ratio_floor,
         )
         epsilon_1[it] = eps1_complex.real
 
@@ -195,13 +200,21 @@ def parse_args():
     parser.add_argument("--t-final-fs", type=float, default=0.05)
     parser.add_argument("--save-every", type=int, default=20)
     parser.add_argument("--progress-every", type=int, default=100)
-    parser.add_argument("--density-threshold", type=float, default=1.0e-9)
+    parser.add_argument("--ratio-floor", type=float, default=1.0e-14)
+    parser.add_argument("--mask-threshold-lam", type=float, default=1.0e-10)
+    parser.add_argument(
+        "--density-threshold", type=float, default=None,
+        help="deprecated: Lambda support mask threshold alias",
+    )
     parser.add_argument(
         "--compact", action="store_true",
         help="재구성 가능한 full Psi를 archive에서 생략한다",
     )
     add_model_arguments(parser)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.density_threshold is not None:
+        args.mask_threshold_lam = args.density_threshold
+    return args
 
 
 if __name__ == "__main__":

@@ -45,8 +45,8 @@ CUDA_VISIBLE_DEVICES=0 python -m \
 
 우리 전자 hard wall은 DST-I를 사용한다. CuPy 내장 DST가 type I을 지원하지
 않으므로 `gpu_core.py`는 odd-extension FFT로 orthonormal DST-I를 구현한다.
-위 명령은 이를 SciPy DST-I와 `complex128`, `complex64`에서 비교하고 periodic
-유한차분도 CPU와 비교한다. `GPU 기본 검증: PASS`가 나와야 전파한다.
+위 명령은 이를 SciPy DST-I와 `complex128`, `complex64`에서 비교하고 비주기
+5점 유한차분도 CPU와 비교한다. `GPU 기본 검증: PASS`가 나와야 전파한다.
 
 `CUDA_VISIBLE_DEVICES=0`을 쓰면 물리 GPU 0만 프로그램에 보이며, 프로그램
 내부에서는 그 장치가 다시 index 0이 된다. 따라서 보통 `--device 0`을 그대로
@@ -81,9 +81,10 @@ CUDA_VISIBLE_DEVICES=0 python -m \
 | `single` | complex64 | FP32 |
 | `mixed` | complex64 | FP64로 합한 뒤 propagation field는 FP32 |
 
-세 precision 모두 CPU와 같은 local-norm constraint correction을 RK4의 네
-stage마다 적용한다. `mixed`에서는 norm과 expectation을 FP64/complex128로
-합산한 뒤 correction field에 곱하는 `gamma`만 float32로 되돌린다. 결과
+세 precision 모두 CPU와 같은 product-preserving nested tangent correction을
+RK4의 네 stage마다 적용한다. `mixed`에서는 norm과 expectation을
+FP64/complex128로 합산한 뒤 correction field에 곱하는 `gamma`만 float32로
+되돌린다. 결과
 archive의 `max_abs_gamma_*`, `max_raw_rate_*`, `max_corrected_rate_*`와
 `pnc_projection_correction`은 각 저장 간격 전체의 최댓값이다.
 

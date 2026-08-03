@@ -358,6 +358,23 @@ def _edge_mass(density, spacing, points=5):
     return (np.sum(density[:, :points], axis=1)+np.sum(density[:, -points:], axis=1))*spacing
 
 
+def _nyquist_power(data):
+    """저장 factor의 one-cell alternating 성분을 physical weight로 측정."""
+    lam = np.asarray(data["lambda_wavefunction"])
+    chi = np.asarray(data["chi"])
+    dq = float(data["q"][1]-data["q"][0])
+    dR = float(data["R"][1]-data["R"][0])
+    alternating_q = (-1.0)**np.arange(lam.shape[1])
+    alternating_R = (-1.0)**np.arange(chi.shape[1])
+    projection_q = np.sum(lam*alternating_q[None, :, None], axis=1)*dq
+    power_q = np.sum(
+        np.abs(chi)**2*np.abs(projection_q)**2, axis=1
+    )*dR
+    projection_R = np.sum(chi*alternating_R[None, :], axis=1)*dR
+    power_R = np.abs(projection_R)**2
+    return power_q, power_R
+
+
 def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
     """Constraint load, field roughness, preserved identities, and box edges."""
     times = data["times_fs"]
@@ -367,25 +384,49 @@ def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
     ax = axes[0, 0]
     for key, label, color in (
         ("pnc_projection_correction", "PNC redistribution", COLORS[0]),
-        ("max_abs_gamma_phi", r"max $|\gamma_\Phi|$", COLORS[1]),
-        ("max_abs_gamma_lam", r"max $|\gamma_\Lambda|$", COLORS[2]),
+        ("max_abs_gamma_phi", r"$\Phi\to\Lambda$ tangent transfer", COLORS[1]),
+        ("max_abs_gamma_lam", r"$\Lambda\to\chi$ tangent transfer", COLORS[2]),
     ):
         if key in data.files:
             ax.semilogy(times, np.maximum(data[key], 1.0e-18), color=color, label=label)
-    _style_time_axis(ax, "How hard the constraint correction works", "magnitude (log scale)")
+    _style_time_axis(ax, "How much product-preserving tangent transfer is needed?", "magnitude (log scale)")
     _mark_stress(ax, onset, label=True)
     ax.legend(frameon=False, fontsize=8)
 
     ax = axes[0, 1]
-    for key, label, color in (
-        ("support_rms_a", "RMS a", COLORS[0]),
-        ("support_rms_b", "RMS b", COLORS[1]),
-        ("support_rms_alpha", "RMS alpha", COLORS[2]),
-        ("support_rms_force_q", "RMS proton force", COLORS[3]),
-        ("support_rms_force_R", "RMS heavy force", COLORS[4]),
-    ):
-        ax.semilogy(times, np.maximum(diagnostics[key], 1.0e-18), label=label, color=color)
-    _style_time_axis(ax, "Roughness inside the occupied region", "weighted RMS (log scale)")
+    if "max_raw_logamp_phi" in data.files:
+        for key, label, color, style in (
+            ("max_raw_logamp_phi", r"raw $|\nabla\ln A|$: $\Phi$ layer", COLORS[1], ":"),
+            ("max_effective_logamp_phi", r"masked $|\nabla\ln A|$: $\Phi$ layer", COLORS[1], "-"),
+            ("max_raw_logamp_lam", r"raw $|\nabla\ln A|$: $\Lambda$ layer", COLORS[2], ":"),
+            ("max_effective_logamp_lam", r"masked $|\nabla\ln A|$: $\Lambda$ layer", COLORS[2], "-"),
+        ):
+            ax.semilogy(
+                times, np.maximum(data[key], 1.0e-18), label=label,
+                color=color, ls=style,
+            )
+        removed_phi = np.max(data["suppressed_probability_phi"])
+        removed_lam = np.max(data["suppressed_probability_lam"])
+        ax.text(
+            0.03, 0.05,
+            rf"max suppressed mass: $\Phi={removed_phi:.1e}$, $\Lambda={removed_lam:.1e}$",
+            transform=ax.transAxes, fontsize=8, va="bottom",
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.75", alpha=0.9),
+        )
+        title = "Does the support mask remove only singular tail feedback?"
+        ylabel = r"max $|\nabla\ln A|$ (log scale)"
+    else:
+        for key, label, color in (
+            ("support_rms_a", "RMS a", COLORS[0]),
+            ("support_rms_b", "RMS b", COLORS[1]),
+            ("support_rms_alpha", "RMS alpha", COLORS[2]),
+            ("support_rms_force_q", "RMS proton force", COLORS[3]),
+            ("support_rms_force_R", "RMS heavy force", COLORS[4]),
+        ):
+            ax.semilogy(times, np.maximum(diagnostics[key], 1.0e-18), label=label, color=color)
+        title = "Roughness inside the occupied region"
+        ylabel = "weighted RMS (log scale)"
+    _style_time_axis(ax, title, ylabel)
     _mark_stress(ax, onset)
     ax.legend(frameon=False, fontsize=8, ncol=2)
 
@@ -405,6 +446,9 @@ def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
     R_edge = _edge_mass(densities[2], float(R[1]-R[0]))
     ax.semilogy(times, np.maximum(q_edge, 1.0e-20), color=COLORS[0], label="proton: outer 5 points")
     ax.semilogy(times, np.maximum(R_edge, 1.0e-20), color=COLORS[2], label="heavy: outer 5 points")
+    nyquist_q, nyquist_R = _nyquist_power(data)
+    ax.semilogy(times, np.maximum(nyquist_q, 1.0e-20), color=COLORS[1], ls="--", label=r"$\Lambda$ q-Nyquist power")
+    ax.semilogy(times, np.maximum(nyquist_R, 1.0e-20), color=COLORS[3], ls="--", label=r"$\chi$ R-Nyquist power")
     options = archive_arguments(data)
     dq, dR = float(q[1]-q[0]), float(R[1]-R[0])
     text = (
@@ -413,13 +457,13 @@ def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
     )
     ax.text(0.03, 0.05, text, transform=ax.transAxes, fontsize=9, va="bottom",
             bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="0.75", alpha=0.9))
-    _style_time_axis(ax, "Is the nuclear box wide and fine enough?", "edge probability (log scale)")
+    _style_time_axis(ax, "Are the box edges and one-cell grid modes quiet?", "probability / power (log scale)")
     _mark_stress(ax, onset)
     ax.legend(frameon=False, fontsize=8)
 
     _label_panels(axes)
     fig.suptitle(
-        "4 | Can this trajectory be trusted?  Correction load (A) -> roughness (B) -> hidden error (C) -> grid check (D)",
+        "4 | Can this trajectory be trusted?  Tangent transfer (A) -> mask load (B) -> invariants (C) -> grid modes (D)",
         fontsize=13.5, fontweight="bold",
     )
     path = outdir/"04_numerical_reliability.png"

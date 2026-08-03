@@ -87,18 +87,23 @@ nt = 저장 frame 수
 | `max_abs_gamma_phi`, `max_abs_gamma_lam` | `(nt,)` | 이전 저장 이후 모든 RK4 stage의 local-norm correction 최대값 |
 | `max_raw_rate_phi`, `max_raw_rate_lam` | `(nt,)` | 보정 전 local norm 생성률의 구간 최대값 |
 | `max_corrected_rate_phi`, `max_corrected_rate_lam` | `(nt,)` | 보정 후 남은 local norm 생성률의 구간 최대값 |
+| `suppressed_probability_phi`, `suppressed_probability_lam` | `(nt,)` | support mask가 감쇠한 probability mass의 구간 최대값 |
+| `max_raw_logamp_*`, `max_effective_logamp_*` | `(nt,)` | amplitude logarithmic gradient의 mask 전/후 구간 최대값 |
 | `psi` | `(nt,nx,nq,nR)` | 선택 저장하는 full wavefunction |
 
 유한차분과 node regularization이 coupled action에 남기는 수치적
 anti-Hermitian 성분은 매 RK4 stage에서
 
 ```text
-gamma = Im <f|A_f> / <f|f>,   A_f <- A_f - i gamma f
+delta dot(Phi)    = -gamma_Phi Phi
+delta dot(Lambda) = +(gamma_Phi-gamma_Lambda) Lambda
+delta dot(chi)    = +gamma_Lambda chi
 ```
 
-로 제거한다. RK4 중간 factor는 PNC가 정확히 1이 아닐 수 있으므로 현재 local
-norm으로 나눈다. 이 보정은 전체 `Psi`를 매 step 강제 정규화하는 처리가
-아니며, continuum 식에서 0이어야 하는 local norm 생성 방향만 제거한다.
+로 factor 사이에 전달한다. RK4 중간 factor는 PNC가 정확히 1이 아닐 수
+있으므로 각 gamma는 현재 local norm으로 나눈다. 세 correction의 product
+rule 합은 점별로 0이므로 full `Psi=Phi*Lambda*chi`의 순간 변화는 건드리지
+않고 두 PNC의 tangent 방향만 정리한다.
 위 진단 배열과 `pnc_projection_correction`은 저장 frame 한 점의 값이 아니라
 이전 저장 이후 네 RK stage와 모든 step에서 관측한 최대값이다.
 
@@ -165,8 +170,8 @@ box에서는 각 1차원 wavefunction을 격자 적분으로 다시 정규화한
 | 좌표 | 물리적 범위 | 점 수 | spacing | 경계 |
 |---|---:|---:|---:|---|
 | electron `x` | `(-6,8)` interior | 174 | 0.08 | 양쪽 Dirichlet hard wall |
-| proton `q` | `[-3.36,3.6)` | 87 | 0.08 | periodic numerical box |
-| heavy `R` | `[3.0,5.4)` | 30 | 0.08 | periodic numerical box |
+| proton `q` | `[-3.36,3.6)` | 87 | 0.08 | nonperiodic 5-point finite-difference box |
+| heavy `R` | `[3.0,5.4)` | 30 | 0.08 | nonperiodic 5-point finite-difference box |
 
 전자 왼쪽 경계는 항상 `--left-position`과 같으며 기본값은 `-6 a0`이다.
 경계점 자체에서는 `Phi=0`이고 배열에는 174개 interior point만 저장한다.
@@ -546,14 +551,17 @@ box:   각 density가 양 끝에서 충분히 작은지 확인
 - heavy/proton-heavy/electron-heavy density L1 오차
 - wavepacket의 경계 도달 여부
 - 자동 force constant와 Gaussian 표준편차의 격자 수렴
-- `density-threshold` 변화에 대한 민감도
+- `mask-threshold-phi`, `mask-threshold-lam` 변화에 대한 민감도
 
 ## 수치적 주의점
 
 Direct EF에는 `(-i d chi)/chi`, `(-i d Lambda)/Lambda`가 있어 density node와
-tail에서 매우 불안정할 수 있다. 이 코드는 `--density-threshold`로 분모를
-regularize하지만, 이는 물리적 근사가 아니라 수치적 안전장치다. 최종 결과가
-threshold, 격자, time step에 안정적인지 반드시 확인해야 한다.
+tail에서 매우 불안정할 수 있다. `--ratio-floor`는 zero division만 막고,
+`--mask-threshold-phi`는 joint density `|Lambda|^2|chi|^2`,
+`--mask-threshold-lam`은 `|chi|^2` support를 사용한다. Gauge-invariant phase
+momentum은 유지하고 singular한 amplitude logarithmic gradient만 감쇠한다.
+Mask는 안정화 근사이므로 threshold, grid, time step 및 full-TDSE reference에
+대해 observable이 수렴하는지 반드시 확인해야 한다.
 
 `pnc_projection_correction`은 점유율이 거의 0인 조건부 tail까지 포함한
 substep 전역 최댓값이라 크게 보일 수 있다. 저장 factor 자체의 PNC 잔차는

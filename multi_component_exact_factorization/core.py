@@ -73,7 +73,9 @@ def build_model(args) -> Model:
     dx = (x_right-x_left)/(args.nx+1)
     x = x_left+dx*np.arange(1, args.nx+1)
 
-    # q와 R은 density가 경계에서 충분히 작다는 전제 아래 주기 격자를 쓴다.
+    # q와 R은 density가 경계에서 충분히 작다는 전제 아래 finite box에 둔다.
+    # 배열 배치는 기존 archive와 호환되도록 endpoint=False를 유지하지만,
+    # 미분은 경계를 wrap하지 않는 5점 one-sided stencil을 사용한다.
     q = np.linspace(args.q_min, args.q_max, args.nq, endpoint=False)
     R = np.linspace(args.R_min, args.R_max, args.nR, endpoint=False)
     dq = float(q[1] - q[0])
@@ -326,28 +328,62 @@ def initial_factors(model: Model, args):
 
 
 def derivative(values, spacing, axis, order=1):
-    """주기 격자 중앙 유한차분.
+    """비주기 격자의 독립적인 5점 1·2차 유한차분.
 
-    같은 함수가 phi, Lambda, chi에 모두 쓰이지만 ``axis``가 다르다.
-    예를 들어 phi에서 q 미분은 axis=1, R 미분은 axis=2이다.
+    내부에는 4차 정확도 central stencil을, 양쪽 두 점에는 대응하는
+    one-sided stencil을 쓴다. 특히 2차 미분은 1차 미분을 두 번 적용하지
+    않는다. ``D1(D1(f))``는 Nyquist checkerboard를 보지 못해 짝수/홀수
+    격자를 분리하기 때문이다.
     """
-    # np.roll을 두 번 쓰면 phi처럼 큰 3D 배열 전체를 매 미분마다 두 번
-    # 복사한다. 미분축을 맨 앞으로 보는 view를 만든 뒤 interior와 두
-    # periodic boundary를 직접 채우면 같은 stencil을 훨씬 적은 메모리
-    # traffic으로 계산할 수 있다.
     source = np.moveaxis(values, axis, 0)
+    if source.shape[0] < 5:
+        raise ValueError("5점 미분에는 해당 축에 최소 5개 격자점이 필요합니다.")
     result = np.empty_like(source)
     if order == 1:
-        scale = 1.0/(2.0*spacing)
-        result[1:-1] = (source[2:]-source[:-2])*scale
-        result[0] = (source[1]-source[-1])*scale
-        result[-1] = (source[0]-source[-2])*scale
+        scale = 1.0/(12.0*spacing)
+        result[2:-2] = (
+            source[:-4]-8.0*source[1:-3]
+            +8.0*source[3:-1]-source[4:]
+        )*scale
+        result[0] = (
+            -25.0*source[0]+48.0*source[1]-36.0*source[2]
+            +16.0*source[3]-3.0*source[4]
+        )*scale
+        result[1] = (
+            -3.0*source[0]-10.0*source[1]+18.0*source[2]
+            -6.0*source[3]+source[4]
+        )*scale
+        result[-2] = (
+            -source[-5]+6.0*source[-4]-18.0*source[-3]
+            +10.0*source[-2]+3.0*source[-1]
+        )*scale
+        result[-1] = (
+            3.0*source[-5]-16.0*source[-4]+36.0*source[-3]
+            -48.0*source[-2]+25.0*source[-1]
+        )*scale
         return np.moveaxis(result, 0, axis)
     if order == 2:
-        scale = 1.0/spacing**2
-        result[1:-1] = (source[2:]-2.0*source[1:-1]+source[:-2])*scale
-        result[0] = (source[1]-2.0*source[0]+source[-1])*scale
-        result[-1] = (source[0]-2.0*source[-1]+source[-2])*scale
+        scale = 1.0/(12.0*spacing**2)
+        result[2:-2] = (
+            -source[:-4]+16.0*source[1:-3]-30.0*source[2:-2]
+            +16.0*source[3:-1]-source[4:]
+        )*scale
+        result[0] = (
+            35.0*source[0]-104.0*source[1]+114.0*source[2]
+            -56.0*source[3]+11.0*source[4]
+        )*scale
+        result[1] = (
+            11.0*source[0]-20.0*source[1]+6.0*source[2]
+            +4.0*source[3]-source[4]
+        )*scale
+        result[-2] = (
+            -source[-5]+4.0*source[-4]+6.0*source[-3]
+            -20.0*source[-2]+11.0*source[-1]
+        )*scale
+        result[-1] = (
+            11.0*source[-5]-56.0*source[-4]+114.0*source[-3]
+            -104.0*source[-2]+35.0*source[-1]
+        )*scale
         return np.moveaxis(result, 0, axis)
     raise ValueError("order는 1 또는 2여야 합니다.")
 
@@ -366,6 +402,40 @@ def regularized_ratio(numerator, denominator, relative_floor):
     density = np.abs(denominator)**2
     floor = relative_floor*max(float(np.max(density)), 1.0e-300)
     return numerator*np.conj(denominator)/(density+floor)
+
+
+def logarithmic_components(factor, spacing, axis, numerical_floor=1.0e-14):
+    """``(-i d factor)/factor = phase_gradient-i*log_amplitude_gradient``.
+
+    ``numerical_floor``는 overflow/zero division만 막는 작은 수치 floor다.
+    물리적 support를 정하는 mask threshold와 의도적으로 분리한다.
+    """
+    if numerical_floor <= 0.0:
+        raise ValueError("numerical_floor는 양수여야 합니다.")
+    density = np.abs(factor)**2
+    peak = np.max(density, axis=axis, keepdims=True)
+    safe = density+numerical_floor*np.maximum(peak, 1.0e-300)
+    ratio = momentum(factor, spacing, axis)*np.conj(factor)/safe
+    return ratio.real, -ratio.imag
+
+
+def occupied_support_mask(density, relative_threshold):
+    """상대 density로 정의한 부드러운 ``rho/(rho+eta*rho_max)`` mask."""
+    if relative_threshold < 0.0:
+        raise ValueError("mask threshold는 0 이상이어야 합니다.")
+    if relative_threshold == 0.0:
+        return np.ones_like(density, dtype=float)
+    peak = max(float(np.max(density)), 1.0e-300)
+    return density/(density+relative_threshold*peak)
+
+
+def suppressed_probability(density, mask, *spacings):
+    """Support mask가 감쇠한 정규화 probability mass."""
+    volume = float(np.prod(spacings))
+    total = float(np.sum(density))*volume
+    if total <= 0.0:
+        return 0.0
+    return float(np.sum(density*(1.0-mask)))*volume/total
 
 
 def remove_local_norm_generator(
@@ -472,6 +542,23 @@ def _plus_covariant(field, vector, spacing, axis):
     return momentum(field, spacing, axis)+vector*field
 
 
+def covariant_square(field, vector, spacing, axis, sign):
+    """독립적인 5점 ``D2``로 ``(-i d + sign*vector)^2 field`` 계산.
+
+    ``sign=+1``은 ``p+A``, ``sign=-1``은 ``p-A``이다. 1차 covariant
+    derivative를 연속 적용하지 않으므로 vector=0일 때 표준 5점
+    ``-d^2``가 되고 one-cell checkerboard도 큰 kinetic 값을 갖는다.
+    """
+    first = derivative(field, spacing, axis=axis, order=1)
+    second = derivative(field, spacing, axis=axis, order=2)
+    vector_first = derivative(vector, spacing, axis=axis, order=1)
+    return (
+        -second
+        -1j*sign*(vector_first*field+2.0*vector*first)
+        +vector**2*field
+    )
+
+
 def geometric_fields(phi, lam, model: Model):
     """두 단계의 vector potential ``a(q,R), b(q,R), alpha(R)`` 계산."""
     p_q_phi = momentum(phi, model.dq, axis=1)
@@ -488,31 +575,41 @@ def geometric_fields(phi, lam, model: Model):
     return a, b, alpha.real
 
 
-def proton_base_operator(lam, chi, a, b, alpha, model: Model, floor):
+def proton_base_operator(
+    lam, a, b, alpha, chi_phase_R, chi_logamp_R, mask_lam,
+    model: Model,
+):
     """``H_pr`` 중 epsilon_1을 제외한 부분을 Lambda에 적용한다.
 
     반환값은 proton kinetic과 두 번째 factorization의 coupling을 합한
     ``base_lambda(nq,nR)``이다.
     """
     # [(-i d_q+a)^2/(2m_p)] Lambda
-    dplus_q = _plus_covariant(lam, a, model.dq, axis=0)
-    proton_kinetic = _plus_covariant(dplus_q, a, model.dq, axis=0)
-    proton_kinetic *= 0.5/model.proton_mass
+    proton_kinetic = covariant_square(
+        lam, a, model.dq, axis=0, sign=+1
+    )*(0.5/model.proton_mass)
 
     # U_{p,n}^coup Lambda: R 방향에서 b-alpha가 vector field 역할을 한다.
     vector_R = b-alpha[None, :]
     dplus_R = _plus_covariant(lam, vector_R, model.dR, axis=1)
-    dplus_R2 = _plus_covariant(dplus_R, vector_R, model.dR, axis=1)
-    ratio_chi_R = regularized_ratio(
-        momentum(chi, model.dR, axis=0), chi, floor
+    dplus_R2 = covariant_square(
+        lam, vector_R, model.dR, axis=1, sign=+1
+    )
+    # K_R^(chi)=d_R S+alpha는 유지하고 node에서 singular한
+    # d_R ln|chi|만 rho_R support로 감쇠한다.
+    chi_coefficient = (
+        chi_phase_R+alpha-1j*mask_lam*chi_logamp_R
     )                                                               # (nR,)
     proton_nuclear_coupling = (
-        0.5*dplus_R2+(ratio_chi_R+alpha)[None, :]*dplus_R
+        0.5*dplus_R2+chi_coefficient[None, :]*dplus_R
     )/model.heavy_mass
     return proton_kinetic+proton_nuclear_coupling
 
 
-def instantaneous_functionals(phi, lam, chi, model: Model, floor=1.0e-10):
+def instantaneous_functionals(
+    phi, lam, chi, model: Model, floor=1.0e-14,
+    mask_threshold_phi=1.0e-10, mask_threshold_lam=1.0e-10,
+):
     """현재 세 factor에서 모든 EF scalar/vector potential을 계산한다.
 
     두 scalar gauge는 parallel-transport gauge를 사용한다:
@@ -524,34 +621,55 @@ def instantaneous_functionals(phi, lam, chi, model: Model, floor=1.0e-10):
     """
     a, b, alpha = geometric_fields(phi, lam, model)
 
+    # 각 nested conditional factor가 실제로 정의되는 physical support.
+    rho_R = np.abs(chi)**2
+    rho_qR = np.abs(lam)**2*rho_R[None, :]
+    mask_phi = occupied_support_mask(rho_qR, mask_threshold_phi)
+    mask_lam = occupied_support_mask(rho_R, mask_threshold_lam)
+
+    lam_phase_q, lam_logamp_q = logarithmic_components(
+        lam, model.dq, axis=0, numerical_floor=floor
+    )
+    lam_phase_R, lam_logamp_R = logarithmic_components(
+        lam, model.dR, axis=1, numerical_floor=floor
+    )
+    chi_phase_R, chi_logamp_R = logarithmic_components(
+        chi, model.dR, axis=0, numerical_floor=floor
+    )
+
     # ----- 첫 번째 factorization: 전자 coupling U_e,pn -----
     # 양성자 좌표 q 방향 항
     dminus_q = _minus_covariant(phi, a[None, :, :], model.dq, axis=1)
-    dminus_q2 = _minus_covariant(dminus_q, a[None, :, :], model.dq, axis=1)
-    ratio_lam_q = regularized_ratio(
-        momentum(lam, model.dq, axis=0), lam, floor
+    dminus_q2 = covariant_square(
+        phi, a[None, :, :], model.dq, axis=1, sign=-1
+    )
+    # Gauge-invariant K_q=d_q T+a는 보존하고 singular amplitude gradient만
+    # joint nuclear density support에서 감쇠한다.
+    coefficient_q = (
+        lam_phase_q+a-1j*mask_phi*lam_logamp_q
     )                                                               # (nq,nR)
     u_q_phi = (
-        0.5*dminus_q2+(ratio_lam_q+a)[None, :, :]*dminus_q
+        0.5*dminus_q2+coefficient_q[None, :, :]*dminus_q
     )/model.proton_mass
 
     # 무거운 핵 좌표 R 방향 항. chi와 Lambda의 R 변화가 모두 들어간다.
     dminus_R = _minus_covariant(phi, b[None, :, :], model.dR, axis=2)
-    dminus_R2 = _minus_covariant(dminus_R, b[None, :, :], model.dR, axis=2)
-    ratio_chi_R = regularized_ratio(
-        momentum(chi, model.dR, axis=0), chi, floor
-    )                                                               # (nR,)
-    ratio_lam_R = regularized_ratio(
-        momentum(lam, model.dR, axis=1), lam, floor
+    dminus_R2 = covariant_square(
+        phi, b[None, :, :], model.dR, axis=2, sign=-1
+    )
+    coefficient_R = (
+        chi_phase_R[None, :]+lam_phase_R+b
+        -1j*mask_phi*(chi_logamp_R[None, :]+lam_logamp_R)
     )                                                               # (nq,nR)
     u_R_phi = (
         0.5*dminus_R2
-        +(ratio_chi_R[None, :]+ratio_lam_R+b)[None, :, :]*dminus_R
+        +coefficient_R[None, :, :]*dminus_R
     )/model.heavy_mass
     u_phi = u_q_phi+u_R_phi                                         # (nx,nq,nR)
 
-    # 유한차분/regularized ratio가 남긴 local anti-Hermitian residual을
-    # 제거한다. RK4 중간 stage에서는 PNC가 1이 아니므로 현재 norm으로 나눈다.
+    # 첫 correction은 dPhi에 -gamma_phi*Phi를 만들며, 아래 Lambda action에
+    # +i*gamma_phi*Lambda를 더해 dLambda에 반대 변화를 만든다. 따라서
+    # Phi*Lambda*chi의 순간 변화는 점별로 정확히 상쇄된다.
     u_phi, gamma_phi, raw_rate_phi, corrected_rate_phi = (
         remove_local_norm_generator(phi, u_phi, model.dx, axis=0)
     )
@@ -562,14 +680,17 @@ def instantaneous_functionals(phi, lam, chi, model: Model, floor=1.0e-10):
     ).real                                                          # (nq,nR)
 
     # ----- 두 번째 factorization: 양성자와 바깥 무거운 핵 -----
-    base_lam = proton_base_operator(
-        lam, chi, a, b, alpha, model, floor
+    base_lam_raw = proton_base_operator(
+        lam, a, b, alpha, chi_phase_R, chi_logamp_R, mask_lam, model
     )                                                               # (nq,nR)
-    hpr_lam_raw = base_lam+epsilon_1*lam
+    hpr_lam_raw = (
+        base_lam_raw+epsilon_1*lam+1j*gamma_phi*lam
+    )
     hpr_lam, gamma_lam, raw_rate_lam, corrected_rate_lam = (
         remove_local_norm_generator(lam, hpr_lam_raw, model.dq, axis=0)
     )
-    # base_lam과 hpr_lam=base_lam+epsilon_1*lam의 의미를 일치시킨다.
+    # gamma_lam correction으로 dLambda에 -gamma_lam*Lambda가 생긴 만큼
+    # outer dchi에는 +gamma_lam*chi를 더한다(coupled_rhs 참조).
     base_lam = hpr_lam-epsilon_1*lam
     epsilon_2 = (
         np.sum(np.conj(lam)*hpr_lam, axis=0)*model.dq
@@ -583,6 +704,23 @@ def instantaneous_functionals(phi, lam, chi, model: Model, floor=1.0e-10):
         raw_rate_phi=raw_rate_phi, raw_rate_lam=raw_rate_lam,
         corrected_rate_phi=corrected_rate_phi,
         corrected_rate_lam=corrected_rate_lam,
+        mask_phi=mask_phi, mask_lam=mask_lam,
+        suppressed_probability_phi=np.asarray(suppressed_probability(
+            rho_qR, mask_phi, model.dq, model.dR
+        )),
+        suppressed_probability_lam=np.asarray(suppressed_probability(
+            rho_R, mask_lam, model.dR
+        )),
+        raw_logamp_phi=np.maximum(
+            np.abs(lam_logamp_q),
+            np.abs(lam_logamp_R)+np.abs(chi_logamp_R)[None, :],
+        ),
+        effective_logamp_phi=np.maximum(
+            np.abs(mask_phi*lam_logamp_q),
+            np.abs(mask_phi*(lam_logamp_R+chi_logamp_R[None, :])),
+        ),
+        raw_logamp_lam=np.abs(chi_logamp_R),
+        effective_logamp_lam=np.abs(mask_lam*chi_logamp_R),
     )
 
 

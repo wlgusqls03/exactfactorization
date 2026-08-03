@@ -77,20 +77,56 @@ def to_gpu_factors(phi, lam, chi, model):
 
 
 def derivative(values, spacing, axis, order=1):
-    """GPU periodic 중앙 유한차분. Shape은 입력과 동일하다."""
+    """GPU 비주기 격자의 독립적인 5점 1·2차 유한차분."""
     source = cp.moveaxis(values, axis, 0)
+    if source.shape[0] < 5:
+        raise ValueError("5점 미분에는 해당 축에 최소 5개 격자점이 필요합니다.")
     result = cp.empty_like(source)
     if order == 1:
-        scale = 1.0/(2.0*spacing)
-        result[1:-1] = (source[2:]-source[:-2])*scale
-        result[0] = (source[1]-source[-1])*scale
-        result[-1] = (source[0]-source[-2])*scale
+        scale = 1.0/(12.0*spacing)
+        result[2:-2] = (
+            source[:-4]-8.0*source[1:-3]
+            +8.0*source[3:-1]-source[4:]
+        )*scale
+        result[0] = (
+            -25.0*source[0]+48.0*source[1]-36.0*source[2]
+            +16.0*source[3]-3.0*source[4]
+        )*scale
+        result[1] = (
+            -3.0*source[0]-10.0*source[1]+18.0*source[2]
+            -6.0*source[3]+source[4]
+        )*scale
+        result[-2] = (
+            -source[-5]+6.0*source[-4]-18.0*source[-3]
+            +10.0*source[-2]+3.0*source[-1]
+        )*scale
+        result[-1] = (
+            3.0*source[-5]-16.0*source[-4]+36.0*source[-3]
+            -48.0*source[-2]+25.0*source[-1]
+        )*scale
         return cp.moveaxis(result, 0, axis)
     if order == 2:
-        scale = 1.0/spacing**2
-        result[1:-1] = (source[2:]-2.0*source[1:-1]+source[:-2])*scale
-        result[0] = (source[1]-2.0*source[0]+source[-1])*scale
-        result[-1] = (source[0]-2.0*source[-1]+source[-2])*scale
+        scale = 1.0/(12.0*spacing**2)
+        result[2:-2] = (
+            -source[:-4]+16.0*source[1:-3]-30.0*source[2:-2]
+            +16.0*source[3:-1]-source[4:]
+        )*scale
+        result[0] = (
+            35.0*source[0]-104.0*source[1]+114.0*source[2]
+            -56.0*source[3]+11.0*source[4]
+        )*scale
+        result[1] = (
+            11.0*source[0]-20.0*source[1]+6.0*source[2]
+            +4.0*source[3]-source[4]
+        )*scale
+        result[-2] = (
+            -source[-5]+4.0*source[-4]+6.0*source[-3]
+            -20.0*source[-2]+11.0*source[-1]
+        )*scale
+        result[-1] = (
+            11.0*source[-5]-56.0*source[-4]+114.0*source[-3]
+            -104.0*source[-2]+35.0*source[-1]
+        )*scale
         return cp.moveaxis(result, 0, axis)
     raise ValueError("order는 1 또는 2여야 합니다.")
 
@@ -114,6 +150,46 @@ def regularized_ratio(numerator, denominator, relative_floor):
     tiny = cp.asarray(1.0e-30, dtype=density.dtype)
     floor = cp.maximum(relative_floor*cp.max(density), tiny)
     return numerator*cp.conj(denominator)/(density+floor)
+
+
+def logarithmic_components(
+    factor, spacing, axis, model, numerical_floor=1.0e-14,
+):
+    """GPU에서 phase gradient와 amplitude logarithmic gradient를 분리."""
+    if numerical_floor <= 0.0:
+        raise ValueError("numerical_floor는 양수여야 합니다.")
+    density = cp.real(factor*cp.conj(factor))
+    peak = cp.max(density, axis=axis, keepdims=True)
+    tiny = cp.asarray(1.0e-30, dtype=density.dtype)
+    safe = density+numerical_floor*cp.maximum(peak, tiny)
+    ratio = momentum(factor, spacing, axis)*cp.conj(factor)/safe
+    return (
+        ratio.real.astype(model.real_dtype, copy=False),
+        (-ratio.imag).astype(model.real_dtype, copy=False),
+    )
+
+
+def occupied_support_mask(density, relative_threshold, model):
+    """GPU ``rho/(rho+eta*rho_max)`` support mask."""
+    if relative_threshold < 0.0:
+        raise ValueError("mask threshold는 0 이상이어야 합니다.")
+    if relative_threshold == 0.0:
+        return cp.ones_like(density, dtype=model.real_dtype)
+    tiny = cp.asarray(1.0e-30, dtype=density.dtype)
+    peak = cp.maximum(cp.max(density), tiny)
+    return (density/(density+relative_threshold*peak)).astype(
+        model.real_dtype, copy=False
+    )
+
+
+def suppressed_probability(density, mask, volume, model):
+    """Support mask가 감쇠한 정규화 probability mass."""
+    total = cp.sum(density, dtype=model.reduction_real_dtype)*volume
+    removed = cp.sum(
+        density*(1.0-mask), dtype=model.reduction_real_dtype
+    )*volume
+    tiny = cp.asarray(1.0e-300, dtype=model.reduction_real_dtype)
+    return removed/cp.maximum(total, tiny)
 
 
 def remove_local_norm_generator(
@@ -220,6 +296,18 @@ def _plus_covariant(field, vector, spacing, axis):
     return momentum(field, spacing, axis)+vector*field
 
 
+def covariant_square(field, vector, spacing, axis, sign):
+    """독립적인 GPU 5점 ``D2``로 ``(-i d+sign*A)^2``를 조립."""
+    first = derivative(field, spacing, axis=axis, order=1)
+    second = derivative(field, spacing, axis=axis, order=2)
+    vector_first = derivative(vector, spacing, axis=axis, order=1)
+    return (
+        -second
+        -1j*sign*(vector_first*field+2.0*vector*first)
+        +vector**2*field
+    ).astype(field.dtype, copy=False)
+
+
 def geometric_fields(phi, lam, model):
     """Vector potential ``a(q,R), b(q,R), alpha(R)``."""
     p_q_phi = momentum(phi, model.dq, axis=1)
@@ -233,48 +321,71 @@ def geometric_fields(phi, lam, model):
     return a, b, alpha
 
 
-def proton_base_operator(lam, chi, a, b, alpha, model, floor):
+def proton_base_operator(
+    lam, a, b, alpha, chi_phase_R, chi_logamp_R, mask_lam, model,
+):
     """epsilon_1을 제외한 proton-heavy Hamiltonian을 Lambda에 적용."""
-    dplus_q = _plus_covariant(lam, a, model.dq, axis=0)
-    proton_kinetic = _plus_covariant(dplus_q, a, model.dq, axis=0)
-    proton_kinetic *= 0.5/model.proton_mass
+    proton_kinetic = covariant_square(
+        lam, a, model.dq, axis=0, sign=+1
+    )*(0.5/model.proton_mass)
 
     vector_R = b-alpha[None, :]
     dplus_R = _plus_covariant(lam, vector_R, model.dR, axis=1)
-    dplus_R2 = _plus_covariant(dplus_R, vector_R, model.dR, axis=1)
-    ratio_chi_R = regularized_ratio(
-        momentum(chi, model.dR, axis=0), chi, floor
+    dplus_R2 = covariant_square(
+        lam, vector_R, model.dR, axis=1, sign=+1
     )
+    coefficient = (
+        chi_phase_R+alpha-1j*mask_lam*chi_logamp_R
+    ).astype(model.complex_dtype, copy=False)
     coupling = (
-        0.5*dplus_R2+(ratio_chi_R+alpha)[None, :]*dplus_R
+        0.5*dplus_R2+coefficient[None, :]*dplus_R
     )/model.heavy_mass
     return proton_kinetic+coupling
 
 
-def instantaneous_functionals(phi, lam, chi, model, floor=1.0e-10):
+def instantaneous_functionals(
+    phi, lam, chi, model, floor=1.0e-14,
+    mask_threshold_phi=1.0e-10, mask_threshold_lam=1.0e-10,
+):
     """현재 factor에서 두 TDPES와 세 vector potential을 계산한다."""
     a, b, alpha = geometric_fields(phi, lam, model)
 
-    dminus_q = _minus_covariant(phi, a[None, :, :], model.dq, axis=1)
-    dminus_q2 = _minus_covariant(dminus_q, a[None, :, :], model.dq, axis=1)
-    ratio_lam_q = regularized_ratio(
-        momentum(lam, model.dq, axis=0), lam, floor
+    rho_R = cp.real(chi*cp.conj(chi))
+    rho_qR = cp.real(lam*cp.conj(lam))*rho_R[None, :]
+    mask_phi = occupied_support_mask(rho_qR, mask_threshold_phi, model)
+    mask_lam = occupied_support_mask(rho_R, mask_threshold_lam, model)
+    lam_phase_q, lam_logamp_q = logarithmic_components(
+        lam, model.dq, axis=0, model=model, numerical_floor=floor
     )
+    lam_phase_R, lam_logamp_R = logarithmic_components(
+        lam, model.dR, axis=1, model=model, numerical_floor=floor
+    )
+    chi_phase_R, chi_logamp_R = logarithmic_components(
+        chi, model.dR, axis=0, model=model, numerical_floor=floor
+    )
+
+    dminus_q = _minus_covariant(phi, a[None, :, :], model.dq, axis=1)
+    dminus_q2 = covariant_square(
+        phi, a[None, :, :], model.dq, axis=1, sign=-1
+    )
+    coefficient_q = (
+        lam_phase_q+a-1j*mask_phi*lam_logamp_q
+    ).astype(model.complex_dtype, copy=False)
     u_q_phi = (
-        0.5*dminus_q2+(ratio_lam_q+a)[None, :, :]*dminus_q
+        0.5*dminus_q2+coefficient_q[None, :, :]*dminus_q
     )/model.proton_mass
 
     dminus_R = _minus_covariant(phi, b[None, :, :], model.dR, axis=2)
-    dminus_R2 = _minus_covariant(dminus_R, b[None, :, :], model.dR, axis=2)
-    ratio_chi_R = regularized_ratio(
-        momentum(chi, model.dR, axis=0), chi, floor
+    dminus_R2 = covariant_square(
+        phi, b[None, :, :], model.dR, axis=2, sign=-1
     )
-    ratio_lam_R = regularized_ratio(
-        momentum(lam, model.dR, axis=1), lam, floor
-    )
+    coefficient_R = (
+        chi_phase_R[None, :]+lam_phase_R+b
+        -1j*mask_phi*(chi_logamp_R[None, :]+lam_logamp_R)
+    ).astype(model.complex_dtype, copy=False)
     u_R_phi = (
         0.5*dminus_R2
-        +(ratio_chi_R[None, :]+ratio_lam_R+b)[None, :, :]*dminus_R
+        +coefficient_R[None, :, :]*dminus_R
     )/model.heavy_mass
     u_phi = u_q_phi+u_R_phi
 
@@ -289,8 +400,12 @@ def instantaneous_functionals(phi, lam, chi, model, floor=1.0e-10):
         cp.conj(phi)*(hbo_phi+u_phi), axis=0, model=model
     )*model.dx
 
-    base_lam = proton_base_operator(lam, chi, a, b, alpha, model, floor)
-    hpr_lam_raw = base_lam+epsilon_1*lam
+    base_lam_raw = proton_base_operator(
+        lam, a, b, alpha, chi_phase_R, chi_logamp_R, mask_lam, model
+    )
+    hpr_lam_raw = (
+        base_lam_raw+epsilon_1*lam+1j*gamma_phi*lam
+    ).astype(model.complex_dtype, copy=False)
     hpr_lam, gamma_lam, raw_rate_lam, corrected_rate_lam = (
         remove_local_norm_generator(
             lam, hpr_lam_raw, model.dq, axis=0, model=model
@@ -306,6 +421,23 @@ def instantaneous_functionals(phi, lam, chi, model, floor=1.0e-10):
         raw_rate_phi=raw_rate_phi, raw_rate_lam=raw_rate_lam,
         corrected_rate_phi=corrected_rate_phi,
         corrected_rate_lam=corrected_rate_lam,
+        mask_phi=mask_phi, mask_lam=mask_lam,
+        suppressed_probability_phi=suppressed_probability(
+            rho_qR, mask_phi, model.dq*model.dR, model
+        ),
+        suppressed_probability_lam=suppressed_probability(
+            rho_R, mask_lam, model.dR, model
+        ),
+        raw_logamp_phi=cp.maximum(
+            cp.abs(lam_logamp_q),
+            cp.abs(lam_logamp_R)+cp.abs(chi_logamp_R)[None, :],
+        ),
+        effective_logamp_phi=cp.maximum(
+            cp.abs(mask_phi*lam_logamp_q),
+            cp.abs(mask_phi*(lam_logamp_R+chi_logamp_R[None, :])),
+        ),
+        raw_logamp_lam=cp.abs(chi_logamp_R),
+        effective_logamp_lam=cp.abs(mask_lam*chi_logamp_R),
     )
 
 
@@ -344,10 +476,15 @@ def pnc_error(phi, lam, model):
     )
 
 
-def coupled_rhs(phi, lam, chi, model, density_threshold):
+def coupled_rhs(
+    phi, lam, chi, model, ratio_floor, mask_threshold_phi,
+    mask_threshold_lam,
+):
     """H_BO split 부분을 제외한 세 coupled RHS."""
     fields = instantaneous_functionals(
-        phi, lam, chi, model, floor=density_threshold
+        phi, lam, chi, model, floor=ratio_floor,
+        mask_threshold_phi=mask_threshold_phi,
+        mask_threshold_lam=mask_threshold_lam,
     )
     dphi = -1j*(
         fields["u_phi"]-fields["epsilon_1"][None, :, :]*phi
@@ -356,9 +493,11 @@ def coupled_rhs(phi, lam, chi, model, density_threshold):
         fields["hpr_lam"]-fields["epsilon_2"][None, :]*lam
     )
     alpha = fields["alpha"]
-    pchi = -1j*derivative(chi, model.dR, axis=0)+alpha*chi
-    p2chi = -1j*derivative(pchi, model.dR, axis=0)+alpha*pchi
-    dchi = -1j*(0.5*p2chi/model.heavy_mass+fields["epsilon_2"]*chi)
+    p2chi = covariant_square(chi, alpha, model.dR, axis=0, sign=+1)
+    dchi = (
+        -1j*(0.5*p2chi/model.heavy_mass+fields["epsilon_2"]*chi)
+        +fields["gamma_lam"]*chi
+    )
     return dphi, dlam, dchi, field_maxima(fields)
 
 
@@ -369,6 +508,12 @@ DIAGNOSTIC_FIELDS = {
     "max_raw_rate_lam": "raw_rate_lam",
     "max_corrected_rate_phi": "corrected_rate_phi",
     "max_corrected_rate_lam": "corrected_rate_lam",
+    "suppressed_probability_phi": "suppressed_probability_phi",
+    "suppressed_probability_lam": "suppressed_probability_lam",
+    "max_raw_logamp_phi": "raw_logamp_phi",
+    "max_effective_logamp_phi": "effective_logamp_phi",
+    "max_raw_logamp_lam": "raw_logamp_lam",
+    "max_effective_logamp_lam": "effective_logamp_lam",
 }
 
 
@@ -391,20 +536,26 @@ def merge_maxima(*diagnostics):
     return merged
 
 
-def rk4_coupled_step(phi, lam, chi, dt, model, density_threshold):
+def rk4_coupled_step(
+    phi, lam, chi, dt, model, ratio_floor, mask_threshold_phi,
+    mask_threshold_lam,
+):
     """GPU에서 네 번의 RHS를 평가하는 고전 RK4 coupled substep."""
-    k1p, k1l, k1c, d1 = coupled_rhs(phi, lam, chi, model, density_threshold)
+    k1p, k1l, k1c, d1 = coupled_rhs(
+        phi, lam, chi, model, ratio_floor, mask_threshold_phi,
+        mask_threshold_lam,
+    )
     k2p, k2l, k2c, d2 = coupled_rhs(
         phi+0.5*dt*k1p, lam+0.5*dt*k1l, chi+0.5*dt*k1c,
-        model, density_threshold,
+        model, ratio_floor, mask_threshold_phi, mask_threshold_lam,
     )
     k3p, k3l, k3c, d3 = coupled_rhs(
         phi+0.5*dt*k2p, lam+0.5*dt*k2l, chi+0.5*dt*k2c,
-        model, density_threshold,
+        model, ratio_floor, mask_threshold_phi, mask_threshold_lam,
     )
     k4p, k4l, k4c, d4 = coupled_rhs(
         phi+dt*k3p, lam+dt*k3l, chi+dt*k3c,
-        model, density_threshold,
+        model, ratio_floor, mask_threshold_phi, mask_threshold_lam,
     )
     phi = phi+dt*(k1p+2*k2p+2*k3p+k4p)/6.0
     lam = lam+dt*(k1l+2*k2l+2*k3l+k4l)/6.0
@@ -414,11 +565,15 @@ def rk4_coupled_step(phi, lam, chi, dt, model, density_threshold):
     return phi, lam, chi, pnc_error, diagnostics
 
 
-def full_step(phi, lam, chi, dt, model, density_threshold):
+def full_step(
+    phi, lam, chi, dt, model, ratio_floor, mask_threshold_phi,
+    mask_threshold_lam,
+):
     """``H_BO 반 -> coupled RK4 -> H_BO 반`` 한 time step."""
     phi = electronic_split_step(phi, 0.5*dt, model)
     phi, lam, chi, first_error, diagnostics = rk4_coupled_step(
-        phi, lam, chi, dt, model, density_threshold
+        phi, lam, chi, dt, model, ratio_floor, mask_threshold_phi,
+        mask_threshold_lam,
     )
     phi = electronic_split_step(phi, 0.5*dt, model)
     phi, lam, chi, final_error = pnc_project(phi, lam, chi, model)
