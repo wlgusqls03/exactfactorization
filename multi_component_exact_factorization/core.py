@@ -673,6 +673,8 @@ def instantaneous_functionals(
         epsilon_2=epsilon_2, u_phi=u_phi, base_lam=base_lam,
         hbo_phi=hbo_phi, hpr_lam=hpr_lam,
         gamma_phi=gamma_phi, gamma_lam=gamma_lam,
+        support_gamma_phi=mask_phi*gamma_phi,
+        support_gamma_lam=mask_lam*gamma_lam,
         raw_rate_phi=raw_rate_phi, raw_rate_lam=raw_rate_lam,
         corrected_rate_phi=corrected_rate_phi,
         corrected_rate_lam=corrected_rate_lam,

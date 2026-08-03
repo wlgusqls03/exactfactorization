@@ -84,7 +84,9 @@ nt = 저장 frame 수
 | `epsilon_gd_2` | `(nt,nR)` | composite 두 번째 time connection 진단 |
 | `pnc_error` | `(nt,)` | 저장된 factor의 실제 PNC 잔차 |
 | `pnc_projection_correction` | `(nt,)` | RK substep 뒤 PNC 투영 전 최대 이탈 |
-| `max_abs_gamma_phi`, `max_abs_gamma_lam` | `(nt,)` | 이전 저장 이후 모든 RK4 stage의 local-norm correction 최대값 |
+| `max_abs_gamma_phi`, `max_abs_gamma_lam` | `(nt,)` | 빈 tail까지 포함한 raw local-norm correction 최대값(보조 디버깅용) |
+| `max_abs_support_gamma_phi`, `max_abs_support_gamma_lam` | `(nt,)` | 이전 저장 이후 모든 RK4 stage의 `max|w gamma|`; 핵심 support 진단 |
+| `max_abs_support_gamma_phi_dt`, `max_abs_support_gamma_lam_dt` | `(nt,)` | `max|w gamma| dt`; 한 step의 dimensionless tangent-transfer load |
 | `max_raw_rate_phi`, `max_raw_rate_lam` | `(nt,)` | 보정 전 local norm 생성률의 구간 최대값 |
 | `max_corrected_rate_phi`, `max_corrected_rate_lam` | `(nt,)` | 보정 후 남은 local norm 생성률의 구간 최대값 |
 | `suppressed_probability_phi`, `suppressed_probability_lam` | `(nt,)` | support mask가 감쇠한 probability mass의 구간 최대값 |

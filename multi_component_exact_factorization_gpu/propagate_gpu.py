@@ -234,6 +234,13 @@ def run(args):
     gpu_seconds = cp.cuda.get_elapsed_time(start, stop)/1000.0
     wall_seconds = time.perf_counter()-wall_start
 
+    diagnostic_history["max_abs_support_gamma_phi_dt"] = (
+        diagnostic_history["max_abs_support_gamma_phi"]*args.dt_au
+    )
+    diagnostic_history["max_abs_support_gamma_lam_dt"] = (
+        diagnostic_history["max_abs_support_gamma_lam"]*args.dt_au
+    )
+
     # Gauge-dependent time connection은 저장된 작은 시간축을 CPU에서 계산한다.
     if nt >= 2:
         times_au = times_fs*AU_PER_FS

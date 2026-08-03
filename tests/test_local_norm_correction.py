@@ -96,6 +96,12 @@ class SmoothGaugeIntegrationTests(unittest.TestCase):
         )
         gamma_phi = fields["gamma_phi"]
         gamma_lam = fields["gamma_lam"]
+        self.assertTrue(np.allclose(
+            fields["support_gamma_phi"], fields["mask_phi"]*gamma_phi
+        ))
+        self.assertTrue(np.allclose(
+            fields["support_gamma_lam"], fields["mask_lam"]*gamma_lam
+        ))
         delta_phi = -gamma_phi[None, :, :]*phi
         delta_lam = (gamma_phi-gamma_lam[None, :])*lam
         delta_chi = gamma_lam*chi

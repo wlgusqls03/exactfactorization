@@ -85,7 +85,10 @@ CUDA_VISIBLE_DEVICES=0 python -m \
 RK4의 네 stage마다 적용한다. `mixed`에서는 norm과 expectation을
 FP64/complex128로 합산한 뒤 correction field에 곱하는 `gamma`만 float32로
 되돌린다. 결과
-archive의 `max_abs_gamma_*`, `max_raw_rate_*`, `max_corrected_rate_*`와
+archive의 `max_abs_support_gamma_*`와 `max_abs_support_gamma_*_dt`가 각각
+점유 support 안의 correction rate와 한 step의 dimensionless tangent load다.
+빈 tail까지 포함하는 `max_abs_gamma_*`는 보조 디버깅용으로만 남긴다.
+이 값들과 `max_raw_rate_*`, `max_corrected_rate_*`,
 `pnc_projection_correction`은 각 저장 간격 전체의 최댓값이다.
 
 기본값은 `mixed`다. 처음부터 single 결과를 신뢰하지 말고 CPU double 또는 GPU

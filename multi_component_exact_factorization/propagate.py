@@ -39,6 +39,8 @@ from .core import (
 DIAGNOSTIC_FIELDS = {
     "max_abs_gamma_phi": "gamma_phi",
     "max_abs_gamma_lam": "gamma_lam",
+    "max_abs_support_gamma_phi": "support_gamma_phi",
+    "max_abs_support_gamma_lam": "support_gamma_lam",
     "max_raw_rate_phi": "raw_rate_phi",
     "max_raw_rate_lam": "raw_rate_lam",
     "max_corrected_rate_phi": "corrected_rate_phi",
@@ -320,6 +322,16 @@ def run(args):
                 f"step {step:6d}/{n_steps}  "
                 f"t={step*args.dt_au/AU_PER_FS:8.4f} fs"
             )
+
+    # gamma는 inverse atomic time이고, gamma*dt는 한 step에서 factor 사이로
+    # 이동시키는 dimensionless tangent load다. 빈 tail의 raw global maximum
+    # 대신 physical support로 가중한 값을 reliability의 주 지표로 저장한다.
+    diagnostic_history["max_abs_support_gamma_phi_dt"] = (
+        diagnostic_history["max_abs_support_gamma_phi"]*args.dt_au
+    )
+    diagnostic_history["max_abs_support_gamma_lam_dt"] = (
+        diagnostic_history["max_abs_support_gamma_lam"]*args.dt_au
+    )
 
     # PDF Eqs. (52)--(54)의 gauge-dependent time connection을 저장 frame의
     # 중앙차분으로 진단한다. 기본 parallel-transport gauge에서는 둘 다

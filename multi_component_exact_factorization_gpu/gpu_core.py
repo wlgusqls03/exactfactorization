@@ -385,6 +385,8 @@ def instantaneous_functionals(
         a=a, b=b, alpha=alpha, epsilon_1=epsilon_1, epsilon_2=epsilon_2,
         u_phi=u_phi, hpr_lam=hpr_lam,
         gamma_phi=gamma_phi, gamma_lam=gamma_lam,
+        support_gamma_phi=mask_phi*gamma_phi,
+        support_gamma_lam=mask_lam*gamma_lam,
         raw_rate_phi=raw_rate_phi, raw_rate_lam=raw_rate_lam,
         corrected_rate_phi=corrected_rate_phi,
         corrected_rate_lam=corrected_rate_lam,
@@ -471,6 +473,8 @@ def coupled_rhs(
 DIAGNOSTIC_FIELDS = {
     "max_abs_gamma_phi": "gamma_phi",
     "max_abs_gamma_lam": "gamma_lam",
+    "max_abs_support_gamma_phi": "support_gamma_phi",
+    "max_abs_support_gamma_lam": "support_gamma_lam",
     "max_raw_rate_phi": "raw_rate_phi",
     "max_raw_rate_lam": "raw_rate_lam",
     "max_corrected_rate_phi": "corrected_rate_phi",

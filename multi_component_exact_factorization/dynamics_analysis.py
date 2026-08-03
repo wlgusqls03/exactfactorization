@@ -307,9 +307,12 @@ def save_correlation_figure(
     axes[1, 0].set_title("Occupied-support vector connections")
     axes[1, 0].legend(frameon=False, fontsize=8)
 
-    for key in (
-        "pnc_projection_correction", "max_abs_gamma_phi", "max_abs_gamma_lam",
-    ):
+    gamma_keys = (
+        "max_abs_support_gamma_phi_dt", "max_abs_support_gamma_lam_dt",
+    ) if "max_abs_support_gamma_phi_dt" in data.files else (
+        "max_abs_gamma_phi", "max_abs_gamma_lam",
+    )
+    for key in ("pnc_projection_correction", *gamma_keys):
         if key in data.files:
             axes[1, 1].semilogy(
                 times, np.maximum(data[key], 1.0e-18), label=key,

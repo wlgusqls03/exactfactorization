@@ -68,11 +68,23 @@ def _style_time_axis(ax, title, ylabel=None):
 
 
 def _stress_onset(data):
-    """First saved time where the Phi correction becomes order one."""
+    """점유 support에서 한 step tangent 이동량이 10%를 넘는 첫 시점."""
+    supported = [
+        np.asarray(data[key])
+        for key in (
+            "max_abs_support_gamma_phi_dt",
+            "max_abs_support_gamma_lam_dt",
+        )
+        if key in data.files
+    ]
+    if supported:
+        values = np.maximum.reduce(supported)
+        indices = np.flatnonzero(values > 0.1)
+        return None if not len(indices) else float(data["times_fs"][indices[0]])
+    # 이전 archive에는 support-weighted 지표가 없으므로 기존 판정을 유지한다.
     if "max_abs_gamma_phi" not in data.files:
         return None
-    values = np.asarray(data["max_abs_gamma_phi"])
-    indices = np.flatnonzero(values > 1.0)
+    indices = np.flatnonzero(np.asarray(data["max_abs_gamma_phi"]) > 1.0)
     return None if not len(indices) else float(data["times_fs"][indices[0]])
 
 
@@ -81,7 +93,7 @@ def _mark_stress(ax, onset, label=False):
         return
     ax.axvline(
         onset, color="#C43C39", lw=1.1, ls=":", alpha=0.9,
-        label=(r"numerical stress: $|\gamma_\Phi|>1$" if label else None),
+        label=("numerical stress onset" if label else None),
     )
 
 
@@ -382,14 +394,41 @@ def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
     onset = _stress_onset(data)
 
     ax = axes[0, 0]
+    has_supported = "max_abs_support_gamma_phi_dt" in data.files
+    gamma_curves = (
+        (
+            "max_abs_support_gamma_phi_dt",
+            r"$\max|w_\Phi\gamma_\Phi|\,\Delta t$",
+            COLORS[1],
+        ),
+        (
+            "max_abs_support_gamma_lam_dt",
+            r"$\max|w_\Lambda\gamma_\Lambda|\,\Delta t$",
+            COLORS[2],
+        ),
+    ) if has_supported else (
+        ("max_abs_gamma_phi", r"raw $\max|\gamma_\Phi|$", COLORS[1]),
+        ("max_abs_gamma_lam", r"raw $\max|\gamma_\Lambda|$", COLORS[2]),
+    )
     for key, label, color in (
         ("pnc_projection_correction", "PNC redistribution", COLORS[0]),
-        ("max_abs_gamma_phi", r"$\Phi\to\Lambda$ tangent transfer", COLORS[1]),
-        ("max_abs_gamma_lam", r"$\Lambda\to\chi$ tangent transfer", COLORS[2]),
+        *gamma_curves,
     ):
         if key in data.files:
             ax.semilogy(times, np.maximum(data[key], 1.0e-18), color=color, label=label)
-    _style_time_axis(ax, "How much product-preserving tangent transfer is needed?", "magnitude (log scale)")
+    if has_supported:
+        text = (
+            rf"max support rate: $\Phi={np.max(data['max_abs_support_gamma_phi']):.1e}$, "
+            rf"$\Lambda={np.max(data['max_abs_support_gamma_lam']):.1e}$ a.u.$^{{-1}}$"
+        )
+        ax.text(
+            0.03, 0.05, text, transform=ax.transAxes, fontsize=8, va="bottom",
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.75", alpha=0.9),
+        )
+    _style_time_axis(
+        ax, "How large is the occupied-support tangent transfer per step?",
+        "dimensionless step load (log scale)" if has_supported else "magnitude (log scale)",
+    )
     _mark_stress(ax, onset, label=True)
     ax.legend(frameon=False, fontsize=8)
 
