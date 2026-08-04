@@ -59,6 +59,11 @@ def device_description(device_id):
 
 def run(args):
     """CPU 초기화 -> GPU direct EF 전파 -> CPU-compatible NPZ 저장."""
+    if getattr(args, "precision", "double") != "double":
+        raise ValueError(
+            "production GPU propagation은 검증된 double precision으로 고정됩니다"
+        )
+    args.precision = "double"
     cp.cuda.Device(args.device).use()
     print(device_description(args.device))
     print(f"계산 정밀도: {args.precision}")
@@ -115,12 +120,32 @@ def run(args):
     )
 
     n_steps = int(round(args.t_final_fs*AU_PER_FS/args.dt_au))
-    save_steps = list(range(0, n_steps+1, max(1, args.save_every)))
+    # 0은 trajectory 길이에 맞춘 자동 간격이다. 긴 계산에서도 archive와
+    # terminal 출력이 무제한 커지지 않도록 각각 약 200 frame, 20 progress,
+    # 500 finite check를 목표로 한다.
+    args.save_every = (
+        args.save_every if args.save_every > 0
+        else max(1, int(np.ceil(max(n_steps, 1)/200.0)))
+    )
+    args.progress_every = (
+        args.progress_every if args.progress_every > 0
+        else max(1, int(np.ceil(max(n_steps, 1)/20.0)))
+    )
+    args.check_every = (
+        args.check_every if args.check_every > 0
+        else max(1, int(np.ceil(max(n_steps, 1)/500.0)))
+    )
+    print(
+        "자동/선택 간격: "
+        f"save={args.save_every}, progress={args.progress_every}, "
+        f"finite-check={args.check_every} step"
+    )
+    save_steps = list(range(0, n_steps+1, args.save_every))
     if save_steps[-1] != n_steps:
         save_steps.append(n_steps)
     nt = len(save_steps)
 
-    # 저장 배열만 host RAM에 둔다. Native single/mixed archive는 저장량도 절반이다.
+    # 저장 배열만 host RAM에 둔다. Production archive는 complex128이다.
     times_fs = np.empty(nt)
     phis = np.empty((nt, args.nx, args.nq, args.nR), dtype=complex_dtype)
     lams = np.empty((nt, args.nq, args.nR), dtype=complex_dtype)
@@ -351,11 +376,22 @@ def run(args):
             f"계산/대기 duty cycle: {measured_duty:.1f}%"
         )
     print(f"CuPy memory pool: used={used:.2f} GiB, reserved={total:.2f} GiB")
-    print(f"최대 norm 오차: {np.max(np.abs(norm-1.0)):.3e}")
-    print(f"최대 저장 PNC 오차:       {np.max(pnc):.3e}")
-    print(f"최대 PNC projection 보정: {np.max(projection_correction):.3e}")
-    for name, values in diagnostic_history.items():
-        print(f"{name}: {np.max(values):.3e}")
+    print("핵심 수치 진단:")
+    print(f"  max |norm-1|:              {np.max(np.abs(norm-1.0)):.3e}")
+    print(f"  max saved PNC residual:    {np.max(pnc):.3e}")
+    print(f"  max PNC projection load:   {np.max(projection_correction):.3e}")
+    for name in (
+        "max_abs_support_gamma_phi_dt",
+        "max_abs_support_gamma_lam_dt",
+        "max_effective_product_residual_l2",
+        "max_abs_full_norm_rate_after_product_projection",
+    ):
+        if name in diagnostic_history:
+            print(f"  {name}: {np.max(diagnostic_history[name]):.3e}")
+    if getattr(args, "verbose_diagnostics", False):
+        print("전체 개발용 진단:")
+        for name, values in diagnostic_history.items():
+            print(f"  {name}: {np.max(values):.3e}")
     return path
 
 
@@ -365,9 +401,11 @@ def parse_args():
         "--outdir", default="results/multi_component_exact_factorization/gpu"
     )
     parser.add_argument("--device", type=int, default=0, help="사용할 CUDA GPU index")
+    # Production propagation은 검증된 complex128/float64로 고정한다. 예전
+    # 명령의 ``--precision double``은 계속 받아들이되 help에서는 숨긴다.
     parser.add_argument(
-        "--precision", choices=("double", "single", "mixed"), default="mixed",
-        help="mixed는 큰 배열 FP32, inner-product/norm reduction FP64",
+        "--precision", choices=("double",), default="double",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--gpu-util-limit", type=gpu_util_percent, default=100.0,
@@ -390,11 +428,20 @@ def parse_args():
     )
     parser.add_argument("--dt-au", type=float, default=0.005)
     parser.add_argument("--t-final-fs", type=float, default=0.05)
-    parser.add_argument("--save-every", type=int, default=20)
-    parser.add_argument("--progress-every", type=int, default=100)
     parser.add_argument(
-        "--check-every", type=int, default=100,
-        help="non-finite GPU 검사를 수행할 step 간격; 저장 frame에서는 항상 검사",
+        "--save-every", type=int, default=0,
+        help="저장 step 간격; 0이면 약 200 frame이 되도록 자동 선택",
+    )
+    parser.add_argument(
+        "--progress-every", type=int, default=0,
+        help="진행 출력 간격; 0이면 전체 실행 중 약 20번 출력",
+    )
+    parser.add_argument(
+        "--check-every", type=int, default=0,
+        help=(
+            "non-finite GPU 검사 간격; 0이면 약 500번 검사하며 저장 frame은 "
+            "항상 검사"
+        ),
     )
     regularization = parser.add_argument_group("node/tail regularization")
     regularization.add_argument(
@@ -414,14 +461,27 @@ def parse_args():
         help="deprecated: 지정하면 두 mask threshold에 같은 값을 사용",
     )
     parser.add_argument("--save-psi", action="store_true")
+    parser.add_argument(
+        "--verbose-diagnostics", action="store_true",
+        help="종료 시 archive에 저장된 개발용 진단을 모두 terminal에 출력",
+    )
     render = parser.add_argument_group("계산 완료 후 자동 렌더링")
+    parser.set_defaults(render_after=True, render_fast=True)
     render.add_argument(
-        "--render-after", action="store_true",
-        help="NPZ 저장이 성공하면 전체 그래프·동영상을 이어서 생성",
+        "--no-render-after", dest="render_after", action="store_false",
+        help="계산 후 자동 report/동영상 생성을 생략",
     )
     render.add_argument(
-        "--render-fast", action="store_true",
-        help="--render-after 출력 종류는 유지하고 frame/DPI/3D 복잡도를 줄임",
+        "--render-full", dest="render_fast", action="store_false",
+        help="자동 렌더링을 빠른 preview 대신 full 품질로 생성",
+    )
+    render.add_argument(
+        "--render-after", dest="render_after", action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    render.add_argument(
+        "--render-fast", dest="render_fast", action="store_true",
+        help=argparse.SUPPRESS,
     )
 
     gauge = parser.add_argument_group("두 단계 gauge")

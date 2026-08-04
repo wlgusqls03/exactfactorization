@@ -303,12 +303,12 @@ python -m multi_component_exact_factorization.render_all \
 Archive가 너무 커서 RAM에 유지할 수 없는 서버에서만 ``--low-memory``를
 사용한다. 이 option은 같은 compressed member를 다시 읽을 수 있어 훨씬 느리다.
 
-전파 명령에 ``--render-after``를 추가하면 NPZ 저장이 성공한 직후 위 통합
-렌더링을 자동으로 실행한다. 날짜가 붙은 실제 저장 경로가 직접 전달되므로
-동일한 폴더 이름을 검색할 필요가 없다. 모든 출력 종류를 유지하면서 렌더링
-시간을 줄이려면 ``--render-fast``도 함께 지정한다. 전파 함수가 반환되어 큰
-저장 배열을 해제한 다음 archive를 읽으므로 계산 자료와 렌더링 자료가 RAM에
-중복 상주하는 것을 피한다.
+GPU 전파는 NPZ 저장이 성공한 직후 빠른 통합 렌더링을 기본 실행한다. 날짜가
+붙은 실제 저장 경로가 직접 전달되므로 동일한 폴더 이름을 검색할 필요가 없다.
+전파 함수가 반환되어 큰 저장 배열을 해제한 다음 archive를 읽으므로 계산
+자료와 렌더링 자료가 RAM에 중복 상주하는 것을 피한다. 계산만 원하면
+``--no-render-after``, full 품질은 ``--render-full``을 사용한다. CPU 전파는
+기존처럼 ``--render-after --render-fast``를 명시한다.
 
 ```bash
 python -m multi_component_exact_factorization.propagate \
@@ -323,6 +323,18 @@ python -m multi_component_exact_factorization.visualize \
 ```
 
 생성 파일은 다음과 같다.
+
+기본 compact report는 ``01_particle_motion.png``부터
+``04_numerical_reliability.png``까지의 질문 중심 PNG 4장과 다음 동영상 3개를
+만든다.
+
+```text
+mcef_dynamics_overview.mp4          입자 운동과 BO population의 연결
+mcef_exact_potentials.mp4           TDPES/connection에서 momentum·current·drive로 연결
+mcef_physical_interpretation.mp4    세 marginal과 proton/heavy transport·drive를 한 화면에 연결
+```
+
+아래 목록은 ``render_all --all-products``에서 만드는 세부 개발용 gallery다.
 
 ```text
 initial_state_summary.png            t=0 marginal, 중심, 폭, 운동량, 질량

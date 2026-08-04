@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Create a small, question-oriented report for one completed MCEF run.
 
-The standard report deliberately contains only four static figures and one
-animation.  Each figure answers one question: what moved, which BO components
-formed, what the exact potentials did, and whether the discretization remained
-trustworthy.
+The standard report contains four static figures and three purpose-specific
+animations.  Each product answers one question: what moved, which BO components
+formed, what the exact potentials did, how those fields create physical
+transport, and whether the discretization remained trustworthy.
 """
 
 from __future__ import annotations
@@ -692,6 +692,183 @@ def make_overview_animation(
     print(f"Compact report: {path}")
 
 
+def make_physical_interpretation_animation(
+    data, electron, proton, heavy, joint, diagnostics, support_floor, outdir,
+    fps, max_frames, dpi, fmt,
+):
+    """Connect all three marginals to gauge-invariant transport and drive."""
+    times = np.asarray(data["times_fs"])
+    x, q, R = data["x"], data["q"], data["R"]
+    frames = selected_frames(len(times), min(max_frames, len(times)))
+    first = int(frames[0])
+    extent = [R[0], R[-1], q[0], q[-1]]
+
+    proton_currents, proton_drives = [], []
+    heavy_currents, heavy_drives = [], []
+    for frame in frames:
+        density = joint[frame]
+        proton_currents.append(_support_mask(
+            diagnostics["proton_current"][frame], density, support_floor
+        ))
+        proton_drives.append(_support_mask(
+            diagnostics["force_q"][frame], density, support_floor
+        ))
+        heavy_mask = heavy[frame] >= support_floor*max(
+            float(np.max(heavy[frame])), 1.0e-300
+        )
+        heavy_currents.append(np.where(
+            heavy_mask, diagnostics["heavy_current"][frame], np.nan
+        ))
+        heavy_drives.append(np.where(
+            heavy_mask, diagnostics["force_R"][frame], np.nan
+        ))
+
+    current_limits = robust_limits(proton_currents, symmetric=True)
+    finite_drive_values = [
+        np.abs(field[np.isfinite(field)]).ravel() for field in proton_drives
+        if np.any(np.isfinite(field))
+    ]
+    drive_values = (
+        np.concatenate(finite_drive_values)
+        if finite_drive_values else np.array([0.0])
+    )
+    drive_max = max(float(np.max(drive_values)), 1.0e-14)
+    drive_typical = max(float(np.percentile(drive_values, 80.0)), 1.0e-6)
+    drive_norm = SymLogNorm(
+        linthresh=max(0.2*drive_typical, 1.0e-5), linscale=0.8,
+        vmin=-drive_max, vmax=drive_max, base=10,
+    )
+    heavy_current_limits = robust_limits(heavy_currents, symmetric=True)
+    heavy_drive_limits = robust_limits(heavy_drives, symmetric=True)
+
+    fig, axes = plt.subplots(2, 3, figsize=(16.4, 8.5), constrained_layout=True)
+    marginal_specs = (
+        (axes[0, 0], x, electron, "Electron marginal", r"electron $x$ ($a_0$)", COLORS[0]),
+        (axes[0, 1], q, proton, "Proton marginal", r"proton $q$ ($a_0$)", COLORS[1]),
+        (axes[0, 2], R, heavy, "Heavy-nucleus marginal", r"heavy $R$ ($a_0$)", COLORS[2]),
+    )
+    marginal_lines = []
+    for ax, grid, density, title_text, xlabel, color in marginal_specs:
+        maximum = max(float(np.max(density[index])) for index in frames)
+        ax.plot(
+            grid, density[0], color="0.62", lw=1.3, ls="--",
+            label="initial",
+        )
+        line, = ax.plot(
+            grid, density[first], color=color, lw=2.2, label="current",
+        )
+        ax.set(
+            xlabel=xlabel, ylabel="probability density",
+            ylim=(0.0, 1.08*maximum),
+        )
+        ax.set_title(title_text, loc="left", fontweight="semibold")
+        ax.grid(alpha=0.18, linewidth=0.7)
+        ax.legend(frameon=False, fontsize=8)
+        marginal_lines.append(line)
+
+    current_image = axes[1, 0].imshow(
+        proton_currents[0], origin="lower", aspect="auto", extent=extent,
+        cmap=_masked_cmap("coolwarm"),
+        vmin=current_limits[0], vmax=current_limits[1],
+    )
+    axes[1, 0].set(
+        xlabel=r"heavy $R$ ($a_0$)", ylabel=r"proton $q$ ($a_0$)",
+    )
+    axes[1, 0].set_title(
+        r"Transport: $j_q=\rho_{qR}(\partial_qT+a)/m_p$",
+        loc="left", fontweight="semibold", fontsize=9.6,
+    )
+    fig.colorbar(
+        current_image, ax=axes[1, 0], label="proton probability current",
+        pad=0.01, fraction=0.046,
+    )
+
+    drive_image = axes[1, 1].imshow(
+        proton_drives[0], origin="lower", aspect="auto", extent=extent,
+        cmap=_masked_cmap("coolwarm"), norm=drive_norm,
+    )
+    axes[1, 1].set(
+        xlabel=r"heavy $R$ ($a_0$)", ylabel=r"proton $q$ ($a_0$)",
+    )
+    axes[1, 1].set_title(
+        r"Drive: $E_q=-\partial_q\epsilon^{(1)}+\partial_ta$",
+        loc="left", fontweight="semibold", fontsize=9.6,
+    )
+    fig.colorbar(
+        drive_image, ax=axes[1, 1],
+        label=r"gauge-invariant drive (Hartree/$a_0$)",
+        pad=0.01, fraction=0.046,
+    )
+
+    heavy_current_line, = axes[1, 2].plot(
+        R, heavy_currents[0], color=COLORS[0], lw=2.0,
+        label=r"$j_R^{(\chi)}=\rho_R(\partial_RS+\alpha)/M$",
+    )
+    axes[1, 2].set(
+        xlabel=r"heavy $R$ ($a_0$)", ylabel="heavy probability current",
+        ylim=heavy_current_limits,
+    )
+    axes[1, 2].grid(alpha=0.18, linewidth=0.7)
+    heavy_force_axis = axes[1, 2].twinx()
+    heavy_drive_line, = heavy_force_axis.plot(
+        R, heavy_drives[0], color=COLORS[3], lw=1.8,
+        label=r"$F_R=-\partial_R\epsilon^{(2)}+\partial_t\alpha$",
+    )
+    heavy_force_axis.set_ylabel(
+        r"heavy drive (Hartree/$a_0$)", color=COLORS[3]
+    )
+    heavy_force_axis.tick_params(axis="y", labelcolor=COLORS[3])
+    heavy_force_axis.set_ylim(heavy_drive_limits)
+    axes[1, 2].set_title(
+        "Outer heavy transport and drive", loc="left",
+        fontweight="semibold", fontsize=9.6,
+    )
+    axes[1, 2].legend(
+        handles=[heavy_current_line, heavy_drive_line],
+        frameon=False, fontsize=7, loc="best",
+    )
+
+    _label_panels(axes)
+    title = fig.suptitle(
+        "Observed marginals (A-C) -> physical transport (D) -> "
+        "scalar+vector drives (E-F)\n"
+        rf"$a$ enters proton flow; $b$ enters $\alpha="
+        rf"\langle\partial_RT+b\rangle_q$; t={times[first]:.3f} fs",
+        fontsize=13.5, fontweight="bold",
+    )
+
+    def update(number):
+        frame = int(frames[number])
+        for line, density in zip(marginal_lines, (electron, proton, heavy)):
+            line.set_ydata(density[frame])
+        current_image.set_data(proton_currents[number])
+        drive_image.set_data(proton_drives[number])
+        heavy_current_line.set_ydata(heavy_currents[number])
+        heavy_drive_line.set_ydata(heavy_drives[number])
+        title.set_text(
+            "Observed marginals (A-C) -> physical transport (D) -> "
+            "scalar+vector drives (E-F)\n"
+            rf"$a$ enters proton flow; $b$ enters $\alpha="
+            rf"\langle\partial_RT+b\rangle_q$; t={times[frame]:.3f} fs"
+        )
+        return (
+            *marginal_lines, current_image, drive_image,
+            heavy_current_line, heavy_drive_line, title,
+        )
+
+    animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
+    if fmt == "mp4" and shutil.which("ffmpeg"):
+        path = outdir/"mcef_physical_interpretation.mp4"
+        animation.save(path, writer=FFMpegWriter(fps=fps, bitrate=3300), dpi=dpi)
+    else:
+        if fmt == "mp4":
+            print("ffmpeg을 찾지 못해 physical interpretation을 GIF로 저장합니다.")
+        path = outdir/"mcef_physical_interpretation.gif"
+        animation.save(path, writer=PillowWriter(fps=fps), dpi=min(dpi, 105))
+    plt.close(fig)
+    print(f"Compact report: {path}")
+
+
 def make_potential_animation(
     data, joint, diagnostics, support_floor, outdir, fps, max_frames, dpi, fmt,
 ):
@@ -882,6 +1059,10 @@ def run(
         make_potential_animation(
             data, joint, diagnostics, support_floor, outdir, fps, max_frames,
             animation_dpi, fmt,
+        )
+        make_physical_interpretation_animation(
+            data, electron, proton, heavy, joint, diagnostics, support_floor,
+            outdir, fps, max_frames, animation_dpi, fmt,
         )
 
     energies, _resolved, populations, residual = decomposition

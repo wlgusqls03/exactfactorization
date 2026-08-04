@@ -164,10 +164,10 @@ def run(args):
     )
 
     # The default output is intentionally focused: four question-oriented PNGs
-    # and two synchronized movies.  The former exhaustive gallery remains
+    # and three synchronized movies.  The former exhaustive gallery remains
     # available for method development through --all-products.
     if not getattr(args, "all_products", False):
-        print("[compact] 핵심 PNG 4장과 목적별 dynamics 영상 2개 생성")
+        print("[compact] 핵심 PNG 4장과 목적별 dynamics 영상 3개 생성")
         compact_report.run(
             data=data,
             decomposition=decomposition,
