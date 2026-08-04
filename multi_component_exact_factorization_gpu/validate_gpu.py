@@ -15,13 +15,51 @@ from multi_component_exact_factorization.core import (
     project_discrete_product_residual as cpu_product_projection,
 )
 from .gpu_core import (
+    GPUModel,
     cp,
+    coupled_rhs,
     derivative,
     dst1_ortho,
+    full_step,
     precision_types,
     project_discrete_product_residual as gpu_product_projection,
     remove_local_norm_generator,
 )
+
+
+def benchmark_model(shape, reuse_stage_derivatives):
+    """Zero-potential model used only for GPU path equivalence/timing."""
+    nx, _, _ = shape
+    real = cp.float64
+    modes = cp.arange(1, nx+1, dtype=real)
+    dx = dq = dR = 0.08
+    kinetic = (1.0-cp.cos(cp.pi*modes/(nx+1)))/dx**2
+    return GPUModel(
+        dx=dx, dq=dq, dR=dR,
+        proton_mass=1836.0, heavy_mass=12000.0,
+        potential=cp.zeros(shape, dtype=real),
+        kinetic_energies=kinetic,
+        real_dtype=cp.float64, complex_dtype=cp.complex128,
+        reduction_real_dtype=cp.float64,
+        reduction_complex_dtype=cp.complex128,
+        reuse_stage_derivatives=reuse_stage_derivatives,
+    )
+
+
+def normalized_gpu_factors(rng, shape):
+    """Return deterministic smooth-enough normalized factors for validation."""
+    nx, nq, nR = shape
+    phi_np = 1.0+0.02*(
+        rng.normal(size=shape)+1j*rng.normal(size=shape)
+    )
+    lam_np = 1.0+0.02*(
+        rng.normal(size=(nq, nR))+1j*rng.normal(size=(nq, nR))
+    )
+    chi_np = 1.0+0.02*(rng.normal(size=nR)+1j*rng.normal(size=nR))
+    phi_np /= np.sqrt(np.sum(np.abs(phi_np)**2, axis=0)*0.08)[None, :, :]
+    lam_np /= np.sqrt(np.sum(np.abs(lam_np)**2, axis=0)*0.08)[None, :]
+    chi_np /= np.sqrt(np.sum(np.abs(chi_np)**2)*0.08)
+    return tuple(cp.asarray(value) for value in (phi_np, lam_np, chi_np))
 
 
 def run(args):
@@ -141,6 +179,51 @@ def run(args):
     if projection_error > 2.0e-11 or abs(gpu_norm_rate) > 2.0e-11:
         raise AssertionError("GPU discrete product projection 검증 실패")
 
+    # 동일한 수식을 반복 계산하는 baseline과 stage-local derivative reuse가
+    # 한 coupled RHS에서 double roundoff 수준으로 일치하는지 확인한다.
+    reuse_shape = (7, 9, 8)
+    reuse_factors = normalized_gpu_factors(rng, reuse_shape)
+    rhs_results = []
+    for reuse in (False, True):
+        model = benchmark_model(reuse_shape, reuse)
+        rhs_results.append(coupled_rhs(
+            *reuse_factors, model, 1.0e-14, 1.0e-10, 1.0e-10,
+        ))
+    reuse_error = max(
+        float(cp.max(cp.abs(rhs_results[0][index]-rhs_results[1][index])).get())
+        for index in range(3)
+    )
+    print(f"stage derivative reuse: baseline/reuse RHS error={reuse_error:.3e}")
+    if reuse_error > 2.0e-11:
+        raise AssertionError("GPU stage-local derivative reuse 검증 실패")
+
+    if args.step_benchmark_repeats > 0:
+        benchmark_shape = (args.nx, args.nq, args.nR)
+        benchmark_factors = normalized_gpu_factors(rng, benchmark_shape)
+        timings = {}
+        for label, reuse in (("baseline", False), ("reuse", True)):
+            model = benchmark_model(benchmark_shape, reuse)
+            state = tuple(value.copy() for value in benchmark_factors)
+            # FFT plan, phase cache와 memory pool을 실제 timing 전에 예열한다.
+            state = full_step(
+                *state, 0.0025, model, 1.0e-14, 1.0e-10, 1.0e-10,
+            )[:3]
+            cp.cuda.Stream.null.synchronize()
+            start = time.perf_counter()
+            for _ in range(args.step_benchmark_repeats):
+                state = full_step(
+                    *state, 0.0025, model, 1.0e-14, 1.0e-10, 1.0e-10,
+                )[:3]
+            cp.cuda.Stream.null.synchronize()
+            timings[label] = (
+                time.perf_counter()-start
+            )/args.step_benchmark_repeats
+            print(f"{label} full step: {1e3*timings[label]:.3f} ms/step")
+        print(
+            "stage-reuse full-step speedup: "
+            f"{timings['baseline']/timings['reuse']:.3f}x"
+        )
+
     benchmark = cp.asarray(
         rng.normal(size=(args.nx, args.nq, args.nR))
         +1j*rng.normal(size=(args.nx, args.nq, args.nR)),
@@ -164,6 +247,10 @@ def parse_args():
     parser.add_argument("--nq", type=int, default=87)
     parser.add_argument("--nR", type=int, default=30)
     parser.add_argument("--repeats", type=int, default=20)
+    parser.add_argument(
+        "--step-benchmark-repeats", type=int, default=0,
+        help="0보다 크면 지정 grid에서 baseline/reuse full-step timing 비교",
+    )
     return parser.parse_args()
 
 

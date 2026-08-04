@@ -131,6 +131,27 @@ CUDA_VISIBLE_DEVICES=0 python -m \
 간격이다. 저장 frame과 마지막 step에서는 항상 검사한다. `--save-every`는
 출력 크기와 CPU 전송 횟수를 줄이지만 time step 수는 줄이지 않는다.
 
+기본 ``--gpu-optimization reuse``는 물리식과 RK4 순서를 바꾸지 않고 한 RK
+stage에서 이미 계산한 ``D_q Phi``, ``D_R Phi``, ``D_q Lambda``,
+``D_R Lambda``, ``D_R chi``를 covariant square와 logarithmic derivative가
+공유한다. 또한 동일한 곱미분식을 ``Xi=Lambda*chi``로 먼저 묶어 full-product
+RHS의 큰 3차원 임시 배열을 하나 줄인다. 검증용
+``--gpu-optimization baseline``은 같은 미분을 예전처럼 반복 계산한다.
+
+서버에서 실제 grid의 가속률과 두 경로의 수치 동등성을 확인하려면 다음을
+실행한다.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m \
+  multi_component_exact_factorization_gpu.validate_gpu \
+  --device 0 --nx 174 --nq 174 --nR 60 \
+  --step-benchmark-repeats 3
+```
+
+``stage derivative reuse: ... error``가 double roundoff 수준이고 마지막
+``stage-reuse full-step speedup``이 1보다 커야 한다. 실제 trajectory archive에는
+선택한 실행 경로가 ``gpu_optimization`` metadata로 기록된다.
+
 공용 서버에서 평균 GPU 부하를 낮추려면 `--gpu-util-limit`을 사용한다. 예를
 들어 다음 옵션은 20 step 단위의 계산 시간 뒤에 짧게 대기하여 계산/대기
 duty cycle을 약 60%로 맞춘다.

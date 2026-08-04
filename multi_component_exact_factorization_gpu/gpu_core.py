@@ -33,6 +33,7 @@ class GPUModel:
     complex_dtype: type
     reduction_real_dtype: type
     reduction_complex_dtype: type
+    reuse_stage_derivatives: bool = True
     kinetic_phase_cache: dict = field(default_factory=dict)
     potential_phase_cache: dict = field(default_factory=dict)
 
@@ -49,7 +50,7 @@ def precision_types(precision):
     raise ValueError(f"지원하지 않는 precision: {precision}")
 
 
-def make_gpu_model(cpu_model, precision):
+def make_gpu_model(cpu_model, precision, reuse_stage_derivatives=True):
     """CPU model의 고정 Hamiltonian 자료를 현재 GPU로 한 번만 복사한다."""
     real, complex_, reduction_real, reduction_complex = precision_types(precision)
     modes = cp.arange(1, len(cpu_model.x)+1, dtype=real)
@@ -64,6 +65,7 @@ def make_gpu_model(cpu_model, precision):
         real_dtype=real, complex_dtype=complex_,
         reduction_real_dtype=reduction_real,
         reduction_complex_dtype=reduction_complex,
+        reuse_stage_derivatives=bool(reuse_stage_derivatives),
     )
 
 
@@ -121,6 +123,7 @@ def regularized_ratio(numerator, denominator, relative_floor):
 
 def logarithmic_components(
     factor, spacing, axis, model, numerical_floor=1.0e-14,
+    momentum_factor=None,
 ):
     """GPU에서 phase gradient와 amplitude logarithmic gradient를 분리."""
     if numerical_floor <= 0.0:
@@ -129,7 +132,9 @@ def logarithmic_components(
     peak = cp.max(density, axis=axis, keepdims=True)
     tiny = cp.asarray(1.0e-30, dtype=density.dtype)
     safe = density+numerical_floor*cp.maximum(peak, tiny)
-    ratio = momentum(factor, spacing, axis)*cp.conj(factor)/safe
+    if momentum_factor is None:
+        momentum_factor = momentum(factor, spacing, axis)
+    ratio = momentum_factor*cp.conj(factor)/safe
     return (
         ratio.real.astype(model.real_dtype, copy=False),
         (-ratio.imag).astype(model.real_dtype, copy=False),
@@ -263,10 +268,15 @@ def _plus_covariant(field, vector, spacing, axis):
     return momentum(field, spacing, axis)+vector*field
 
 
-def covariant_square(field, vector, spacing, axis, sign):
+def covariant_square(
+    field, vector, spacing, axis, sign, momentum_field=None,
+):
     """독립 5점 D2와 Hermitian anticommutator로 covariant square 조립."""
     second = derivative(field, spacing, axis=axis, order=2)
-    p_field = momentum(field, spacing, axis=axis)
+    p_field = (
+        momentum(field, spacing, axis=axis)
+        if momentum_field is None else momentum_field
+    )
     p_vector_field = momentum(vector*field, spacing, axis=axis)
     return (
         -second
@@ -275,7 +285,7 @@ def covariant_square(field, vector, spacing, axis, sign):
     ).astype(field.dtype, copy=False)
 
 
-def geometric_fields(phi, lam, model):
+def geometric_fields(phi, lam, model, return_momenta=False):
     """Vector potential ``a(q,R), b(q,R), alpha(R)``."""
     p_q_phi = momentum(phi, model.dq, axis=1)
     p_R_phi = momentum(phi, model.dR, axis=2)
@@ -285,21 +295,28 @@ def geometric_fields(phi, lam, model):
     alpha = _real_inner_sum(
         cp.conj(lam)*(p_R_lam+b*lam), axis=0, model=model
     )*model.dq
+    if return_momenta:
+        return a, b, alpha, (p_q_phi, p_R_phi, p_R_lam)
     return a, b, alpha
 
 
 def proton_base_operator(
     lam, a, b, alpha, chi_phase_R, chi_logamp_R, mask_lam, model,
+    p_q_lam=None, p_R_lam=None,
 ):
     """epsilon_1을 제외한 proton-heavy Hamiltonian을 Lambda에 적용."""
     proton_kinetic = covariant_square(
-        lam, a, model.dq, axis=0, sign=+1
+        lam, a, model.dq, axis=0, sign=+1,
+        momentum_field=p_q_lam,
     )*(0.5/model.proton_mass)
 
     vector_R = b-alpha[None, :]
-    dplus_R = _plus_covariant(lam, vector_R, model.dR, axis=1)
+    if p_R_lam is None:
+        p_R_lam = momentum(lam, model.dR, axis=1)
+    dplus_R = p_R_lam+vector_R*lam
     dplus_R2 = covariant_square(
-        lam, vector_R, model.dR, axis=1, sign=+1
+        lam, vector_R, model.dR, axis=1, sign=+1,
+        momentum_field=p_R_lam,
     )
     coefficient = (
         chi_phase_R+alpha-1j*mask_lam*chi_logamp_R
@@ -315,25 +332,43 @@ def instantaneous_functionals(
     mask_threshold_phi=1.0e-10, mask_threshold_lam=1.0e-10,
 ):
     """현재 factor에서 두 TDPES와 세 vector potential을 계산한다."""
-    a, b, alpha = geometric_fields(phi, lam, model)
+    reuse = getattr(model, "reuse_stage_derivatives", True)
+    if reuse:
+        a, b, alpha, momenta = geometric_fields(
+            phi, lam, model, return_momenta=True
+        )
+        p_q_phi, p_R_phi, p_R_lam = momenta
+        p_q_lam = momentum(lam, model.dq, axis=0)
+    else:
+        a, b, alpha = geometric_fields(phi, lam, model)
+        p_q_phi = p_R_phi = p_q_lam = p_R_lam = None
 
     rho_R = cp.real(chi*cp.conj(chi))
     rho_qR = cp.real(lam*cp.conj(lam))*rho_R[None, :]
     mask_phi = occupied_support_mask(rho_qR, mask_threshold_phi, model)
     mask_lam = occupied_support_mask(rho_R, mask_threshold_lam, model)
     lam_phase_q, lam_logamp_q = logarithmic_components(
-        lam, model.dq, axis=0, model=model, numerical_floor=floor
+        lam, model.dq, axis=0, model=model, numerical_floor=floor,
+        momentum_factor=p_q_lam,
     )
     lam_phase_R, lam_logamp_R = logarithmic_components(
-        lam, model.dR, axis=1, model=model, numerical_floor=floor
+        lam, model.dR, axis=1, model=model, numerical_floor=floor,
+        momentum_factor=p_R_lam,
     )
+    p_R_chi = momentum(chi, model.dR, axis=0) if reuse else None
     chi_phase_R, chi_logamp_R = logarithmic_components(
-        chi, model.dR, axis=0, model=model, numerical_floor=floor
+        chi, model.dR, axis=0, model=model, numerical_floor=floor,
+        momentum_factor=p_R_chi,
     )
 
-    dminus_q = _minus_covariant(phi, a[None, :, :], model.dq, axis=1)
+    dminus_q = (
+        p_q_phi-a[None, :, :]*phi
+        if reuse else
+        _minus_covariant(phi, a[None, :, :], model.dq, axis=1)
+    )
     dminus_q2 = covariant_square(
-        phi, a[None, :, :], model.dq, axis=1, sign=-1
+        phi, a[None, :, :], model.dq, axis=1, sign=-1,
+        momentum_field=p_q_phi,
     )
     coefficient_q = (
         lam_phase_q+a-1j*mask_phi*lam_logamp_q
@@ -342,9 +377,14 @@ def instantaneous_functionals(
         0.5*dminus_q2+coefficient_q[None, :, :]*dminus_q
     )/model.proton_mass
 
-    dminus_R = _minus_covariant(phi, b[None, :, :], model.dR, axis=2)
+    dminus_R = (
+        p_R_phi-b[None, :, :]*phi
+        if reuse else
+        _minus_covariant(phi, b[None, :, :], model.dR, axis=2)
+    )
     dminus_R2 = covariant_square(
-        phi, b[None, :, :], model.dR, axis=2, sign=-1
+        phi, b[None, :, :], model.dR, axis=2, sign=-1,
+        momentum_field=p_R_phi,
     )
     coefficient_R = (
         chi_phase_R[None, :]+lam_phase_R+b
@@ -368,7 +408,8 @@ def instantaneous_functionals(
     )*model.dx
 
     base_lam_raw = proton_base_operator(
-        lam, a, b, alpha, chi_phase_R, chi_logamp_R, mask_lam, model
+        lam, a, b, alpha, chi_phase_R, chi_logamp_R, mask_lam, model,
+        p_q_lam=p_q_lam, p_R_lam=p_R_lam,
     )
     hpr_lam_raw = (
         base_lam_raw+epsilon_1*lam+1j*gamma_phi*lam
@@ -384,6 +425,9 @@ def instantaneous_functionals(
     return dict(
         a=a, b=b, alpha=alpha, epsilon_1=epsilon_1, epsilon_2=epsilon_2,
         u_phi=u_phi, hpr_lam=hpr_lam,
+        # coupled_rhs의 outer-heavy covariant square가 같은 D_R chi를
+        # 다시 계산하지 않도록 한 stage 안에서만 재사용한다.
+        _p_R_chi=p_R_chi,
         gamma_phi=gamma_phi, gamma_lam=gamma_lam,
         support_gamma_phi=mask_phi*gamma_phi,
         support_gamma_lam=mask_lam*gamma_lam,
@@ -452,12 +496,21 @@ def project_discrete_product_residual(
     """GPU factor RHS를 periodic full nuclear D2의 nested tangent에 투영."""
     if support_floor_phi < 0.0 or support_floor_lam < 0.0:
         raise ValueError("product projection support floor는 0 이상이어야 합니다.")
-    psi = phi*lam[None, :, :]*chi[None, None, :]
-    product_rhs = (
-        dphi*lam[None, :, :]*chi[None, None, :]
-        +phi*dlam[None, :, :]*chi[None, None, :]
-        +phi*lam[None, :, :]*dchi[None, None, :]
-    )
+    xi = lam*chi[None, :]
+    reuse = getattr(model, "reuse_stage_derivatives", True)
+    if reuse:
+        # 같은 곱미분 법칙을 먼저 xi=Lambda*chi 수준에서 묶으면 큰
+        # (nx,nq,nR) 임시항 하나를 만들지 않아도 된다.
+        dxi = dlam*chi[None, :]+lam*dchi[None, :]
+        psi = phi*xi[None, :, :]
+        product_rhs = dphi*xi[None, :, :]+phi*dxi[None, :, :]
+    else:
+        psi = phi*lam[None, :, :]*chi[None, None, :]
+        product_rhs = (
+            dphi*lam[None, :, :]*chi[None, None, :]
+            +phi*dlam[None, :, :]*chi[None, None, :]
+            +phi*lam[None, :, :]*dchi[None, None, :]
+        )
     nuclear_action = (
         -0.5*derivative(psi, model.dq, axis=1, order=2)/model.proton_mass
         -0.5*derivative(psi, model.dR, axis=2, order=2)/model.heavy_mass
@@ -477,7 +530,6 @@ def project_discrete_product_residual(
     delta_xi = delta_xi.astype(model.complex_dtype, copy=False)
     perpendicular_phi = residual-phi*delta_xi[None, :, :]
 
-    xi = lam*chi[None, :]
     xi_density = cp.real(xi*cp.conj(xi))
     tiny = cp.asarray(1.0e-30, dtype=xi_density.dtype)
     xi_peak = cp.maximum(cp.max(xi_density), tiny)
@@ -506,11 +558,17 @@ def project_discrete_product_residual(
     dphi = (dphi+delta_phi).astype(model.complex_dtype, copy=False)
     dlam = (dlam+delta_lam).astype(model.complex_dtype, copy=False)
     dchi = (dchi+delta_chi).astype(model.complex_dtype, copy=False)
-    corrected_product_rhs = (
-        dphi*lam[None, :, :]*chi[None, None, :]
-        +phi*dlam[None, :, :]*chi[None, None, :]
-        +phi*lam[None, :, :]*dchi[None, None, :]
-    )
+    if reuse:
+        corrected_dxi = dlam*chi[None, :]+lam*dchi[None, :]
+        corrected_product_rhs = (
+            dphi*xi[None, :, :]+phi*corrected_dxi[None, :, :]
+        )
+    else:
+        corrected_product_rhs = (
+            dphi*lam[None, :, :]*chi[None, None, :]
+            +phi*dlam[None, :, :]*chi[None, None, :]
+            +phi*lam[None, :, :]*dchi[None, None, :]
+        )
     effective_residual = target_rhs-corrected_product_rhs
     volume = model.dx*model.dq*model.dR
 
@@ -557,7 +615,10 @@ def coupled_rhs(
         fields["hpr_lam"]-fields["epsilon_2"][None, :]*lam
     )
     alpha = fields["alpha"]
-    p2chi = covariant_square(chi, alpha, model.dR, axis=0, sign=+1)
+    p2chi = covariant_square(
+        chi, alpha, model.dR, axis=0, sign=+1,
+        momentum_field=fields["_p_R_chi"],
+    )
     dchi = (
         -1j*(0.5*p2chi/model.heavy_mass+fields["epsilon_2"]*chi)
         +fields["gamma_lam"]*chi

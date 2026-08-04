@@ -75,7 +75,11 @@ def run(args):
     # Local BO diagonalization은 CPU SciPy가 효율적이고 처음 한 번만 필요하다.
     cpu_model = build_model(args)
     phi_cpu, lam_cpu, chi_cpu = initial_factors(cpu_model, args)
-    gpu_model = make_gpu_model(cpu_model, args.precision)
+    optimization = getattr(args, "gpu_optimization", "reuse")
+    gpu_model = make_gpu_model(
+        cpu_model, args.precision,
+        reuse_stage_derivatives=(optimization == "reuse"),
+    )
     phi, lam, chi = to_gpu_factors(phi_cpu, lam_cpu, chi_cpu, gpu_model)
     real_dtype, complex_dtype = numpy_dtypes(args.precision)
 
@@ -96,6 +100,14 @@ def run(args):
         f"ratio_floor={args.ratio_floor:.1e}, "
         f"mask(Phi,Lambda)=({args.mask_threshold_phi:.1e},"
         f"{args.mask_threshold_lam:.1e})"
+    )
+    print(
+        "GPU 실행 경로: "
+        +(
+            "stage-local derivative reuse (optimized)"
+            if optimization == "reuse" else
+            "baseline repeated derivatives (validation)"
+        )
     )
 
     n_steps = int(round(args.t_final_fs*AU_PER_FS/args.dt_au))
@@ -310,6 +322,7 @@ def run(args):
         gpu_seconds=np.array(gpu_seconds), wall_seconds=np.array(wall_seconds),
         gpu_util_limit=np.array(gpu_util_limit),
         gpu_throttle_sleep_seconds=np.array(throttle_sleep_seconds),
+        gpu_optimization=np.array(optimization),
         args=np.array([vars(args)], dtype=object),
     )
     if args.save_psi:
@@ -362,6 +375,13 @@ def parse_args():
     parser.add_argument(
         "--gpu-throttle-every", type=int, default=20,
         help="GPU duty-cycle을 측정하고 대기할 step 간격(기본 20)",
+    )
+    parser.add_argument(
+        "--gpu-optimization", choices=("reuse", "baseline"), default="reuse",
+        help=(
+            "reuse는 한 RK stage의 동일 미분과 product 중간값을 재사용; "
+            "baseline은 수치 동등성/속도 비교용 기존 반복 계산"
+        ),
     )
     parser.add_argument("--dt-au", type=float, default=0.005)
     parser.add_argument("--t-final-fs", type=float, default=0.05)
