@@ -9,7 +9,11 @@ CPU로 복사하므로 기존 visualization/analysis 프로그램이 같은 NPZ�
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stderr, redirect_stdout
+import shlex
+import sys
 import time
+import traceback
 
 import numpy as np
 
@@ -38,6 +42,25 @@ from .gpu_core import (
     pnc_error,
     to_gpu_factors,
 )
+
+
+class _Tee:
+    """Line-buffered terminal/file fan-out used by command-line runs."""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, value):
+        for stream in self.streams:
+            stream.write(value)
+        return len(value)
+
+    def flush(self):
+        for stream in self.streams:
+            stream.flush()
+
+    def isatty(self):
+        return any(getattr(stream, "isatty", lambda: False)() for stream in self.streams)
 
 
 def numpy_dtypes(precision):
@@ -220,60 +243,100 @@ def run(args):
     throttle_chunk_start = None
     start.record()
 
-    for step in range(1, n_steps+1):
-        if gpu_util_limit < 100.0 and throttle_chunk_start is None:
-            throttle_chunk_start = time.perf_counter()
-        phi, lam, chi, step_correction, step_diagnostics = full_step(
-            phi, lam, chi, args.dt_au, gpu_model, args.ratio_floor,
-            args.mask_threshold_phi, args.mask_threshold_lam,
-        )
-        interval_correction = cp.maximum(
-            interval_correction, step_correction
-        )
-        interval_diagnostics = merge_maxima(
-            interval_diagnostics, step_diagnostics
-        )
-        throttle_now = (
-            gpu_util_limit < 100.0
-            and (step % gpu_throttle_every == 0 or step == n_steps)
-        )
-        if throttle_now:
-            # CuPy launches asynchronously. Synchronize only at coarse intervals
-            # so the measured active time reflects completed GPU work.
-            cp.cuda.get_current_stream().synchronize()
-            active_seconds = time.perf_counter()-throttle_chunk_start
-            delay = throttle_delay(active_seconds, gpu_util_limit)
-            throttle_active_seconds += active_seconds
-            if delay > 0.0:
-                time.sleep(delay)
-                throttle_sleep_seconds += delay
-            throttle_chunk_start = None
-        must_save = frame < nt and step == save_steps[frame]
-        must_check = (
-            step % max(1, args.check_every) == 0 or must_save or step == n_steps
-        )
-        if must_check and not all_finite(phi, lam, chi):
-            raise FloatingPointError(
-                f"step {step}에서 non-finite 값이 발생했습니다. "
-                "마지막 정상 frame과 dt/grid/mask 진단을 확인하세요."
+    failure_reason = ""
+    failure_step = -1
+    nonfinite_factors = ()
+    steps_attempted = 0
+    try:
+        for step in range(1, n_steps+1):
+            steps_attempted = step
+            if gpu_util_limit < 100.0 and throttle_chunk_start is None:
+                throttle_chunk_start = time.perf_counter()
+            phi, lam, chi, step_correction, step_diagnostics = full_step(
+                phi, lam, chi, args.dt_au, gpu_model, args.ratio_floor,
+                args.mask_threshold_phi, args.mask_threshold_lam,
             )
-        if must_save:
-            save_frame(
-                frame, step, interval_correction, interval_diagnostics
+            interval_correction = cp.maximum(
+                interval_correction, step_correction
             )
-            frame += 1
-            interval_correction = cp.asarray(0.0)
-            interval_diagnostics = merge_maxima()
-        if step % max(1, args.progress_every) == 0 or step == n_steps:
-            print(
-                f"step {step:7d}/{n_steps}  "
-                f"t={step*args.dt_au/AU_PER_FS:9.4f} fs"
+            interval_diagnostics = merge_maxima(
+                interval_diagnostics, step_diagnostics
             )
+            throttle_now = (
+                gpu_util_limit < 100.0
+                and (step % gpu_throttle_every == 0 or step == n_steps)
+            )
+            if throttle_now:
+                # CuPy launches asynchronously. Synchronize only at coarse intervals
+                # so the measured active time reflects completed GPU work.
+                cp.cuda.get_current_stream().synchronize()
+                active_seconds = time.perf_counter()-throttle_chunk_start
+                delay = throttle_delay(active_seconds, gpu_util_limit)
+                throttle_active_seconds += active_seconds
+                if delay > 0.0:
+                    time.sleep(delay)
+                    throttle_sleep_seconds += delay
+                throttle_chunk_start = None
+            must_save = frame < nt and step == save_steps[frame]
+            must_check = (
+                step % max(1, args.check_every) == 0
+                or must_save or step == n_steps
+            )
+            if must_check and not all_finite(phi, lam, chi):
+                failure_step = step
+                nonfinite_factors = tuple(
+                    name for name, factor in (
+                        ("Phi", phi), ("Lambda", lam), ("chi", chi)
+                    )
+                    if not bool(cp.all(cp.isfinite(factor)).get())
+                )
+                failure_reason = (
+                    f"step {step}에서 non-finite 값 검출"
+                    +(
+                        f" ({', '.join(nonfinite_factors)})"
+                        if nonfinite_factors else ""
+                    )
+                )
+                print(f"전파 중단 감지: {failure_reason}")
+                break
+            if must_save:
+                save_frame(
+                    frame, step, interval_correction, interval_diagnostics
+                )
+                frame += 1
+                interval_correction = cp.asarray(0.0)
+                interval_diagnostics = merge_maxima()
+            if step % max(1, args.progress_every) == 0 or step == n_steps:
+                print(
+                    f"step {step:7d}/{n_steps}  "
+                    f"t={step*args.dt_au/AU_PER_FS:9.4f} fs"
+                )
+    except KeyboardInterrupt:
+        failure_step = steps_attempted
+        failure_reason = f"사용자가 step {steps_attempted}에서 계산을 중단함"
+        print(f"전파 중단 감지: {failure_reason}")
 
     stop.record()
     stop.synchronize()
     gpu_seconds = cp.cuda.get_elapsed_time(start, stop)/1000.0
     wall_seconds = time.perf_counter()-wall_start
+
+    completed = not failure_reason
+    last_saved_step = int(save_steps[frame-1])
+    # 실패한 GPU state는 archive에 섞지 않는다. 마지막으로 finite 판정을 통과해
+    # host에 내려온 frame까지만 잘라서 후처리가 일반 완료 archive와 동일하게
+    # 동작하도록 한다.
+    nt = frame
+    times_fs = times_fs[:nt]
+    phis, lams, chis = phis[:nt], lams[:nt], chis[:nt]
+    avec, bvec, alpha = avec[:nt], bvec[:nt], alpha[:nt]
+    eps1, eps2 = eps1[:nt], eps2[:nt]
+    theta1, theta2 = theta1[:nt], theta2[:nt]
+    norm, pnc = norm[:nt], pnc[:nt]
+    projection_correction = projection_correction[:nt]
+    diagnostic_history = {
+        name: values[:nt] for name, values in diagnostic_history.items()
+    }
 
     diagnostic_history["max_abs_support_gamma_phi_dt"] = (
         diagnostic_history["max_abs_support_gamma_phi"]*args.dt_au
@@ -316,6 +379,7 @@ def run(args):
     )
     args.backend = "cupy"
     args.internal_precision = args.precision
+    args.propagation_failed = not completed
     payload = dict(
         kind=np.array("direct_multi_component_exact_factorization"),
         representation=np.array(
@@ -352,6 +416,14 @@ def run(args):
         gpu_util_limit=np.array(gpu_util_limit),
         gpu_throttle_sleep_seconds=np.array(throttle_sleep_seconds),
         gpu_optimization=np.array(optimization),
+        propagation_completed=np.array(completed),
+        requested_final_time_fs=np.array(args.t_final_fs),
+        requested_steps=np.array(n_steps),
+        attempted_steps=np.array(steps_attempted),
+        last_saved_step=np.array(last_saved_step),
+        failure_detected_step=np.array(failure_step),
+        failure_reason=np.array(failure_reason),
+        nonfinite_factors=np.asarray(nonfinite_factors, dtype="U16"),
         args=np.array([vars(args)], dtype=object),
     )
     if args.save_psi:
@@ -359,12 +431,41 @@ def run(args):
     path = outdir/"multi_component_direct_ef_gpu.npz"
     np.savez_compressed(path, **payload)
 
+    status_path = outdir/"propagation_status.log"
+    status_lines = [
+        f"status={'completed' if completed else 'failed'}",
+        f"archive={path}",
+        f"requested_final_time_fs={args.t_final_fs:.12g}",
+        f"requested_steps={n_steps}",
+        f"attempted_steps={steps_attempted}",
+        f"last_saved_step={last_saved_step}",
+        f"last_saved_time_fs={times_fs[-1]:.12g}",
+        f"failure_detected_step={failure_step}",
+        f"failure_reason={failure_reason or 'none'}",
+        f"nonfinite_factors={','.join(nonfinite_factors) or 'none'}",
+        f"max_norm_error={np.max(np.abs(norm-1.0)):.12e}",
+        f"max_saved_pnc_error={np.max(pnc):.12e}",
+        f"max_pnc_projection_correction={np.max(projection_correction):.12e}",
+    ]
+    for name in (
+        "max_abs_support_gamma_phi_dt",
+        "max_abs_support_gamma_lam_dt",
+        "max_effective_product_residual_l2",
+        "max_abs_full_norm_rate_after_product_projection",
+    ):
+        if name in diagnostic_history:
+            status_lines.append(
+                f"{name}={np.max(diagnostic_history[name]):.12e}"
+            )
+    status_path.write_text("\n".join(status_lines)+"\n", encoding="utf-8")
+
     used = cp.get_default_memory_pool().used_bytes()/(1024**3)
     total = cp.get_default_memory_pool().total_bytes()/(1024**3)
-    print(f"저장 완료: {path}")
+    print(f"{'저장 완료' if completed else '부분 저장 완료'}: {path}")
+    print(f"전파 상태 로그: {status_path}")
     print(f"GPU event 시간: {gpu_seconds:.3f} s; wall 시간: {wall_seconds:.3f} s")
-    if n_steps:
-        print(f"평균 wall 시간: {wall_seconds/n_steps:.6f} s/step")
+    if steps_attempted:
+        print(f"평균 wall 시간: {wall_seconds/steps_attempted:.6f} s/step")
     if gpu_util_limit < 100.0:
         controlled_seconds = throttle_active_seconds+throttle_sleep_seconds
         measured_duty = (
@@ -392,6 +493,11 @@ def run(args):
         print("전체 개발용 진단:")
         for name, values in diagnostic_history.items():
             print(f"  {name}: {np.max(values):.3e}")
+    if not completed:
+        print(
+            f"주의: 요청한 {args.t_final_fs:g} fs 중 마지막 정상 저장 시각 "
+            f"{times_fs[-1]:.6f} fs까지만 포함된 partial trajectory입니다."
+        )
     return path
 
 
@@ -498,17 +604,53 @@ def parse_args():
     return args
 
 
-def main(args=None):
+def _execute(args):
     """GPU 전파 배열이 해제된 뒤 선택적으로 CPU 렌더링을 실행한다."""
-    args = parse_args() if args is None else args
     path = run(args)
     if getattr(args, "render_after", False):
         from multi_component_exact_factorization.render_all import (
             render_completed_run,
         )
-        print("계산 완료 후 전체 결과 렌더링을 시작합니다.")
-        render_completed_run(path, fast=getattr(args, "render_fast", False))
+        label = "부분 결과" if getattr(args, "propagation_failed", False) else "전체 결과"
+        print(f"계산 종료 후 {label} 렌더링을 시작합니다.")
+        try:
+            render_completed_run(path, fast=getattr(args, "render_fast", False))
+        except Exception as error:
+            if not getattr(args, "propagation_failed", False):
+                raise
+            print(f"부분 결과 렌더링 실패: {type(error).__name__}: {error}")
+    if getattr(args, "propagation_failed", False):
+        print(
+            "전파는 수치 오류로 완료되지 않았습니다. partial archive/report를 "
+            "진단한 뒤 dt, grid와 안정성 지표를 확인하세요."
+        )
+        raise SystemExit(2)
     return path
+
+
+def main(args=None):
+    """Run programmatically, or tee a CLI run into its dated result folder."""
+    if args is not None:
+        return _execute(args)
+
+    args = parse_args()
+    outdir = dated_results_dir(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    log_path = outdir/"propagation.log"
+    with log_path.open("w", encoding="utf-8", buffering=1) as log:
+        terminal_out, terminal_err = sys.stdout, sys.stderr
+        with redirect_stdout(_Tee(terminal_out, log)), redirect_stderr(
+            _Tee(terminal_err, log)
+        ):
+            print(f"명령: {shlex.join(sys.argv)}")
+            print(f"전체 실행 로그: {log_path}")
+            try:
+                return _execute(args)
+            except SystemExit:
+                raise
+            except BaseException:
+                traceback.print_exc()
+                raise SystemExit(1)
 
 
 if __name__ == "__main__":

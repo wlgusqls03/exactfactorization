@@ -169,6 +169,19 @@ CUDA_VISIBLE_DEVICES=0 python -m \
 ```
 
 렌더링 중 오류가 나더라도 그 전에 계산 archive는 이미 저장되어 있다.
+CLI의 terminal 출력은 별도 ``tee`` 명령 없이 계산 폴더의
+``propagation.log``에도 동시에 기록된다.
+
+Non-finite가 검출되거나 ``Ctrl-C``로 중단되면 실패한 GPU state는 버리고,
+마지막 정상 저장 frame까지를 표준 NPZ 이름으로 부분 저장한다. NPZ의
+``propagation_completed=false``, ``failure_detected_step``,
+``last_saved_step``, ``failure_reason``으로 완료 결과와 구별할 수 있다.
+``propagation_status.log``에는 이 정보와 마지막 정상 norm/PNC 진단을 짧게
+기록하고, 자동 report와 동영상 제목에는 ``PARTIAL trajectory``를 표시한다.
+부분 렌더링 후 process는 성공으로 위장하지 않고 exit code 2로 종료된다.
+강제 ``kill -9``, 전원 차단, GPU driver/process 자체의 즉시 종료는 Python이
+정리 코드를 실행할 수 없으므로 이 복구 경로의 대상이 아니다.
+
 기본 ``report`` 폴더에는 핵심 PNG 4장과 목적이 분리된 동영상 3개가 생긴다.
 
 * ``mcef_dynamics_overview``: joint nuclear density, BO population과 핵심

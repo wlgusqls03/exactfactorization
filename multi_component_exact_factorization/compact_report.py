@@ -108,12 +108,25 @@ def _label_panels(axes):
 
 def _footer(data):
     options = archive_arguments(data)
-    return (
+    return _trajectory_prefix(data) + (
         rf"initial BO $n={int(options.get('electron_excitation', 0))}$; "
         rf"$q_0={options.get('q0', np.nan):.2f}$, "
         rf"$R_0={options.get('R0', np.nan):.2f}\,a_0$; "
         rf"$n_q={len(data['q'])}$, $n_R={len(data['R'])}$"
     )
+
+
+def _trajectory_prefix(data):
+    """Watermark reports made from an intentionally truncated trajectory."""
+    files = getattr(data, "files", data.keys() if hasattr(data, "keys") else ())
+    if "propagation_completed" not in files:
+        return ""
+    completed = bool(np.asarray(data["propagation_completed"]).item())
+    if completed:
+        return ""
+    requested = float(np.asarray(data["requested_final_time_fs"]).item())
+    reached = float(np.asarray(data["times_fs"])[-1])
+    return f"PARTIAL trajectory ({reached:.3f}/{requested:g} fs) | "
 
 
 def plot_particle_motion(data, densities, means, widths, outdir, dpi):
@@ -183,7 +196,8 @@ def plot_particle_motion(data, densities, means, widths, outdir, dpi):
     ax.legend(frameon=False, ncol=2, fontsize=8)
     _label_panels(axes)
     fig.suptitle(
-        "1 | What moved?  Density maps (A-C) -> compact motion summary (D)",
+        _trajectory_prefix(data)
+        + "1 | What moved?  Density maps (A-C) -> compact motion summary (D)",
         fontsize=14, fontweight="bold",
     )
     fig.supxlabel(_footer(data), fontsize=9, color="0.35")
@@ -277,7 +291,8 @@ def plot_electronic_transitions(
 
     _label_panels(axes)
     fig.suptitle(
-        f"2 | Did electronic mixing occur, and where could it come from?\n"
+        _trajectory_prefix(data)
+        + f"2 | Did electronic mixing occur, and where could it come from?\n"
         f"composition (A) -> correlated motion (B) -> occupied gap/NAC paths (C-D), t={times[frame]:.3f} fs; gray=unoccupied",
         fontsize=14, fontweight="bold",
     )
@@ -356,7 +371,8 @@ def plot_exact_potentials(data, diagnostics, joint, frame, support_floor, outdir
 
     _label_panels(axes)
     fig.suptitle(
-        f"3 | How do the exact potentials act?  Scalar (A) + connection (B) -> force (C); outer level (D)\n"
+        _trajectory_prefix(data)
+        + f"3 | How do the exact potentials act?  Scalar (A) + connection (B) -> force (C); outer level (D)\n"
         f"t={times[frame]:.3f} fs; gray=unoccupied grid cells; scalar offsets removed",
         fontsize=14, fontweight="bold",
     )
@@ -566,7 +582,8 @@ def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
 
     _label_panels(axes)
     fig.suptitle(
-        "4 | Numerical reliability: occupied dynamics (A), discarded tails (B), conservation (C), and grid artifacts (D)",
+        _trajectory_prefix(data)
+        + "4 | Numerical reliability: occupied dynamics (A), discarded tails (B), conservation (C), and grid artifacts (D)",
         fontsize=13.5, fontweight="bold",
     )
     path = outdir/"04_numerical_reliability.png"
@@ -657,8 +674,10 @@ def make_overview_animation(
         fig.colorbar(image, ax=ax, label=label, pad=0.01, fraction=0.046)
         images.append(image)
     _label_panels(axes)
+    title_prefix = _trajectory_prefix(data)
     title = fig.suptitle(
-        "Physical dynamics (A-C) -> proton momentum (D) -> transport (E) -> drive (F)\n"
+        title_prefix
+        + "Physical dynamics (A-C) -> proton momentum (D) -> transport (E) -> drive (F)\n"
         f"t={times[first]:.3f} fs; gray=unoccupied cells",
         fontsize=13.5, fontweight="bold",
     )
@@ -674,7 +693,8 @@ def make_overview_animation(
         ):
             image.set_data(values)
         title.set_text(
-            "Physical dynamics (A-C) -> proton momentum (D) -> transport (E) -> drive (F)\n"
+            title_prefix
+            + "Physical dynamics (A-C) -> proton momentum (D) -> transport (E) -> drive (F)\n"
             f"t={times[frame]:.3f} fs; gray=unoccupied cells"
         )
         return electron_line, nuclear_image, marker, *images, title
@@ -829,8 +849,10 @@ def make_physical_interpretation_animation(
     )
 
     _label_panels(axes)
+    title_prefix = _trajectory_prefix(data)
     title = fig.suptitle(
-        "Observed marginals (A-C) -> physical transport (D) -> "
+        title_prefix
+        + "Observed marginals (A-C) -> physical transport (D) -> "
         "scalar+vector drives (E-F)\n"
         rf"$a$ enters proton flow; $b$ enters $\alpha="
         rf"\langle\partial_RT+b\rangle_q$; t={times[first]:.3f} fs",
@@ -846,7 +868,8 @@ def make_physical_interpretation_animation(
         heavy_current_line.set_ydata(heavy_currents[number])
         heavy_drive_line.set_ydata(heavy_drives[number])
         title.set_text(
-            "Observed marginals (A-C) -> physical transport (D) -> "
+            title_prefix
+            + "Observed marginals (A-C) -> physical transport (D) -> "
             "scalar+vector drives (E-F)\n"
             rf"$a$ enters proton flow; $b$ enters $\alpha="
             rf"\langle\partial_RT+b\rangle_q$; t={times[frame]:.3f} fs"
@@ -978,8 +1001,10 @@ def make_potential_animation(
     )
 
     _label_panels(axes)
+    title_prefix = _trajectory_prefix(data)
     title = fig.suptitle(
-        "Nested fields (A-D) -> heavy mechanical momentum (E) -> transport/drive (F)\n"
+        title_prefix
+        + "Nested fields (A-D) -> heavy mechanical momentum (E) -> transport/drive (F)\n"
         f"t={times[first]:.3f} fs; gray=unoccupied cells (< {support_floor:g} of peak)",
         fontsize=14, fontweight="bold",
     )
@@ -999,7 +1024,8 @@ def make_potential_animation(
         current_R_line.set_ydata(item[7])
         force_R_line.set_ydata(item[8])
         title.set_text(
-            "Nested fields (A-D) -> heavy mechanical momentum (E) -> transport/drive (F)\n"
+            title_prefix
+            + "Nested fields (A-D) -> heavy mechanical momentum (E) -> transport/drive (F)\n"
             f"t={times[frame]:.3f} fs; gray=unoccupied cells (< {support_floor:g} of peak)"
         )
         return (

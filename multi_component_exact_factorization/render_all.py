@@ -157,6 +157,17 @@ def run(args):
         archive, materialize=not args.low_memory
     )
     print("공유 archive 준비 완료")
+    if (
+        "propagation_completed" in data.files
+        and not bool(np.asarray(data["propagation_completed"]).item())
+    ):
+        reason = str(np.asarray(data["failure_reason"]).item())
+        requested = float(np.asarray(data["requested_final_time_fs"]).item())
+        reached = float(np.asarray(data["times_fs"])[-1])
+        print(
+            "주의: 실패 전 partial trajectory를 렌더링합니다: "
+            f"{reached:.6f}/{requested:g} fs; {reason}"
+        )
 
     print("전자상태 decomposition을 한 번만 계산해 두 분석에서 공유")
     decomposition = excited_state_analysis.calculate_state_decomposition(
