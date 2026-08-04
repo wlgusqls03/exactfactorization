@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numpy as np
+
 try:
     import cupy as cp
 except ImportError as exc:  # pragma: no cover - GPU 환경에서 확인하는 경로
@@ -16,6 +18,93 @@ except ImportError as exc:  # pragma: no cover - GPU 환경에서 확인하는 �
         "GPU 전파에는 CuPy가 필요합니다. CUDA 11.2 서버에서는 "
         "`pip install cupy-cuda11x==11.6.0`을 사용하세요."
     ) from exc
+
+
+_FUSED_PERIODIC_DERIVATIVE = False
+_DERIVATIVE_KERNEL_CACHE = {}
+
+
+def configure_fused_periodic_derivative(enabled):
+    """Select fused CUDA or allocation-heavy CuPy-roll five-point stencil."""
+    global _FUSED_PERIODIC_DERIVATIVE
+    _FUSED_PERIODIC_DERIVATIVE = bool(enabled)
+
+
+def _fused_derivative_kernel(dtype, order):
+    """Return a cached one-pass periodic stencil kernel for a complex dtype."""
+    dtype = np.dtype(dtype)
+    key = (dtype.str, int(order))
+    cached = _DERIVATIVE_KERNEL_CACHE.get(key)
+    if cached is not None:
+        return cached
+    if dtype == np.dtype(np.complex128):
+        vector_type, scalar_type, maker = "double2", "double", "make_double2"
+    elif dtype == np.dtype(np.complex64):
+        vector_type, scalar_type, maker = "float2", "float", "make_float2"
+    else:
+        raise TypeError("fused derivative는 complex64/complex128만 지원합니다.")
+    if order == 1:
+        real_expression = "vm2.x-8*vm1.x+8*vp1.x-vp2.x"
+        imag_expression = "vm2.y-8*vm1.y+8*vp1.y-vp2.y"
+    elif order == 2:
+        real_expression = "-vm2.x+16*vm1.x-30*v0.x+16*vp1.x-vp2.x"
+        imag_expression = "-vm2.y+16*vm1.y-30*v0.y+16*vp1.y-vp2.y"
+    else:
+        raise ValueError("order는 1 또는 2여야 합니다.")
+    name = f"mcef_periodic_d{order}_{'c128' if dtype.itemsize == 16 else 'c64'}"
+    code = f'''\
+extern "C" __global__
+void {name}(
+    const {vector_type}* values, {vector_type}* output,
+    const long long size, const int axis_length,
+    const long long stride, const {scalar_type} scale
+) {{
+    const long long index = (long long)blockDim.x*blockIdx.x+threadIdx.x;
+    if (index >= size) return;
+    const int coordinate = (int)((index/stride)%axis_length);
+    const int cm2 = coordinate >= 2 ? coordinate-2 : coordinate+axis_length-2;
+    const int cm1 = coordinate >= 1 ? coordinate-1 : axis_length-1;
+    const int cp1 = coordinate+1 < axis_length ? coordinate+1 : 0;
+    const int cp2 = coordinate+2 < axis_length ? coordinate+2 : coordinate+2-axis_length;
+    const long long base = index-(long long)coordinate*stride;
+    const {vector_type} vm2 = values[base+(long long)cm2*stride];
+    const {vector_type} vm1 = values[base+(long long)cm1*stride];
+    const {vector_type} v0 = values[index];
+    const {vector_type} vp1 = values[base+(long long)cp1*stride];
+    const {vector_type} vp2 = values[base+(long long)cp2*stride];
+    output[index] = {maker}(
+        ({real_expression})*scale,
+        ({imag_expression})*scale
+    );
+}}
+'''
+    kernel = cp.RawKernel(code, name, options=("--std=c++11",))
+    _DERIVATIVE_KERNEL_CACHE[key] = kernel
+    return kernel
+
+
+def _fused_periodic_derivative(values, spacing, axis, order):
+    """Apply the same five-point stencil in one CUDA memory pass."""
+    axis = np.core.numeric.normalize_axis_index(axis, values.ndim)
+    if not values.flags.c_contiguous or values.dtype.kind != "c":
+        return None
+    output = cp.empty_like(values)
+    stride = int(np.prod(values.shape[axis+1:], dtype=np.int64))
+    scale = (
+        1.0/(12.0*spacing) if order == 1
+        else 1.0/(12.0*spacing**2)
+    )
+    scalar = np.float64(scale) if values.dtype.itemsize == 16 else np.float32(scale)
+    threads = 256
+    blocks = (values.size+threads-1)//threads
+    _fused_derivative_kernel(values.dtype, order)(
+        (blocks,), (threads,),
+        (
+            values, output, np.int64(values.size),
+            np.int32(values.shape[axis]), np.int64(stride), scalar,
+        ),
+    )
+    return output
 
 
 @dataclass
@@ -82,6 +171,10 @@ def derivative(values, spacing, axis, order=1):
     """GPU 주기 격자의 독립적인 4차 정확도 5점 1·2차 유한차분."""
     if values.shape[axis] < 5:
         raise ValueError("5점 미분에는 해당 축에 최소 5개 격자점이 필요합니다.")
+    if _FUSED_PERIODIC_DERIVATIVE:
+        fused = _fused_periodic_derivative(values, spacing, axis, order)
+        if fused is not None:
+            return fused
     if order == 1:
         return (
             cp.roll(values, 2, axis=axis)

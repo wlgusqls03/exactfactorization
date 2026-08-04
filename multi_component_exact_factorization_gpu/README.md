@@ -131,12 +131,14 @@ CUDA_VISIBLE_DEVICES=0 python -m \
 간격이다. 저장 frame과 마지막 step에서는 항상 검사한다. `--save-every`는
 출력 크기와 CPU 전송 횟수를 줄이지만 time step 수는 줄이지 않는다.
 
-기본 ``--gpu-optimization reuse``는 물리식과 RK4 순서를 바꾸지 않고 한 RK
+기본 ``--gpu-optimization fused``는 물리식과 RK4 순서를 바꾸지 않고 한 RK
 stage에서 이미 계산한 ``D_q Phi``, ``D_R Phi``, ``D_q Lambda``,
 ``D_R Lambda``, ``D_R chi``를 covariant square와 logarithmic derivative가
 공유한다. 또한 동일한 곱미분식을 ``Xi=Lambda*chi``로 먼저 묶어 full-product
-RHS의 큰 3차원 임시 배열을 하나 줄인다. 검증용
-``--gpu-optimization baseline``은 같은 미분을 예전처럼 반복 계산한다.
+RHS의 큰 3차원 임시 배열을 하나 줄인다. Periodic 5-point stencil도 네 번의
+``cp.roll``과 여러 임시 배열 대신 같은 계수를 한 번의 CUDA memory pass에서
+계산한다. 검증용 ``--gpu-optimization reuse``는 CuPy-roll stencil과 stage
+재사용을, ``baseline``은 CuPy-roll stencil과 기존 반복 계산을 사용한다.
 
 서버에서 실제 grid의 가속률과 두 경로의 수치 동등성을 확인하려면 다음을
 실행한다.
@@ -148,9 +150,9 @@ CUDA_VISIBLE_DEVICES=0 python -m \
   --step-benchmark-repeats 3
 ```
 
-``stage derivative reuse: ... error``가 double roundoff 수준이고 마지막
-``stage-reuse full-step speedup``이 1보다 커야 한다. 실제 trajectory archive에는
-선택한 실행 경로가 ``gpu_optimization`` metadata로 기록된다.
+``baseline/reuse RHS error``와 ``baseline/fused RHS error``가 double roundoff
+수준이고 마지막 ``fused full-step speedup``이 1보다 커야 한다. 실제 trajectory
+archive에는 선택한 실행 경로가 ``gpu_optimization`` metadata로 기록된다.
 
 공용 서버에서 평균 GPU 부하를 낮추려면 `--gpu-util-limit`을 사용한다. 예를
 들어 다음 옵션은 20 step 단위의 계산 시간 뒤에 짧게 대기하여 계산/대기

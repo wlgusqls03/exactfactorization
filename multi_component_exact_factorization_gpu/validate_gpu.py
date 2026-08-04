@@ -17,6 +17,7 @@ from multi_component_exact_factorization.core import (
 from .gpu_core import (
     GPUModel,
     cp,
+    configure_fused_periodic_derivative,
     coupled_rhs,
     derivative,
     dst1_ortho,
@@ -92,12 +93,23 @@ def run(args):
             raise AssertionError(f"{np_dtype.__name__} DST-I 검증 실패")
 
     values = rng.normal(size=(31, 17, 11))+1j*rng.normal(size=(31, 17, 11))
-    for axis in range(3):
-        gpu_result = cp.asnumpy(derivative(cp.asarray(values), 0.08, axis))
-        error = float(np.max(np.abs(gpu_result-cpu_derivative(values, 0.08, axis))))
-        print(f"derivative axis={axis}: error={error:.3e}")
-        if error > 1.0e-12:
-            raise AssertionError("GPU 유한차분 검증 실패")
+    for fused in (False, True):
+        configure_fused_periodic_derivative(fused)
+        label = "fused" if fused else "roll"
+        for order in (1, 2):
+            for axis in range(3):
+                gpu_result = cp.asnumpy(derivative(
+                    cp.asarray(values), 0.08, axis, order=order,
+                ))
+                error = float(np.max(np.abs(
+                    gpu_result-cpu_derivative(values, 0.08, axis, order=order)
+                )))
+                print(
+                    f"{label} derivative D{order} axis={axis}: error={error:.3e}"
+                )
+                if error > 2.0e-11:
+                    raise AssertionError("GPU 유한차분 검증 실패")
+    configure_fused_periodic_derivative(False)
 
     # RK stage처럼 local norm이 1이 아닌 factor에서도 알려진 i*eta*f를
     # 정확히 제거하는지 precision별로 확인한다.
@@ -184,24 +196,31 @@ def run(args):
     reuse_shape = (7, 9, 8)
     reuse_factors = normalized_gpu_factors(rng, reuse_shape)
     rhs_results = []
-    for reuse in (False, True):
+    for reuse, fused in ((False, False), (True, False), (True, True)):
+        configure_fused_periodic_derivative(fused)
         model = benchmark_model(reuse_shape, reuse)
         rhs_results.append(coupled_rhs(
             *reuse_factors, model, 1.0e-14, 1.0e-10, 1.0e-10,
         ))
-    reuse_error = max(
-        float(cp.max(cp.abs(rhs_results[0][index]-rhs_results[1][index])).get())
-        for index in range(3)
-    )
-    print(f"stage derivative reuse: baseline/reuse RHS error={reuse_error:.3e}")
-    if reuse_error > 2.0e-11:
-        raise AssertionError("GPU stage-local derivative reuse 검증 실패")
+    for label, result in zip(("reuse", "fused"), rhs_results[1:]):
+        rhs_error = max(
+            float(cp.max(cp.abs(rhs_results[0][index]-result[index])).get())
+            for index in range(3)
+        )
+        print(f"{label}: baseline/{label} RHS error={rhs_error:.3e}")
+        if rhs_error > 2.0e-11:
+            raise AssertionError(f"GPU {label} 실행 경로 검증 실패")
 
     if args.step_benchmark_repeats > 0:
         benchmark_shape = (args.nx, args.nq, args.nR)
         benchmark_factors = normalized_gpu_factors(rng, benchmark_shape)
         timings = {}
-        for label, reuse in (("baseline", False), ("reuse", True)):
+        for label, reuse, fused in (
+            ("baseline", False, False),
+            ("reuse", True, False),
+            ("fused", True, True),
+        ):
+            configure_fused_periodic_derivative(fused)
             model = benchmark_model(benchmark_shape, reuse)
             state = tuple(value.copy() for value in benchmark_factors)
             # FFT plan, phase cache와 memory pool을 실제 timing 전에 예열한다.
@@ -223,6 +242,13 @@ def run(args):
             "stage-reuse full-step speedup: "
             f"{timings['baseline']/timings['reuse']:.3f}x"
         )
+        print(
+            "fused full-step speedup vs baseline/reuse: "
+            f"{timings['baseline']/timings['fused']:.3f}x / "
+            f"{timings['reuse']/timings['fused']:.3f}x"
+        )
+
+    configure_fused_periodic_derivative(False)
 
     benchmark = cp.asarray(
         rng.normal(size=(args.nx, args.nq, args.nR))

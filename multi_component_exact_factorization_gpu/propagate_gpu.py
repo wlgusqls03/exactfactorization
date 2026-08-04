@@ -28,6 +28,7 @@ from .throttle import gpu_util_percent, throttle_delay
 from .gpu_core import (
     DIAGNOSTIC_FIELDS,
     all_finite,
+    configure_fused_periodic_derivative,
     cp,
     field_maxima,
     full_step,
@@ -75,10 +76,11 @@ def run(args):
     # Local BO diagonalization은 CPU SciPy가 효율적이고 처음 한 번만 필요하다.
     cpu_model = build_model(args)
     phi_cpu, lam_cpu, chi_cpu = initial_factors(cpu_model, args)
-    optimization = getattr(args, "gpu_optimization", "reuse")
+    optimization = getattr(args, "gpu_optimization", "fused")
+    configure_fused_periodic_derivative(optimization == "fused")
     gpu_model = make_gpu_model(
         cpu_model, args.precision,
-        reuse_stage_derivatives=(optimization == "reuse"),
+        reuse_stage_derivatives=(optimization != "baseline"),
     )
     phi, lam, chi = to_gpu_factors(phi_cpu, lam_cpu, chi_cpu, gpu_model)
     real_dtype, complex_dtype = numpy_dtypes(args.precision)
@@ -104,7 +106,9 @@ def run(args):
     print(
         "GPU 실행 경로: "
         +(
-            "stage-local derivative reuse (optimized)"
+            "stage reuse + one-pass fused periodic stencil (optimized)"
+            if optimization == "fused" else
+            "stage-local derivative reuse"
             if optimization == "reuse" else
             "baseline repeated derivatives (validation)"
         )
@@ -377,10 +381,11 @@ def parse_args():
         help="GPU duty-cycle을 측정하고 대기할 step 간격(기본 20)",
     )
     parser.add_argument(
-        "--gpu-optimization", choices=("reuse", "baseline"), default="reuse",
+        "--gpu-optimization", choices=("fused", "reuse", "baseline"),
+        default="fused",
         help=(
-            "reuse는 한 RK stage의 동일 미분과 product 중간값을 재사용; "
-            "baseline은 수치 동등성/속도 비교용 기존 반복 계산"
+            "fused는 stage 재사용과 one-pass CUDA 5점 stencil; reuse는 "
+            "CuPy roll stencil+stage 재사용; baseline은 기존 반복 계산"
         ),
     )
     parser.add_argument("--dt-au", type=float, default=0.005)
