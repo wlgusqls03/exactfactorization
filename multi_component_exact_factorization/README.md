@@ -340,7 +340,7 @@ python -m multi_component_exact_factorization.visualize \
 ```text
 mcef_dynamics_overview.mp4          입자 운동과 BO population의 연결
 mcef_exact_potentials.mp4           TDPES/connection에서 momentum·current·drive로 연결
-mcef_physical_interpretation.mp4    세 marginal과 proton/heavy transport·drive를 한 화면에 연결
+mcef_physical_interpretation.mp4    공통 위치축의 세 marginal과 proton/heavy transport·drive를 연결
 ```
 
 아래 목록은 ``render_all --all-products``에서 만드는 세부 개발용 gallery다.

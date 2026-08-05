@@ -819,75 +819,121 @@ def make_physical_interpretation_animation(
     heavy_current_limits = robust_limits(heavy_currents, symmetric=True)
     heavy_drive_limits = robust_limits(heavy_drives, symmetric=True)
 
-    fig, axes = plt.subplots(2, 3, figsize=(16.4, 8.5), constrained_layout=True)
+    fig = plt.figure(figsize=(16.4, 8.7), constrained_layout=True)
+    grid_spec = fig.add_gridspec(2, 3, height_ratios=(0.82, 1.18))
+    marginal_axis = fig.add_subplot(grid_spec[0, :])
+    bottom_axes = [fig.add_subplot(grid_spec[1, index]) for index in range(3)]
+
+    # The three marginals have very different physical widths and peak
+    # heights.  Plotting their integral-normalized values on one y scale would
+    # hide the broad electron density behind the narrow proton/heavy peaks.
+    # Peak normalization is used for display only; means and widths retain the
+    # original integral-normalized marginal information.
     marginal_specs = (
-        (axes[0, 0], x, electron, "Electron marginal", r"electron $x$ ($a_0$)", COLORS[0]),
-        (axes[0, 1], q, proton, "Proton marginal", r"proton $q$ ($a_0$)", COLORS[1]),
-        (axes[0, 2], R, heavy, "Heavy-nucleus marginal", r"heavy $R$ ($a_0$)", COLORS[2]),
+        (x, electron, "electron", r"$x$", COLORS[0]),
+        (q, proton, "proton", r"$q$", COLORS[1]),
+        (R, heavy, "heavy", r"$R$", COLORS[2]),
     )
     marginal_lines = []
-    for ax, grid, density, title_text, xlabel, color in marginal_specs:
-        maximum = max(float(np.max(density[index])) for index in frames)
-        ax.plot(
-            grid, density[0], color="0.62", lw=1.3, ls="--",
-            label="initial",
+    marginal_moments = []
+    for coordinate, density, name, symbol, color in marginal_specs:
+        mean, width = moments(coordinate, density)
+        marginal_moments.append((mean, width))
+        initial_scaled = density[0]/max(float(np.max(density[0])), 1.0e-300)
+        current_scaled = density[first]/max(
+            float(np.max(density[first])), 1.0e-300
         )
-        line, = ax.plot(
-            grid, density[first], color=color, lw=2.2, label="current",
+        marginal_axis.plot(
+            coordinate, initial_scaled, color=color, lw=1.25, ls="--",
+            alpha=0.42,
         )
-        ax.set(
-            xlabel=xlabel, ylabel="probability density",
-            ylim=(0.0, 1.08*maximum),
+        line, = marginal_axis.plot(
+            coordinate, current_scaled, color=color, lw=2.25,
+            label=name,
         )
-        ax.set_title(title_text, loc="left", fontweight="semibold")
-        ax.grid(alpha=0.18, linewidth=0.7)
-        ax.legend(frameon=False, fontsize=8)
         marginal_lines.append(line)
+    common_min, common_max = common_position_limits(data)
+    marginal_axis.set(
+        xlim=(common_min, common_max), ylim=(0.0, 1.08),
+        xlabel=r"common position coordinate ($a_0$)",
+        ylabel="marginal shape\n(each peak = 1)",
+    )
+    marginal_axis.set_title(
+        "All particle marginals on one position axis",
+        loc="left", fontweight="semibold",
+    )
+    marginal_axis.grid(alpha=0.18, linewidth=0.7)
+    marginal_axis.legend(frameon=False, ncol=3, fontsize=8, loc="upper left")
+    marginal_axis.text(
+        0.995, 0.97,
+        "solid = current; faint dashed = initial\n"
+        "display is peak-normalized; every underlying marginal integrates to 1",
+        transform=marginal_axis.transAxes, ha="right", va="top", fontsize=7.8,
+        color="0.25", bbox=dict(fc="white", ec="0.85", alpha=0.84, pad=3),
+    )
+    marginal_summary = marginal_axis.text(
+        0.995, 0.04, "", transform=marginal_axis.transAxes,
+        ha="right", va="bottom", fontsize=8.1, color="0.18",
+        bbox=dict(fc="white", ec="0.85", alpha=0.84, pad=3),
+    )
 
-    current_image = axes[1, 0].imshow(
+    def update_marginal_summary(frame):
+        entries = []
+        for (_, _, _, symbol, _), (mean, width) in zip(
+            marginal_specs, marginal_moments
+        ):
+            entries.append(
+                rf"$\langle {symbol[1:-1]}\rangle={mean[frame]:.3f}$, "
+                rf"$\sigma_{symbol[1:-1]}={width[frame]:.3f}$"
+            )
+        marginal_summary.set_text("   |   ".join(entries) + r"  ($a_0$)")
+
+    update_marginal_summary(first)
+
+    current_image = bottom_axes[0].imshow(
         proton_currents[0], origin="lower", aspect="auto", extent=extent,
         cmap=_masked_cmap("coolwarm"),
         vmin=current_limits[0], vmax=current_limits[1],
     )
-    axes[1, 0].set(
+    bottom_axes[0].set(
         xlabel=r"heavy $R$ ($a_0$)", ylabel=r"proton $q$ ($a_0$)",
     )
-    axes[1, 0].set_title(
+    bottom_axes[0].set_title(
         r"Transport: $j_q=\rho_{qR}(\partial_qT+a)/m_p$",
         loc="left", fontweight="semibold", fontsize=9.6,
     )
     fig.colorbar(
-        current_image, ax=axes[1, 0], label="proton probability current",
+        current_image, ax=bottom_axes[0], label="proton probability current",
         pad=0.01, fraction=0.046,
     )
 
-    drive_image = axes[1, 1].imshow(
+    drive_image = bottom_axes[1].imshow(
         proton_drives[0], origin="lower", aspect="auto", extent=extent,
         cmap=_masked_cmap("coolwarm"), norm=drive_norm,
     )
-    axes[1, 1].set(
+    bottom_axes[1].set(
         xlabel=r"heavy $R$ ($a_0$)", ylabel=r"proton $q$ ($a_0$)",
     )
-    axes[1, 1].set_title(
+    bottom_axes[1].set_title(
         r"Drive: $E_q=-\partial_q\epsilon^{(1)}+\partial_ta$",
         loc="left", fontweight="semibold", fontsize=9.6,
     )
     fig.colorbar(
-        drive_image, ax=axes[1, 1],
+        drive_image, ax=bottom_axes[1],
         label=r"gauge-invariant drive (Hartree/$a_0$)",
         pad=0.01, fraction=0.046,
     )
 
-    heavy_current_line, = axes[1, 2].plot(
+    heavy_current_line, = bottom_axes[2].plot(
         R, heavy_currents[0], color=COLORS[0], lw=2.0,
         label=r"$j_R^{(\chi)}=\rho_R(\partial_RS+\alpha)/M$",
     )
-    axes[1, 2].set(
+    bottom_axes[2].set(
         xlabel=r"heavy $R$ ($a_0$)", ylabel="heavy probability current",
         ylim=heavy_current_limits,
     )
-    axes[1, 2].grid(alpha=0.18, linewidth=0.7)
-    heavy_force_axis = axes[1, 2].twinx()
+    bottom_axes[2].grid(alpha=0.18, linewidth=0.7)
+    heavy_force_axis = bottom_axes[2].twinx()
     heavy_drive_line, = heavy_force_axis.plot(
         R, heavy_drives[0], color=COLORS[3], lw=1.8,
         label=r"$F_R=-\partial_R\epsilon^{(2)}+\partial_t\alpha$",
@@ -897,21 +943,21 @@ def make_physical_interpretation_animation(
     )
     heavy_force_axis.tick_params(axis="y", labelcolor=COLORS[3])
     heavy_force_axis.set_ylim(heavy_drive_limits)
-    axes[1, 2].set_title(
+    bottom_axes[2].set_title(
         "Outer heavy transport and drive", loc="left",
         fontweight="semibold", fontsize=9.6,
     )
-    axes[1, 2].legend(
+    bottom_axes[2].legend(
         handles=[heavy_current_line, heavy_drive_line],
         frameon=False, fontsize=7, loc="best",
     )
 
-    _label_panels(axes)
+    _label_panels([marginal_axis, *bottom_axes])
     title_prefix = _trajectory_prefix(data)
     title = fig.suptitle(
         title_prefix
-        + "Observed marginals (A-C) -> physical transport (D) -> "
-        "scalar+vector drives (E-F)\n"
+        + "Shared marginal motion (A) -> physical proton transport/drive (B-C) "
+        "-> heavy response (D)\n"
         rf"$a$ enters proton flow; $b$ enters $\alpha="
         rf"\langle\partial_RT+b\rangle_q$; t={times[first]:.3f} fs",
         fontsize=13.5, fontweight="bold",
@@ -920,20 +966,23 @@ def make_physical_interpretation_animation(
     def update(number):
         frame = int(frames[number])
         for line, density in zip(marginal_lines, (electron, proton, heavy)):
-            line.set_ydata(density[frame])
+            line.set_ydata(
+                density[frame]/max(float(np.max(density[frame])), 1.0e-300)
+            )
+        update_marginal_summary(frame)
         current_image.set_data(proton_currents[number])
         drive_image.set_data(proton_drives[number])
         heavy_current_line.set_ydata(heavy_currents[number])
         heavy_drive_line.set_ydata(heavy_drives[number])
         title.set_text(
             title_prefix
-            + "Observed marginals (A-C) -> physical transport (D) -> "
-            "scalar+vector drives (E-F)\n"
+            + "Shared marginal motion (A) -> physical proton transport/drive (B-C) "
+            "-> heavy response (D)\n"
             rf"$a$ enters proton flow; $b$ enters $\alpha="
             rf"\langle\partial_RT+b\rangle_q$; t={times[frame]:.3f} fs"
         )
         return (
-            *marginal_lines, current_image, drive_image,
+            *marginal_lines, marginal_summary, current_image, drive_image,
             heavy_current_line, heavy_drive_line, title,
         )
 
