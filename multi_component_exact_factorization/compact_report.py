@@ -466,9 +466,25 @@ def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
             )
         removed_phi = np.max(data["suppressed_probability_phi"])
         removed_lam = np.max(data["suppressed_probability_lam"])
+        budget_text = ""
+        if (
+            "mask_probability_budgets" in data.files
+            and "mask_budget_eta_phi" in data.files
+        ):
+            budgets = np.asarray(data["mask_probability_budgets"])
+            index = int(np.argmin(np.abs(budgets-1.0e-8)))
+            eta_phi = np.asarray(data["mask_budget_eta_phi"])[:, index]
+            eta_lam = np.asarray(data["mask_budget_eta_lam"])[:, index]
+            budget_text = (
+                "\n"
+                rf"budget {budgets[index]:.0e} gives "
+                rf"$\eta_\Phi={np.min(eta_phi):.1e}$..{np.max(eta_phi):.1e}, "
+                rf"$\eta_\Lambda={np.min(eta_lam):.1e}$..{np.max(eta_lam):.1e}"
+            )
         ax.text(
             0.03, 0.05,
-            rf"max suppressed mass: $\Phi={removed_phi:.1e}$, $\Lambda={removed_lam:.1e}$",
+            rf"max suppressed mass: $\Phi={removed_phi:.1e}$, $\Lambda={removed_lam:.1e}$"
+            +budget_text,
             transform=ax.transAxes, fontsize=8, va="bottom",
             bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.75", alpha=0.9),
         )
@@ -492,11 +508,38 @@ def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
     ax = axes[1, 0]
     has_product_projection = "max_product_residual_l2" in data.files
     if has_product_projection:
-        ax.semilogy(
-            times, np.maximum(data["max_product_residual_l2"], 1.0e-20),
-            color=COLORS[1], ls=":", alpha=0.75,
-            label=r"factor/full $D_2$ residual: before",
-        )
+        has_mask_split = "max_product_residual_due_to_mask_l2" in data.files
+        if has_mask_split:
+            nonmask_key = (
+                "max_support_product_residual_without_mask_l2"
+                if "max_support_product_residual_without_mask_l2" in data.files
+                else "max_product_residual_without_mask_l2"
+            )
+            mask_key = (
+                "max_support_product_residual_due_to_mask_l2"
+                if "max_support_product_residual_due_to_mask_l2" in data.files
+                else "max_product_residual_due_to_mask_l2"
+            )
+            ax.semilogy(
+                times, np.maximum(
+                    data[nonmask_key], 1.0e-20
+                ),
+                color=COLORS[0], ls=":", lw=1.7,
+                label="occupied non-mask discrete residual",
+            )
+            ax.semilogy(
+                times, np.maximum(
+                    data[mask_key], 1.0e-20
+                ),
+                color=COLORS[4], ls="--", lw=1.7,
+                label="occupied residual introduced by mask",
+            )
+        else:
+            ax.semilogy(
+                times, np.maximum(data["max_product_residual_l2"], 1.0e-20),
+                color=COLORS[1], ls=":", alpha=0.75,
+                label=r"factor/full $D_2$ residual: before",
+            )
         ax.semilogy(
             times,
             np.maximum(data["max_effective_product_residual_l2"], 1.0e-20),
@@ -511,6 +554,19 @@ def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
             color=COLORS[2], lw=1.6,
             label=r"full norm-rate after projection",
         )
+        if has_mask_split:
+            positive = np.max(
+                data["max_product_mask_nonmask_alignment_positive"]
+            ) if "max_product_mask_nonmask_alignment_positive" in data.files else np.nan
+            negative = np.max(
+                data["max_product_mask_nonmask_alignment_negative_magnitude"]
+            ) if "max_product_mask_nonmask_alignment_negative_magnitude" in data.files else np.nan
+            ax.text(
+                0.97, 0.72,
+                rf"alignment range sampled: $c=-{negative:.2f}$..$+{positive:.2f}$",
+                transform=ax.transAxes, fontsize=8, va="top", ha="right",
+                bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="0.8", alpha=0.9),
+            )
     elif "max_raw_rate_phi" in data.files:
         ax.semilogy(
             times, np.maximum(data["max_corrected_rate_phi"], 1.0e-20),
@@ -543,6 +599,8 @@ def plot_numerical_reliability(data, diagnostics, densities, outdir, dpi):
         bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.75", alpha=0.9),
     )
     conservation_title = (
+        "Mask vs discrete residual, then product projection"
+        if "max_product_residual_due_to_mask_l2" in data.files else
         "Conservation: discrete product residual before/after projection"
         if has_product_projection
         else "Conservation: norm drift vs tail-sensitive PNC"

@@ -63,6 +63,37 @@ DIAGNOSTIC_FIELDS = {
     "max_abs_product_correction_phi": "product_correction_phi",
     "max_abs_product_correction_lam": "product_correction_lam",
     "max_abs_product_correction_chi": "product_correction_chi",
+    "max_product_residual_without_mask_l2": (
+        "product_residual_without_mask_l2"
+    ),
+    "max_product_residual_due_to_mask_l2": "product_residual_due_to_mask_l2",
+    "max_relative_product_residual_without_mask": (
+        "relative_product_residual_without_mask"
+    ),
+    "max_relative_product_residual_due_to_mask": (
+        "relative_product_residual_due_to_mask"
+    ),
+    "max_abs_product_mask_nonmask_alignment": (
+        "product_mask_nonmask_alignment"
+    ),
+    "max_product_mask_nonmask_alignment_positive": (
+        "product_mask_nonmask_alignment_positive"
+    ),
+    "max_product_mask_nonmask_alignment_negative_magnitude": (
+        "product_mask_nonmask_alignment_negative_magnitude"
+    ),
+    "max_support_product_residual_without_mask_l2": (
+        "support_product_residual_without_mask_l2"
+    ),
+    "max_support_product_residual_due_to_mask_l2": (
+        "support_product_residual_due_to_mask_l2"
+    ),
+    "max_relative_support_product_residual_without_mask": (
+        "relative_support_product_residual_without_mask"
+    ),
+    "max_relative_support_product_residual_due_to_mask": (
+        "relative_support_product_residual_due_to_mask"
+    ),
 }
 
 
@@ -91,6 +122,7 @@ def coupled_rhs(phi, lam, chi, model, args):
         phi, lam, chi, model, floor=args.ratio_floor,
         mask_threshold_phi=args.mask_threshold_phi,
         mask_threshold_lam=args.mask_threshold_lam,
+        include_unmasked=getattr(args, "mask_residual_diagnostics", False),
     )
 
     # 전자 H_BO Phi는 split step에서 처리하므로 여기에는 U_coup-epsilon_1만 둔다.
@@ -109,10 +141,33 @@ def coupled_rhs(phi, lam, chi, model, args):
     dchi = -1j*(
         0.5*p2chi/model.heavy_mass+fields["epsilon_2"]*chi
     )+fields["gamma_lam"]*chi                                      # (nR,)
+    unmasked_rhs = None
+    if getattr(args, "mask_residual_diagnostics", False):
+        dphi_unmasked = -1j*(
+            fields["u_phi_unmasked"]
+            -fields["epsilon_1_unmasked"][None, :, :]*phi
+        )
+        dlam_unmasked = -1j*(
+            fields["hpr_lam_unmasked"]
+            -fields["epsilon_2_unmasked"][None, :]*lam
+        )
+        dchi_unmasked = -1j*(
+            0.5*p2chi/model.heavy_mass
+            +fields["epsilon_2_unmasked"]*chi
+        )+fields["gamma_lam_unmasked"]*chi
+        unmasked_rhs = (dphi_unmasked, dlam_unmasked, dchi_unmasked)
     dphi, dlam, dchi, product_diagnostics = project_discrete_product_residual(
         phi, lam, chi, dphi, dlam, dchi, model,
-        support_floor_phi=args.mask_threshold_phi,
-        support_floor_lam=args.mask_threshold_lam,
+        support_floor_phi=getattr(
+            args, "product_projection_floor_phi", args.mask_threshold_phi
+        ),
+        support_floor_lam=getattr(
+            args, "product_projection_floor_lam", args.mask_threshold_lam
+        ),
+        unmasked_rhs=unmasked_rhs,
+        residual_support_weight=(
+            fields["mask_phi"] if unmasked_rhs is not None else None
+        ),
     )
     fields.update(product_diagnostics)
     return dphi, dlam, dchi, field_maxima(fields)
@@ -407,6 +462,13 @@ def run(args):
         ratio_floor=np.array(args.ratio_floor),
         mask_threshold_phi=np.array(args.mask_threshold_phi),
         mask_threshold_lam=np.array(args.mask_threshold_lam),
+        product_projection_floor_phi=np.array(
+            args.product_projection_floor_phi
+        ),
+        product_projection_floor_lam=np.array(
+            args.product_projection_floor_lam
+        ),
+        mask_residual_diagnostics=np.array(args.mask_residual_diagnostics),
         gauge=np.array(gauge_name),
         base_gauge=np.array("parallel_transport_two_level"),
         x=model.x, q=model.q, R=model.R, times_fs=times_fs,
@@ -455,6 +517,20 @@ def parse_args():
         "--mask-threshold-lam", type=float, default=1.0e-10,
         help="heavy density |chi|^2 기반 Lambda amplitude mask",
     )
+    regularization.add_argument(
+        "--product-projection-floor-phi", type=float, default=1.0e-10,
+        help="product projection의 1/(Lambda*chi) numerical support floor",
+    )
+    regularization.add_argument(
+        "--product-projection-floor-lam", type=float, default=1.0e-10,
+        help="product projection의 1/chi numerical support floor",
+    )
+    regularization.add_argument(
+        "--no-mask-residual-diagnostics", dest="mask_residual_diagnostics",
+        action="store_false",
+        help="support mask를 끈 비교 RHS와 residual 분해 계산을 생략",
+    )
+    parser.set_defaults(mask_residual_diagnostics=True)
     regularization.add_argument(
         "--density-threshold", type=float, default=None,
         help="deprecated: 지정하면 두 mask threshold에 같은 값을 사용",

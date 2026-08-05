@@ -5,8 +5,11 @@ import numpy as np
 
 from multi_component_exact_factorization.core import (
     derivative,
+    mask_threshold_for_probability_budget,
+    occupied_support_mask,
     project_discrete_product_residual,
     reconstruct_psi,
+    suppressed_probability,
 )
 
 
@@ -66,6 +69,45 @@ class DiscreteProductProjectionTests(unittest.TestCase):
             abs(diagnostics["full_norm_rate_after_product_projection"]),
             1.0e-13,
         )
+
+    def test_mask_residual_decomposition_is_exact(self):
+        rng = np.random.default_rng(7)
+        masked = tuple(
+            (rng.normal(size=shape)+1j*rng.normal(size=shape))*1.0e-3
+            for shape in (self.phi.shape, self.lam.shape, self.chi.shape)
+        )
+        unmasked = tuple(
+            value+(rng.normal(size=value.shape)+1j*rng.normal(size=value.shape))*1.0e-4
+            for value in masked
+        )
+        _, _, _, diagnostics = project_discrete_product_residual(
+            self.phi, self.lam, self.chi, *masked, self.model,
+            support_floor_phi=0.0, support_floor_lam=0.0,
+            unmasked_rhs=unmasked,
+        )
+        total = diagnostics["product_residual_l2"]
+        pieces = (
+            diagnostics["product_residual_without_mask_l2"]
+            +diagnostics["product_residual_due_to_mask_l2"]
+        )
+        self.assertLessEqual(total, pieces+1.0e-14)
+        a = diagnostics["product_residual_without_mask_l2"]
+        b = diagnostics["product_residual_due_to_mask_l2"]
+        cosine = diagnostics["product_mask_nonmask_alignment"]
+        self.assertAlmostEqual(
+            total**2, a**2+b**2+2.0*a*b*cosine, delta=1.0e-13
+        )
+        self.assertLessEqual(
+            abs(cosine), 1.0+1.0e-12
+        )
+
+    def test_probability_budget_inverts_suppressed_mass(self):
+        density = np.exp(-np.linspace(-4.0, 4.0, 101)**2)
+        for budget in (1.0e-9, 1.0e-7, 1.0e-5):
+            eta = mask_threshold_for_probability_budget(density, budget)
+            mask = occupied_support_mask(density, eta)
+            measured = suppressed_probability(density, mask, 1.0)
+            self.assertAlmostEqual(measured, budget, delta=budget*1.0e-6)
 
 
 if __name__ == "__main__":

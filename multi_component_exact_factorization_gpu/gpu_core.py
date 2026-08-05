@@ -123,6 +123,9 @@ class GPUModel:
     reduction_real_dtype: type
     reduction_complex_dtype: type
     reuse_stage_derivatives: bool = True
+    product_projection_floor_phi: float = 1.0e-10
+    product_projection_floor_lam: float = 1.0e-10
+    mask_residual_diagnostics: bool = False
     kinetic_phase_cache: dict = field(default_factory=dict)
     potential_phase_cache: dict = field(default_factory=dict)
 
@@ -139,7 +142,12 @@ def precision_types(precision):
     raise ValueError(f"지원하지 않는 precision: {precision}")
 
 
-def make_gpu_model(cpu_model, precision, reuse_stage_derivatives=True):
+def make_gpu_model(
+    cpu_model, precision, reuse_stage_derivatives=True,
+    product_projection_floor_phi=1.0e-10,
+    product_projection_floor_lam=1.0e-10,
+    mask_residual_diagnostics=False,
+):
     """CPU model의 고정 Hamiltonian 자료를 현재 GPU로 한 번만 복사한다."""
     real, complex_, reduction_real, reduction_complex = precision_types(precision)
     modes = cp.arange(1, len(cpu_model.x)+1, dtype=real)
@@ -155,6 +163,9 @@ def make_gpu_model(cpu_model, precision, reuse_stage_derivatives=True):
         reduction_real_dtype=reduction_real,
         reduction_complex_dtype=reduction_complex,
         reuse_stage_derivatives=bool(reuse_stage_derivatives),
+        product_projection_floor_phi=float(product_projection_floor_phi),
+        product_projection_floor_lam=float(product_projection_floor_lam),
+        mask_residual_diagnostics=bool(mask_residual_diagnostics),
     )
 
 
@@ -395,7 +406,7 @@ def geometric_fields(phi, lam, model, return_momenta=False):
 
 def proton_base_operator(
     lam, a, b, alpha, chi_phase_R, chi_logamp_R, mask_lam, model,
-    p_q_lam=None, p_R_lam=None,
+    p_q_lam=None, p_R_lam=None, return_unmasked=False,
 ):
     """epsilon_1을 제외한 proton-heavy Hamiltonian을 Lambda에 적용."""
     proton_kinetic = covariant_square(
@@ -417,15 +428,27 @@ def proton_base_operator(
     coupling = (
         0.5*dplus_R2+coefficient[None, :]*dplus_R
     )/model.heavy_mass
-    return proton_kinetic+coupling
+    masked = proton_kinetic+coupling
+    if not return_unmasked:
+        return masked
+    coefficient_unmasked = (
+        chi_phase_R+alpha-1j*chi_logamp_R
+    ).astype(model.complex_dtype, copy=False)
+    unmasked = proton_kinetic+(
+        0.5*dplus_R2+coefficient_unmasked[None, :]*dplus_R
+    )/model.heavy_mass
+    return masked, unmasked
 
 
 def instantaneous_functionals(
     phi, lam, chi, model, floor=1.0e-14,
     mask_threshold_phi=1.0e-10, mask_threshold_lam=1.0e-10,
+    include_unmasked=None,
 ):
     """현재 factor에서 두 TDPES와 세 vector potential을 계산한다."""
     reuse = getattr(model, "reuse_stage_derivatives", True)
+    if include_unmasked is None:
+        include_unmasked = getattr(model, "mask_residual_diagnostics", False)
     if reuse:
         a, b, alpha, momenta = geometric_fields(
             phi, lam, model, return_momenta=True
@@ -500,10 +523,15 @@ def instantaneous_functionals(
         cp.conj(phi)*(hbo_phi+u_phi), axis=0, model=model
     )*model.dx
 
-    base_lam_raw = proton_base_operator(
+    base_result = proton_base_operator(
         lam, a, b, alpha, chi_phase_R, chi_logamp_R, mask_lam, model,
         p_q_lam=p_q_lam, p_R_lam=p_R_lam,
+        return_unmasked=include_unmasked,
     )
+    if include_unmasked:
+        base_lam_raw, base_lam_unmasked_raw = base_result
+    else:
+        base_lam_raw = base_result
     hpr_lam_raw = (
         base_lam_raw+epsilon_1*lam+1j*gamma_phi*lam
     ).astype(model.complex_dtype, copy=False)
@@ -515,7 +543,7 @@ def instantaneous_functionals(
     epsilon_2 = _real_inner_sum(
         cp.conj(lam)*hpr_lam, axis=0, model=model
     )*model.dq
-    return dict(
+    result = dict(
         a=a, b=b, alpha=alpha, epsilon_1=epsilon_1, epsilon_2=epsilon_2,
         u_phi=u_phi, hpr_lam=hpr_lam,
         # coupled_rhs의 outer-heavy covariant square가 같은 D_R chi를
@@ -545,6 +573,49 @@ def instantaneous_functionals(
         raw_logamp_lam=cp.abs(chi_logamp_R),
         effective_logamp_lam=cp.abs(mask_lam*chi_logamp_R),
     )
+    if include_unmasked:
+        coefficient_q_unmasked = (
+            lam_phase_q+a-1j*lam_logamp_q
+        ).astype(model.complex_dtype, copy=False)
+        coefficient_R_unmasked = (
+            chi_phase_R[None, :]+lam_phase_R+b
+            -1j*(chi_logamp_R[None, :]+lam_logamp_R)
+        ).astype(model.complex_dtype, copy=False)
+        u_phi_unmasked_raw = (
+            0.5*dminus_q2
+            +coefficient_q_unmasked[None, :, :]*dminus_q
+        )/model.proton_mass+(
+            0.5*dminus_R2
+            +coefficient_R_unmasked[None, :, :]*dminus_R
+        )/model.heavy_mass
+        (
+            u_phi_unmasked, gamma_phi_unmasked, _, _
+        ) = remove_local_norm_generator(
+            phi, u_phi_unmasked_raw, model.dx, axis=0, model=model
+        )
+        epsilon_1_unmasked = _real_inner_sum(
+            cp.conj(phi)*(hbo_phi+u_phi_unmasked), axis=0, model=model
+        )*model.dx
+        hpr_lam_unmasked_raw = (
+            base_lam_unmasked_raw+epsilon_1_unmasked*lam
+            +1j*gamma_phi_unmasked*lam
+        ).astype(model.complex_dtype, copy=False)
+        (
+            hpr_lam_unmasked, gamma_lam_unmasked, _, _
+        ) = remove_local_norm_generator(
+            lam, hpr_lam_unmasked_raw, model.dq, axis=0, model=model
+        )
+        epsilon_2_unmasked = _real_inner_sum(
+            cp.conj(lam)*hpr_lam_unmasked, axis=0, model=model
+        )*model.dq
+        result.update(
+            u_phi_unmasked=u_phi_unmasked,
+            hpr_lam_unmasked=hpr_lam_unmasked,
+            epsilon_1_unmasked=epsilon_1_unmasked,
+            epsilon_2_unmasked=epsilon_2_unmasked,
+            gamma_lam_unmasked=gamma_lam_unmasked,
+        )
+    return result
 
 
 def pnc_project(phi, lam, chi, model):
@@ -585,6 +656,7 @@ def pnc_error(phi, lam, model):
 def project_discrete_product_residual(
     phi, lam, chi, dphi, dlam, dchi, model,
     support_floor_phi=1.0e-10, support_floor_lam=1.0e-10,
+    unmasked_rhs=None, residual_support_weight=None,
 ):
     """GPU factor RHS를 periodic full nuclear D2의 nested tangent에 투영."""
     if support_floor_phi < 0.0 or support_floor_lam < 0.0:
@@ -610,6 +682,24 @@ def project_discrete_product_residual(
     )
     target_rhs = -1j*nuclear_action
     residual = target_rhs-product_rhs
+    if unmasked_rhs is None:
+        residual_without_mask = None
+        residual_due_to_mask = None
+    else:
+        uphi, ulam, uchi = unmasked_rhs
+        if reuse:
+            unmasked_dxi = ulam*chi[None, :]+lam*uchi[None, :]
+            unmasked_product_rhs = (
+                uphi*xi[None, :, :]+phi*unmasked_dxi[None, :, :]
+            )
+        else:
+            unmasked_product_rhs = (
+                uphi*lam[None, :, :]*chi[None, None, :]
+                +phi*ulam[None, :, :]*chi[None, None, :]
+                +phi*lam[None, :, :]*uchi[None, None, :]
+            )
+        residual_without_mask = target_rhs-unmasked_product_rhs
+        residual_due_to_mask = unmasked_product_rhs-product_rhs
 
     phi_norm2 = cp.sum(
         cp.real(phi*cp.conj(phi)), axis=0,
@@ -677,6 +767,62 @@ def project_discrete_product_residual(
         )
         return 2.0*overlap.real*volume
 
+    zero = cp.asarray(0.0, dtype=model.reduction_real_dtype)
+    if residual_without_mask is None:
+        target_l2 = zero
+        residual_without_mask_l2 = zero
+        residual_due_to_mask_l2 = zero
+        relative_floor = cp.asarray(1.0, dtype=zero.dtype)
+        alignment_floor = cp.asarray(1.0e-300, dtype=zero.dtype)
+        alignment = zero
+        support_without_mask_l2 = zero
+        support_due_to_mask_l2 = zero
+        relative_support_without_mask = zero
+        relative_support_due_to_mask = zero
+    else:
+        target_l2 = l2(target_rhs)
+        residual_without_mask_l2 = l2(residual_without_mask)
+        residual_due_to_mask_l2 = l2(residual_due_to_mask)
+        relative_floor = cp.maximum(
+            target_l2, cp.asarray(1.0e-300, dtype=target_l2.dtype)
+        )
+        alignment_floor = cp.asarray(1.0e-300, dtype=target_l2.dtype)
+        alignment_overlap = cp.sum(
+            cp.conj(residual_without_mask)*residual_due_to_mask,
+            dtype=model.reduction_complex_dtype,
+        ).real*volume
+        alignment = cp.where(
+            residual_without_mask_l2*residual_due_to_mask_l2 > alignment_floor,
+            alignment_overlap/cp.maximum(
+                residual_without_mask_l2*residual_due_to_mask_l2,
+                alignment_floor,
+            ),
+            0.0,
+        )
+        weight = (
+            cp.ones(phi.shape[1:], dtype=model.real_dtype)
+            if residual_support_weight is None else residual_support_weight
+        )[None, :, :]
+
+        def weighted_l2(values):
+            return cp.sqrt(cp.sum(
+                weight*cp.real(values*cp.conj(values)),
+                dtype=model.reduction_real_dtype,
+            )*volume)
+
+        support_target_l2 = weighted_l2(target_rhs)
+        support_without_mask_l2 = weighted_l2(residual_without_mask)
+        support_due_to_mask_l2 = weighted_l2(residual_due_to_mask)
+        support_relative_floor = cp.maximum(
+            support_target_l2,
+            cp.asarray(1.0e-300, dtype=support_target_l2.dtype),
+        )
+        relative_support_without_mask = (
+            support_without_mask_l2/support_relative_floor
+        )
+        relative_support_due_to_mask = (
+            support_due_to_mask_l2/support_relative_floor
+        )
     diagnostics = dict(
         product_residual_l2=l2(residual),
         effective_product_residual_l2=l2(effective_residual),
@@ -687,19 +833,41 @@ def project_discrete_product_residual(
         product_correction_phi=cp.max(cp.abs(delta_phi)),
         product_correction_lam=cp.max(cp.abs(delta_lam)),
         product_correction_chi=cp.max(cp.abs(delta_chi)),
+        product_residual_without_mask_l2=residual_without_mask_l2,
+        product_residual_due_to_mask_l2=residual_due_to_mask_l2,
+        relative_product_residual_without_mask=(
+            residual_without_mask_l2/relative_floor
+        ),
+        relative_product_residual_due_to_mask=(
+            residual_due_to_mask_l2/relative_floor
+        ),
+        product_mask_nonmask_alignment=alignment,
+        product_mask_nonmask_alignment_positive=cp.maximum(alignment, zero),
+        product_mask_nonmask_alignment_negative_magnitude=cp.maximum(
+            -alignment, zero
+        ),
+        support_product_residual_without_mask_l2=support_without_mask_l2,
+        support_product_residual_due_to_mask_l2=support_due_to_mask_l2,
+        relative_support_product_residual_without_mask=(
+            relative_support_without_mask
+        ),
+        relative_support_product_residual_due_to_mask=(
+            relative_support_due_to_mask
+        ),
     )
     return dphi, dlam, dchi, diagnostics
 
 
 def coupled_rhs(
     phi, lam, chi, model, ratio_floor, mask_threshold_phi,
-    mask_threshold_lam,
+    mask_threshold_lam, include_mask_diagnostics=False,
 ):
     """H_BO split 부분을 제외한 세 coupled RHS."""
     fields = instantaneous_functionals(
         phi, lam, chi, model, floor=ratio_floor,
         mask_threshold_phi=mask_threshold_phi,
         mask_threshold_lam=mask_threshold_lam,
+        include_unmasked=include_mask_diagnostics,
     )
     dphi = -1j*(
         fields["u_phi"]-fields["epsilon_1"][None, :, :]*phi
@@ -716,10 +884,31 @@ def coupled_rhs(
         -1j*(0.5*p2chi/model.heavy_mass+fields["epsilon_2"]*chi)
         +fields["gamma_lam"]*chi
     )
+    unmasked_rhs = None
+    if include_mask_diagnostics:
+        dphi_unmasked = -1j*(
+            fields["u_phi_unmasked"]
+            -fields["epsilon_1_unmasked"][None, :, :]*phi
+        )
+        dlam_unmasked = -1j*(
+            fields["hpr_lam_unmasked"]
+            -fields["epsilon_2_unmasked"][None, :]*lam
+        )
+        dchi_unmasked = (
+            -1j*(
+                0.5*p2chi/model.heavy_mass
+                +fields["epsilon_2_unmasked"]*chi
+            )+fields["gamma_lam_unmasked"]*chi
+        )
+        unmasked_rhs = (dphi_unmasked, dlam_unmasked, dchi_unmasked)
     dphi, dlam, dchi, product_diagnostics = project_discrete_product_residual(
         phi, lam, chi, dphi, dlam, dchi, model,
-        support_floor_phi=mask_threshold_phi,
-        support_floor_lam=mask_threshold_lam,
+        support_floor_phi=model.product_projection_floor_phi,
+        support_floor_lam=model.product_projection_floor_lam,
+        unmasked_rhs=unmasked_rhs,
+        residual_support_weight=(
+            fields["mask_phi"] if unmasked_rhs is not None else None
+        ),
     )
     fields.update(product_diagnostics)
     return dphi, dlam, dchi, field_maxima(fields)
@@ -751,7 +940,50 @@ DIAGNOSTIC_FIELDS = {
     "max_abs_product_correction_phi": "product_correction_phi",
     "max_abs_product_correction_lam": "product_correction_lam",
     "max_abs_product_correction_chi": "product_correction_chi",
+    "max_product_residual_without_mask_l2": (
+        "product_residual_without_mask_l2"
+    ),
+    "max_product_residual_due_to_mask_l2": "product_residual_due_to_mask_l2",
+    "max_relative_product_residual_without_mask": (
+        "relative_product_residual_without_mask"
+    ),
+    "max_relative_product_residual_due_to_mask": (
+        "relative_product_residual_due_to_mask"
+    ),
+    "max_abs_product_mask_nonmask_alignment": (
+        "product_mask_nonmask_alignment"
+    ),
+    "max_product_mask_nonmask_alignment_positive": (
+        "product_mask_nonmask_alignment_positive"
+    ),
+    "max_product_mask_nonmask_alignment_negative_magnitude": (
+        "product_mask_nonmask_alignment_negative_magnitude"
+    ),
+    "max_support_product_residual_without_mask_l2": (
+        "support_product_residual_without_mask_l2"
+    ),
+    "max_support_product_residual_due_to_mask_l2": (
+        "support_product_residual_due_to_mask_l2"
+    ),
+    "max_relative_support_product_residual_without_mask": (
+        "relative_support_product_residual_without_mask"
+    ),
+    "max_relative_support_product_residual_due_to_mask": (
+        "relative_support_product_residual_due_to_mask"
+    ),
 }
+
+
+def evaluate_mask_residual_diagnostics(
+    phi, lam, chi, model, ratio_floor, mask_threshold_phi,
+    mask_threshold_lam,
+):
+    """Evaluate mask-on/off product residuals without advancing the state."""
+    _, _, _, diagnostics = coupled_rhs(
+        phi, lam, chi, model, ratio_floor, mask_threshold_phi,
+        mask_threshold_lam, include_mask_diagnostics=True,
+    )
+    return diagnostics
 
 
 def field_maxima(fields):

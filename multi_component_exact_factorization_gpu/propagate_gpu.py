@@ -24,6 +24,7 @@ from multi_component_exact_factorization.core import (
     add_model_arguments,
     build_model,
     initial_factors,
+    mask_threshold_for_probability_budget,
 )
 from multi_component_exact_factorization.propagate import output_gauge
 
@@ -40,6 +41,7 @@ from .gpu_core import (
     make_gpu_model,
     merge_maxima,
     pnc_error,
+    evaluate_mask_residual_diagnostics,
     to_gpu_factors,
 )
 
@@ -80,6 +82,17 @@ def device_description(device_id):
     return f"GPU {device_id}: {name}, {total_gib:.2f} GiB"
 
 
+def probability_budgets(value):
+    """Parse a comma-separated list of diagnostic mask mass budgets."""
+    try:
+        values = tuple(float(item) for item in value.split(",") if item.strip())
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("budget은 쉼표로 구분한 실수여야 합니다") from exc
+    if not values or any(not 0.0 < item < 1.0 for item in values):
+        raise argparse.ArgumentTypeError("각 probability budget은 0과 1 사이여야 합니다")
+    return values
+
+
 def run(args):
     """CPU 초기화 -> GPU direct EF 전파 -> CPU-compatible NPZ 저장."""
     if getattr(args, "precision", "double") != "double":
@@ -87,6 +100,24 @@ def run(args):
             "production GPU propagation은 검증된 double precision으로 고정됩니다"
         )
     args.precision = "double"
+    args.product_projection_floor_phi = getattr(
+        args, "product_projection_floor_phi", args.mask_threshold_phi
+    )
+    args.product_projection_floor_lam = getattr(
+        args, "product_projection_floor_lam", args.mask_threshold_lam
+    )
+    args.mask_residual_diagnostics = getattr(
+        args, "mask_residual_diagnostics", True
+    )
+    args.mask_probability_budgets = getattr(
+        args, "mask_probability_budgets", (1.0e-9, 1.0e-8, 1.0e-7)
+    )
+    for name in (
+        "mask_threshold_phi", "mask_threshold_lam",
+        "product_projection_floor_phi", "product_projection_floor_lam",
+    ):
+        if getattr(args, name) < 0.0:
+            raise ValueError(f"--{name.replace('_', '-')}는 0 이상이어야 합니다")
     cp.cuda.Device(args.device).use()
     print(device_description(args.device))
     print(f"계산 정밀도: {args.precision}")
@@ -109,6 +140,10 @@ def run(args):
     gpu_model = make_gpu_model(
         cpu_model, args.precision,
         reuse_stage_derivatives=(optimization != "baseline"),
+        product_projection_floor_phi=args.product_projection_floor_phi,
+        product_projection_floor_lam=args.product_projection_floor_lam,
+        # 비교 RHS는 check 시점에만 명시적으로 평가한다.
+        mask_residual_diagnostics=False,
     )
     phi, lam, chi = to_gpu_factors(phi_cpu, lam_cpu, chi_cpu, gpu_model)
     real_dtype, complex_dtype = numpy_dtypes(args.precision)
@@ -129,7 +164,10 @@ def run(args):
         "product-preserving gamma transfer + discrete product projection; "
         f"ratio_floor={args.ratio_floor:.1e}, "
         f"mask(Phi,Lambda)=({args.mask_threshold_phi:.1e},"
-        f"{args.mask_threshold_lam:.1e})"
+        f"{args.mask_threshold_lam:.1e}), "
+        "product_floor(Phi,Lambda)="
+        f"({args.product_projection_floor_phi:.1e},"
+        f"{args.product_projection_floor_lam:.1e})"
     )
     print(
         "GPU 실행 경로: "
@@ -140,6 +178,16 @@ def run(args):
             if optimization == "reuse" else
             "baseline repeated derivatives (validation)"
         )
+    )
+    if args.mask_residual_diagnostics:
+        print(
+            "Mask 진단: finite-check 시점에서 support mask on/off product "
+            "residual을 분해; dynamics에는 비교 RHS를 적용하지 않음"
+        )
+    print(
+        "Probability-budget 진단: "
+        +", ".join(f"{value:.0e}" for value in args.mask_probability_budgets)
+        +" suppressed mass에 대응하는 eta를 저장 frame에서 역산"
     )
 
     n_steps = int(round(args.t_final_fs*AU_PER_FS/args.dt_au))
@@ -186,6 +234,11 @@ def run(args):
     diagnostic_history = {
         name: np.empty(nt) for name in DIAGNOSTIC_FIELDS
     }
+    mask_probability_budgets = np.asarray(
+        args.mask_probability_budgets, dtype=float
+    )
+    mask_budget_eta_phi = np.empty((nt, len(mask_probability_budgets)))
+    mask_budget_eta_lam = np.empty_like(mask_budget_eta_phi)
     psis = []
 
     def save_frame(frame, step, correction=0.0, interval_diagnostics=None):
@@ -196,6 +249,15 @@ def run(args):
             mask_threshold_lam=args.mask_threshold_lam,
         )
         phi_base, lam_base, chi_base = cp.asnumpy(phi), cp.asnumpy(lam), cp.asnumpy(chi)
+        rho_R_base = np.abs(chi_base)**2
+        rho_qR_base = np.abs(lam_base)**2*rho_R_base[None, :]
+        for index, budget in enumerate(mask_probability_budgets):
+            mask_budget_eta_phi[frame, index] = (
+                mask_threshold_for_probability_budget(rho_qR_base, budget)
+            )
+            mask_budget_eta_lam[frame, index] = (
+                mask_threshold_for_probability_budget(rho_R_base, budget)
+            )
         fields_base = {
             key: cp.asnumpy(fields_gpu[key])
             for key in ("a", "b", "alpha", "epsilon_1", "epsilon_2")
@@ -223,6 +285,11 @@ def run(args):
         projection_correction[frame] = float(
             correction.get() if hasattr(correction, "get") else correction
         )
+        if args.mask_residual_diagnostics and interval_diagnostics is None:
+            interval_diagnostics = evaluate_mask_residual_diagnostics(
+                phi, lam, chi, gpu_model, args.ratio_floor,
+                args.mask_threshold_phi, args.mask_threshold_lam,
+            )
         saved_diagnostics = merge_maxima(
             field_maxima(fields_gpu), interval_diagnostics or {}
         )
@@ -299,6 +366,14 @@ def run(args):
                 )
                 print(f"전파 중단 감지: {failure_reason}")
                 break
+            if must_check and args.mask_residual_diagnostics:
+                mask_diagnostics = evaluate_mask_residual_diagnostics(
+                    phi, lam, chi, gpu_model, args.ratio_floor,
+                    args.mask_threshold_phi, args.mask_threshold_lam,
+                )
+                interval_diagnostics = merge_maxima(
+                    interval_diagnostics, mask_diagnostics
+                )
             if must_save:
                 save_frame(
                     frame, step, interval_correction, interval_diagnostics
@@ -337,6 +412,8 @@ def run(args):
     diagnostic_history = {
         name: values[:nt] for name, values in diagnostic_history.items()
     }
+    mask_budget_eta_phi = mask_budget_eta_phi[:nt]
+    mask_budget_eta_lam = mask_budget_eta_lam[:nt]
 
     diagnostic_history["max_abs_support_gamma_phi_dt"] = (
         diagnostic_history["max_abs_support_gamma_phi"]*args.dt_au
@@ -398,6 +475,16 @@ def run(args):
         ratio_floor=np.array(args.ratio_floor),
         mask_threshold_phi=np.array(args.mask_threshold_phi),
         mask_threshold_lam=np.array(args.mask_threshold_lam),
+        product_projection_floor_phi=np.array(
+            args.product_projection_floor_phi
+        ),
+        product_projection_floor_lam=np.array(
+            args.product_projection_floor_lam
+        ),
+        mask_residual_diagnostics=np.array(args.mask_residual_diagnostics),
+        mask_probability_budgets=mask_probability_budgets,
+        mask_budget_eta_phi=mask_budget_eta_phi,
+        mask_budget_eta_lam=mask_budget_eta_lam,
         backend=np.array("cupy_single_gpu"),
         precision=np.array(args.precision),
         cuda_device=np.array(args.device),
@@ -443,6 +530,10 @@ def run(args):
         f"failure_detected_step={failure_step}",
         f"failure_reason={failure_reason or 'none'}",
         f"nonfinite_factors={','.join(nonfinite_factors) or 'none'}",
+        f"mask_threshold_phi={args.mask_threshold_phi:.12e}",
+        f"mask_threshold_lam={args.mask_threshold_lam:.12e}",
+        f"product_projection_floor_phi={args.product_projection_floor_phi:.12e}",
+        f"product_projection_floor_lam={args.product_projection_floor_lam:.12e}",
         f"max_norm_error={np.max(np.abs(norm-1.0)):.12e}",
         f"max_saved_pnc_error={np.max(pnc):.12e}",
         f"max_pnc_projection_correction={np.max(projection_correction):.12e}",
@@ -452,11 +543,33 @@ def run(args):
         "max_abs_support_gamma_lam_dt",
         "max_effective_product_residual_l2",
         "max_abs_full_norm_rate_after_product_projection",
+        "max_product_residual_without_mask_l2",
+        "max_product_residual_due_to_mask_l2",
+        "max_relative_product_residual_without_mask",
+        "max_relative_product_residual_due_to_mask",
+        "max_abs_product_mask_nonmask_alignment",
+        "max_product_mask_nonmask_alignment_positive",
+        "max_product_mask_nonmask_alignment_negative_magnitude",
+        "max_support_product_residual_without_mask_l2",
+        "max_support_product_residual_due_to_mask_l2",
+        "max_relative_support_product_residual_without_mask",
+        "max_relative_support_product_residual_due_to_mask",
     ):
         if name in diagnostic_history:
             status_lines.append(
                 f"{name}={np.max(diagnostic_history[name]):.12e}"
             )
+    for index, budget in enumerate(mask_probability_budgets):
+        status_lines.extend((
+            f"mask_budget_{budget:.0e}_eta_phi_min="
+            f"{np.min(mask_budget_eta_phi[:, index]):.12e}",
+            f"mask_budget_{budget:.0e}_eta_phi_max="
+            f"{np.max(mask_budget_eta_phi[:, index]):.12e}",
+            f"mask_budget_{budget:.0e}_eta_lam_min="
+            f"{np.min(mask_budget_eta_lam[:, index]):.12e}",
+            f"mask_budget_{budget:.0e}_eta_lam_max="
+            f"{np.max(mask_budget_eta_lam[:, index]):.12e}",
+        ))
     status_path.write_text("\n".join(status_lines)+"\n", encoding="utf-8")
 
     used = cp.get_default_memory_pool().used_bytes()/(1024**3)
@@ -486,9 +599,29 @@ def run(args):
         "max_abs_support_gamma_lam_dt",
         "max_effective_product_residual_l2",
         "max_abs_full_norm_rate_after_product_projection",
+        "max_product_residual_without_mask_l2",
+        "max_product_residual_due_to_mask_l2",
+        "max_relative_product_residual_without_mask",
+        "max_relative_product_residual_due_to_mask",
+        "max_abs_product_mask_nonmask_alignment",
+        "max_product_mask_nonmask_alignment_positive",
+        "max_product_mask_nonmask_alignment_negative_magnitude",
+        "max_support_product_residual_without_mask_l2",
+        "max_support_product_residual_due_to_mask_l2",
+        "max_relative_support_product_residual_without_mask",
+        "max_relative_support_product_residual_due_to_mask",
     ):
         if name in diagnostic_history:
             print(f"  {name}: {np.max(diagnostic_history[name]):.3e}")
+    print("Probability-budget eta 범위(저장 frame):")
+    for index, budget in enumerate(mask_probability_budgets):
+        print(
+            f"  budget={budget:.1e}: "
+            f"eta_phi={np.min(mask_budget_eta_phi[:, index]):.3e}.."
+            f"{np.max(mask_budget_eta_phi[:, index]):.3e}, "
+            f"eta_lam={np.min(mask_budget_eta_lam[:, index]):.3e}.."
+            f"{np.max(mask_budget_eta_lam[:, index]):.3e}"
+        )
     if getattr(args, "verbose_diagnostics", False):
         print("전체 개발용 진단:")
         for name, values in diagnostic_history.items():
@@ -562,6 +695,29 @@ def parse_args():
         "--mask-threshold-lam", type=float, default=1.0e-10,
         help="heavy density 기반 Lambda amplitude-gradient mask",
     )
+    regularization.add_argument(
+        "--product-projection-floor-phi", type=float, default=1.0e-10,
+        help="product projection의 1/(Lambda*chi) numerical support floor",
+    )
+    regularization.add_argument(
+        "--product-projection-floor-lam", type=float, default=1.0e-10,
+        help="product projection의 1/chi numerical support floor",
+    )
+    regularization.add_argument(
+        "--no-mask-residual-diagnostics", dest="mask_residual_diagnostics",
+        action="store_false",
+        help="check 시점의 support-mask on/off residual 분해를 생략",
+    )
+    regularization.add_argument(
+        "--mask-probability-budgets", type=probability_budgets,
+        default=(1.0e-9, 1.0e-8, 1.0e-7),
+        metavar="B1,B2,...",
+        help=(
+            "저장 frame에서 동일 suppressed mass를 만드는 eta를 역산할 "
+            "diagnostic budget 목록"
+        ),
+    )
+    parser.set_defaults(mask_residual_diagnostics=True)
     regularization.add_argument(
         "--density-threshold", type=float, default=None,
         help="deprecated: 지정하면 두 mask threshold에 같은 값을 사용",

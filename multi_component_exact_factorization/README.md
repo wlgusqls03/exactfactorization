@@ -92,8 +92,17 @@ nt = 저장 frame 수
 | `suppressed_probability_phi`, `suppressed_probability_lam` | `(nt,)` | support mask가 감쇠한 probability mass의 구간 최대값 |
 | `max_raw_logamp_*`, `max_effective_logamp_*` | `(nt,)` | amplitude logarithmic gradient의 mask 전/후 구간 최대값 |
 | `max_product_residual_l2`, `max_effective_product_residual_l2` | `(nt,)` | factor RHS와 full periodic nuclear `D2` tangent의 투영 전/후 L2 residual |
+| `max_product_residual_without_mask_l2` | `(nt,)` | numerical floor는 유지하고 support mask만 끈 RHS와 full target의 residual(check 구간 최대) |
+| `max_product_residual_due_to_mask_l2` | `(nt,)` | support mask on/off factor RHS가 만드는 full-product derivative 차이(check 구간 최대) |
+| `max_relative_product_residual_without_mask`, `max_relative_product_residual_due_to_mask` | `(nt,)` | 위 두 residual을 full nuclear target RHS L2로 나눈 값 |
+| `max_abs_product_mask_nonmask_alignment` | `(nt,)` | 두 residual의 cosine 절댓값; 1에 가까울수록 평행/반평행 |
+| `max_product_mask_nonmask_alignment_positive`, `max_product_mask_nonmask_alignment_negative_magnitude` | `(nt,)` | 저장 구간에서 관측한 residual cosine의 양의 최대값과 음의 최소값 크기; 같은 방향/상쇄 방향을 구분 |
+| `max_support_product_residual_without_mask_l2`, `max_support_product_residual_due_to_mask_l2` | `(nt,)` | joint support mask로 가중하여 빈 tail의 지배를 줄인 두 residual L2 |
+| `max_relative_support_product_residual_without_mask`, `max_relative_support_product_residual_due_to_mask` | `(nt,)` | support-weighted nuclear target RHS에 대한 상대 residual |
 | `max_abs_full_norm_rate_before_product_projection`, `max_abs_full_norm_rate_after_product_projection` | `(nt,)` | discrete product projection 전/후 full norm 생성률 |
 | `max_abs_product_correction_*` | `(nt,)` | nested tangent에 추가된 residual correction의 factor별 최대 크기 |
+| `mask_probability_budgets` | `(nbudget,)` | probability-budget mask를 사후 선택하기 위한 suppressed-mass 후보 |
+| `mask_budget_eta_phi`, `mask_budget_eta_lam` | `(nt,nbudget)` | 각 저장 frame에서 해당 budget을 정확히 만드는 smooth-mask `eta`; dynamics에는 아직 적용하지 않는 진단값 |
 | `psi` | `(nt,nx,nq,nR)` | 선택 저장하는 full wavefunction |
 
 유한차분과 node regularization이 coupled action에 남기는 수치적

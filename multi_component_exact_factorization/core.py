@@ -405,6 +405,42 @@ def suppressed_probability(density, mask, *spacings):
     return float(np.sum(density*(1.0-mask)))*volume/total
 
 
+def mask_threshold_for_probability_budget(
+    density, budget, *, lower=0.0, upper=1.0, iterations=64,
+):
+    """Return the largest smooth-mask threshold within a mass budget.
+
+    This is a diagnostic helper: it does not alter propagation.  For
+    ``M=rho/(rho+eta*rho_max)``, the suppressed probability is monotone in
+    ``eta``, so a scalar bisection gives the threshold corresponding to a
+    requested probability budget.  The normalization and uniform-grid volume
+    cancel in the ratio.
+    """
+    if not 0.0 <= budget < 1.0:
+        raise ValueError("probability budget은 0 이상 1 미만이어야 합니다.")
+    density = np.asarray(density, dtype=float)
+    total = float(np.sum(density))
+    peak = float(np.max(density)) if density.size else 0.0
+    if budget == 0.0 or total <= 0.0 or peak <= 0.0:
+        return 0.0
+
+    def removed(eta):
+        return float(np.sum(
+            density*(eta*peak)/(density+eta*peak)
+        ))/total
+
+    lo, hi = float(lower), float(upper)
+    while removed(hi) < budget and hi < 1.0e12:
+        hi *= 10.0
+    for _ in range(iterations):
+        mid = 0.5*(lo+hi)
+        if removed(mid) <= budget:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
 def remove_local_norm_generator(
     factor, action, spacing, axis=0, norm_floor=1.0e-14,
 ):
@@ -502,6 +538,7 @@ def reconstruct_psi(phi, lam, chi):
 def project_discrete_product_residual(
     phi, lam, chi, dphi, dlam, dchi, model: Model,
     support_floor_phi=1.0e-10, support_floor_lam=1.0e-10,
+    unmasked_rhs=None, residual_support_weight=None,
 ):
     """Factor RHS를 Hermitian discrete nuclear kinetic의 tangent로 맞춘다.
 
@@ -527,6 +564,22 @@ def project_discrete_product_residual(
     )
     target_rhs = -1j*nuclear_action
     residual = target_rhs-product_rhs
+
+    def product_from_factor_rhs(rhs):
+        rp, rl, rc = rhs
+        return (
+            rp*lam[None, :, :]*chi[None, None, :]
+            +phi*rl[None, :, :]*chi[None, None, :]
+            +phi*lam[None, :, :]*rc[None, None, :]
+        )
+
+    if unmasked_rhs is None:
+        residual_without_mask = None
+        residual_due_to_mask = None
+    else:
+        unmasked_product_rhs = product_from_factor_rhs(unmasked_rhs)
+        residual_without_mask = target_rhs-unmasked_product_rhs
+        residual_due_to_mask = unmasked_product_rhs-product_rhs
 
     phi_norm2 = np.sum(np.abs(phi)**2, axis=0)*model.dx
     safe_phi_norm2 = np.maximum(phi_norm2, 1.0e-14)
@@ -568,6 +621,45 @@ def project_discrete_product_residual(
     )
     effective_residual = target_rhs-corrected_product_rhs
     volume = model.dx*model.dq*model.dR
+    def l2(values):
+        return np.sqrt(np.sum(np.abs(values)**2)*volume)
+
+    if residual_without_mask is None:
+        target_l2 = 0.0
+        residual_without_mask_l2 = 0.0
+        residual_due_to_mask_l2 = 0.0
+        relative_floor = 1.0
+        residual_alignment = 0.0
+        support_without_mask_l2 = 0.0
+        support_due_to_mask_l2 = 0.0
+        relative_support_without_mask = 0.0
+        relative_support_due_to_mask = 0.0
+    else:
+        target_l2 = l2(target_rhs)
+        residual_without_mask_l2 = l2(residual_without_mask)
+        residual_due_to_mask_l2 = l2(residual_due_to_mask)
+        relative_floor = max(target_l2, 1.0e-300)
+        alignment_denominator = max(
+            residual_without_mask_l2*residual_due_to_mask_l2, 1.0e-300
+        )
+        residual_alignment = np.real(np.sum(
+            np.conj(residual_without_mask)*residual_due_to_mask
+        ))*volume/alignment_denominator
+        if residual_support_weight is None:
+            residual_support_weight = np.ones(phi.shape[1:], dtype=float)
+        weight = np.asarray(residual_support_weight, dtype=float)[None, :, :]
+        support_target_l2 = np.sqrt(
+            np.sum(weight*np.abs(target_rhs)**2)*volume
+        )
+        support_without_mask_l2 = np.sqrt(
+            np.sum(weight*np.abs(residual_without_mask)**2)*volume
+        )
+        support_due_to_mask_l2 = np.sqrt(
+            np.sum(weight*np.abs(residual_due_to_mask)**2)*volume
+        )
+        support_floor = max(support_target_l2, 1.0e-300)
+        relative_support_without_mask = support_without_mask_l2/support_floor
+        relative_support_due_to_mask = support_due_to_mask_l2/support_floor
     diagnostics = dict(
         product_residual_l2=np.sqrt(np.sum(np.abs(residual)**2)*volume),
         effective_product_residual_l2=np.sqrt(
@@ -582,6 +674,29 @@ def project_discrete_product_residual(
         product_correction_phi=np.max(np.abs(delta_phi)),
         product_correction_lam=np.max(np.abs(delta_lam)),
         product_correction_chi=np.max(np.abs(delta_chi)),
+        product_residual_without_mask_l2=residual_without_mask_l2,
+        product_residual_due_to_mask_l2=residual_due_to_mask_l2,
+        relative_product_residual_without_mask=(
+            residual_without_mask_l2/relative_floor
+        ),
+        relative_product_residual_due_to_mask=(
+            residual_due_to_mask_l2/relative_floor
+        ),
+        product_mask_nonmask_alignment=residual_alignment,
+        product_mask_nonmask_alignment_positive=max(
+            residual_alignment, 0.0
+        ),
+        product_mask_nonmask_alignment_negative_magnitude=max(
+            -residual_alignment, 0.0
+        ),
+        support_product_residual_without_mask_l2=support_without_mask_l2,
+        support_product_residual_due_to_mask_l2=support_due_to_mask_l2,
+        relative_support_product_residual_without_mask=(
+            relative_support_without_mask
+        ),
+        relative_support_product_residual_due_to_mask=(
+            relative_support_due_to_mask
+        ),
     )
     return dphi, dlam, dchi, diagnostics
 
@@ -636,7 +751,7 @@ def geometric_fields(phi, lam, model: Model):
 
 def proton_base_operator(
     lam, a, b, alpha, chi_phase_R, chi_logamp_R, mask_lam,
-    model: Model,
+    model: Model, return_unmasked=False,
 ):
     """``H_pr`` 중 epsilon_1을 제외한 부분을 Lambda에 적용한다.
 
@@ -662,12 +777,24 @@ def proton_base_operator(
     proton_nuclear_coupling = (
         0.5*dplus_R2+chi_coefficient[None, :]*dplus_R
     )/model.heavy_mass
-    return proton_kinetic+proton_nuclear_coupling
+    masked = proton_kinetic+proton_nuclear_coupling
+    if not return_unmasked:
+        return masked
+    # 같은 derivative를 재사용하여 support mask만 끈 비교 action을 만든다.
+    # numerical logarithmic-derivative floor는 그대로 유지한다.
+    chi_coefficient_unmasked = (
+        chi_phase_R+alpha-1j*chi_logamp_R
+    )
+    unmasked = proton_kinetic+(
+        0.5*dplus_R2+chi_coefficient_unmasked[None, :]*dplus_R
+    )/model.heavy_mass
+    return masked, unmasked
 
 
 def instantaneous_functionals(
     phi, lam, chi, model: Model, floor=1.0e-14,
     mask_threshold_phi=1.0e-10, mask_threshold_lam=1.0e-10,
+    include_unmasked=False,
 ):
     """현재 세 factor에서 모든 EF scalar/vector potential을 계산한다.
 
@@ -739,9 +866,14 @@ def instantaneous_functionals(
     ).real                                                          # (nq,nR)
 
     # ----- 두 번째 factorization: 양성자와 바깥 무거운 핵 -----
-    base_lam_raw = proton_base_operator(
-        lam, a, b, alpha, chi_phase_R, chi_logamp_R, mask_lam, model
+    base_result = proton_base_operator(
+        lam, a, b, alpha, chi_phase_R, chi_logamp_R, mask_lam, model,
+        return_unmasked=include_unmasked,
     )                                                               # (nq,nR)
+    if include_unmasked:
+        base_lam_raw, base_lam_unmasked_raw = base_result
+    else:
+        base_lam_raw = base_result
     hpr_lam_raw = (
         base_lam_raw+epsilon_1*lam+1j*gamma_phi*lam
     )
@@ -755,7 +887,7 @@ def instantaneous_functionals(
         np.sum(np.conj(lam)*hpr_lam, axis=0)*model.dq
     ).real                                                          # (nR,)
 
-    return dict(
+    result = dict(
         a=a, b=b, alpha=alpha, epsilon_1=epsilon_1,
         epsilon_2=epsilon_2, u_phi=u_phi, base_lam=base_lam,
         hbo_phi=hbo_phi, hpr_lam=hpr_lam,
@@ -783,6 +915,53 @@ def instantaneous_functionals(
         raw_logamp_lam=np.abs(chi_logamp_R),
         effective_logamp_lam=np.abs(mask_lam*chi_logamp_R),
     )
+    if include_unmasked:
+        coefficient_q_unmasked = (
+            lam_phase_q+a-1j*lam_logamp_q
+        )
+        coefficient_R_unmasked = (
+            chi_phase_R[None, :]+lam_phase_R+b
+            -1j*(chi_logamp_R[None, :]+lam_logamp_R)
+        )
+        u_phi_unmasked_raw = (
+            0.5*dminus_q2
+            +coefficient_q_unmasked[None, :, :]*dminus_q
+        )/model.proton_mass+(
+            0.5*dminus_R2
+            +coefficient_R_unmasked[None, :, :]*dminus_R
+        )/model.heavy_mass
+        (
+            u_phi_unmasked, gamma_phi_unmasked, _, _
+        ) = remove_local_norm_generator(
+            phi, u_phi_unmasked_raw, model.dx, axis=0
+        )
+        epsilon_1_unmasked = (
+            np.sum(
+                np.conj(phi)*(hbo_phi+u_phi_unmasked), axis=0
+            )*model.dx
+        ).real
+        hpr_lam_unmasked_raw = (
+            base_lam_unmasked_raw+epsilon_1_unmasked*lam
+            +1j*gamma_phi_unmasked*lam
+        )
+        (
+            hpr_lam_unmasked, gamma_lam_unmasked, _, _
+        ) = remove_local_norm_generator(
+            lam, hpr_lam_unmasked_raw, model.dq, axis=0
+        )
+        epsilon_2_unmasked = (
+            np.sum(
+                np.conj(lam)*hpr_lam_unmasked, axis=0
+            )*model.dq
+        ).real
+        result.update(
+            u_phi_unmasked=u_phi_unmasked,
+            hpr_lam_unmasked=hpr_lam_unmasked,
+            epsilon_1_unmasked=epsilon_1_unmasked,
+            epsilon_2_unmasked=epsilon_2_unmasked,
+            gamma_lam_unmasked=gamma_lam_unmasked,
+        )
+    return result
 
 
 def nested_factorize(psi, model: Model, floor=1.0e-14):
