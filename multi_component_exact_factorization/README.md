@@ -333,7 +333,8 @@ python -m multi_component_exact_factorization.visualize \
 
 생성 파일은 다음과 같다.
 
-기본 compact report는 ``01_particle_motion.png``부터
+기본 compact report는 공통 위치축의 세 marginal 비교를 포함하는
+``01_particle_motion.png``부터
 ``04_numerical_reliability.png``까지의 질문 중심 PNG 4장과 다음 동영상 3개를
 만든다.
 

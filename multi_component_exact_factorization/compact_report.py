@@ -130,7 +130,7 @@ def _trajectory_prefix(data):
 
 
 def plot_particle_motion(data, densities, means, widths, outdir, dpi):
-    """Three position-time marginals and their compact moment summary."""
+    """Three position-time marginals plus a shared-axis profile comparison."""
     times = data["times_fs"]
     grids = (data["x"], data["q"], data["R"])
     names = ("Electron", "Proton", "Heavy nucleus")
@@ -142,10 +142,14 @@ def plot_particle_motion(data, densities, means, widths, outdir, dpi):
         (float(options.get("q_min", grids[1][0])), float(options.get("q_max", grids[1][-1]))),
         (float(options.get("R_min", grids[2][0])), float(options.get("R_max", grids[2][-1]))),
     )
-    fig, axes = plt.subplots(2, 2, figsize=(14.5, 8.8), constrained_layout=True)
+    fig = plt.figure(figsize=(17.0, 9.0), constrained_layout=True)
+    grid_spec = fig.add_gridspec(2, 3, height_ratios=(1.0, 0.82))
+    map_axes = [fig.add_subplot(grid_spec[0, index]) for index in range(3)]
+    marginal_axis = fig.add_subplot(grid_spec[1, :2])
+    summary_axis = fig.add_subplot(grid_spec[1, 2])
     onset = _stress_onset(data)
     for index, (ax, grid, density, name, symbol, limits) in enumerate(zip(
-        axes.flat[:3], grids, densities, names, symbols, box_limits
+        map_axes, grids, densities, names, symbols, box_limits
     )):
         ax.set_facecolor("#E8ECEF")
         image = ax.pcolormesh(
@@ -181,7 +185,47 @@ def plot_particle_motion(data, densities, means, widths, outdir, dpi):
             format=NUMBER_FORMATTER,
         )
 
-    ax = axes[1, 1]
+    # A direct final-time comparison needs one genuinely common position and
+    # display scale.  Peak scaling is visual only: each source marginal above
+    # remains integral-normalized, while the annotations retain its real mean
+    # and width.
+    for grid, density, name, color in zip(grids, densities, names, COLORS):
+        initial = density[0]/max(float(np.max(density[0])), 1.0e-300)
+        final = density[-1]/max(float(np.max(density[-1])), 1.0e-300)
+        marginal_axis.plot(
+            grid, initial, color=color, lw=1.3, ls="--", alpha=0.42,
+        )
+        marginal_axis.plot(grid, final, color=color, lw=2.25, label=name)
+    marginal_axis.set(
+        xlim=(common_min, common_max), ylim=(0.0, 1.08),
+        xlabel=r"common position coordinate ($a_0$)",
+        ylabel="marginal shape\n(each peak = 1)",
+    )
+    marginal_axis.set_title(
+        "All three marginals on one axis: initial vs final",
+        loc="left", fontweight="semibold",
+    )
+    marginal_axis.grid(alpha=0.18, linewidth=0.7)
+    marginal_axis.legend(frameon=False, ncol=3, fontsize=8, loc="upper left")
+    marginal_axis.text(
+        0.99, 0.96,
+        "solid = final; faint dashed = initial\n"
+        "peak-scaled for shape/position comparison",
+        transform=marginal_axis.transAxes, ha="right", va="top", fontsize=8,
+        color="0.25", bbox=dict(fc="white", ec="0.85", alpha=0.84, pad=3),
+    )
+    final_summary = "   |   ".join(
+        rf"$\langle {symbol}\rangle={mean[-1]:.3f}$, "
+        rf"$\sigma_{symbol}={width[-1]:.3f}$"
+        for mean, width, symbol in zip(means, widths, symbols)
+    )
+    marginal_axis.text(
+        0.99, 0.04, final_summary + r"  ($a_0$)",
+        transform=marginal_axis.transAxes, ha="right", va="bottom", fontsize=8,
+        color="0.2", bbox=dict(fc="white", ec="0.85", alpha=0.84, pad=3),
+    )
+
+    ax = summary_axis
     for i, (mean, width, name, symbol, color) in enumerate(zip(
         means, widths, names, symbols, COLORS
     )):
@@ -194,10 +238,11 @@ def plot_particle_motion(data, densities, means, widths, outdir, dpi):
     _mark_stress(ax, onset, label=True)
     _style_time_axis(ax, "How the centers and widths changed", r"change ($a_0$)")
     ax.legend(frameon=False, ncol=2, fontsize=8)
-    _label_panels(axes)
+    _label_panels([*map_axes, marginal_axis, summary_axis])
     fig.suptitle(
         _trajectory_prefix(data)
-        + "1 | What moved?  Density maps (A-C) -> compact motion summary (D)",
+        + "1 | What moved?  Density maps (A-C) -> shared marginals (D) "
+        "-> motion summary (E)",
         fontsize=14, fontweight="bold",
     )
     fig.supxlabel(_footer(data), fontsize=9, color="0.35")
