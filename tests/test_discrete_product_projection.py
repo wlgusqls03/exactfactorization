@@ -69,6 +69,14 @@ class DiscreteProductProjectionTests(unittest.TestCase):
             abs(diagnostics["full_norm_rate_after_product_projection"]),
             1.0e-13,
         )
+        self.assertTrue(np.isfinite(
+            diagnostics["relative_product_projection_l2"]
+        ))
+        self.assertTrue(np.isfinite(
+            diagnostics["relative_support_product_projection_l2"]
+        ))
+        self.assertGreaterEqual(diagnostics["outer_probability_q"], 0.0)
+        self.assertGreaterEqual(diagnostics["outer_probability_R"], 0.0)
 
     def test_mask_residual_decomposition_is_exact(self):
         rng = np.random.default_rng(7)

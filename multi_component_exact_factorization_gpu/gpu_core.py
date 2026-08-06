@@ -767,12 +767,68 @@ def project_discrete_product_residual(
         )
         return 2.0*overlap.real*volume
 
+    target_l2 = l2(target_rhs)
+    relative_floor = cp.maximum(
+        target_l2, cp.asarray(1.0e-300, dtype=target_l2.dtype)
+    )
+    projection_product_rhs = corrected_product_rhs-product_rhs
+    relative_product_projection_l2 = l2(
+        projection_product_rhs
+    )/relative_floor
+    support_weight = (xi_density/xi_peak)[None, :, :]
+
+    def physical_support_l2(values):
+        return cp.sqrt(cp.sum(
+            support_weight*cp.real(values*cp.conj(values)),
+            dtype=model.reduction_real_dtype,
+        )*volume)
+
+    support_target_l2_physical = physical_support_l2(target_rhs)
+    relative_support_product_projection_l2 = physical_support_l2(
+        projection_product_rhs
+    )/cp.maximum(
+        support_target_l2_physical,
+        cp.asarray(1.0e-300, dtype=support_target_l2_physical.dtype),
+    )
+
+    joint_total = cp.maximum(
+        cp.sum(xi_density, dtype=model.reduction_real_dtype)
+        *model.dq*model.dR,
+        cp.asarray(1.0e-300, dtype=model.reduction_real_dtype),
+    )
+    edge_width_q = min(2, xi_density.shape[0]//2)
+    edge_width_R = min(2, xi_density.shape[1]//2)
+    outer_probability_q = (
+        cp.sum(xi_density[:edge_width_q], dtype=model.reduction_real_dtype)
+        +cp.sum(xi_density[-edge_width_q:], dtype=model.reduction_real_dtype)
+    )*model.dq*model.dR/joint_total
+    outer_probability_R = (
+        cp.sum(xi_density[:, :edge_width_R], dtype=model.reduction_real_dtype)
+        +cp.sum(xi_density[:, -edge_width_R:], dtype=model.reduction_real_dtype)
+    )*model.dq*model.dR/joint_total
+    psi_norm2 = cp.maximum(
+        cp.sum(
+            cp.real(psi*cp.conj(psi)), dtype=model.reduction_real_dtype
+        )*volume,
+        cp.asarray(1.0e-300, dtype=model.reduction_real_dtype),
+    )
+    relative_psi_wrap_mismatch_q = cp.sqrt(
+        cp.sum(
+            cp.abs(psi[:, 0, :]-psi[:, -1, :])**2,
+            dtype=model.reduction_real_dtype,
+        )*model.dx*model.dR*model.dq/psi_norm2
+    )
+    relative_psi_wrap_mismatch_R = cp.sqrt(
+        cp.sum(
+            cp.abs(psi[:, :, 0]-psi[:, :, -1])**2,
+            dtype=model.reduction_real_dtype,
+        )*model.dx*model.dq*model.dR/psi_norm2
+    )
+
     zero = cp.asarray(0.0, dtype=model.reduction_real_dtype)
     if residual_without_mask is None:
-        target_l2 = zero
         residual_without_mask_l2 = zero
         residual_due_to_mask_l2 = zero
-        relative_floor = cp.asarray(1.0, dtype=zero.dtype)
         alignment_floor = cp.asarray(1.0e-300, dtype=zero.dtype)
         alignment = zero
         support_without_mask_l2 = zero
@@ -780,7 +836,6 @@ def project_discrete_product_residual(
         relative_support_without_mask = zero
         relative_support_due_to_mask = zero
     else:
-        target_l2 = l2(target_rhs)
         residual_without_mask_l2 = l2(residual_without_mask)
         residual_due_to_mask_l2 = l2(residual_due_to_mask)
         relative_floor = cp.maximum(
@@ -833,6 +888,14 @@ def project_discrete_product_residual(
         product_correction_phi=cp.max(cp.abs(delta_phi)),
         product_correction_lam=cp.max(cp.abs(delta_lam)),
         product_correction_chi=cp.max(cp.abs(delta_chi)),
+        relative_product_projection_l2=relative_product_projection_l2,
+        relative_support_product_projection_l2=(
+            relative_support_product_projection_l2
+        ),
+        outer_probability_q=outer_probability_q,
+        outer_probability_R=outer_probability_R,
+        relative_psi_wrap_mismatch_q=relative_psi_wrap_mismatch_q,
+        relative_psi_wrap_mismatch_R=relative_psi_wrap_mismatch_R,
         product_residual_without_mask_l2=residual_without_mask_l2,
         product_residual_due_to_mask_l2=residual_due_to_mask_l2,
         relative_product_residual_without_mask=(
@@ -940,6 +1003,14 @@ DIAGNOSTIC_FIELDS = {
     "max_abs_product_correction_phi": "product_correction_phi",
     "max_abs_product_correction_lam": "product_correction_lam",
     "max_abs_product_correction_chi": "product_correction_chi",
+    "max_relative_product_projection_l2": "relative_product_projection_l2",
+    "max_relative_support_product_projection_l2": (
+        "relative_support_product_projection_l2"
+    ),
+    "max_outer_probability_q": "outer_probability_q",
+    "max_outer_probability_R": "outer_probability_R",
+    "max_relative_psi_wrap_mismatch_q": "relative_psi_wrap_mismatch_q",
+    "max_relative_psi_wrap_mismatch_R": "relative_psi_wrap_mismatch_R",
     "max_product_residual_without_mask_l2": (
         "product_residual_without_mask_l2"
     ),

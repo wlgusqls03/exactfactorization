@@ -7,6 +7,7 @@ from multi_component_exact_factorization.core import (
     derivative,
     logarithmic_components,
     occupied_support_mask,
+    periodic_five_point_second_eigenvalues,
 )
 
 
@@ -37,6 +38,20 @@ class FivePointDerivativeTests(unittest.TestCase):
         d2 = derivative(identity, spacing, axis=0, order=2)
         self.assertTrue(np.allclose(d1+d1.T, 0.0, atol=1.0e-14))
         self.assertTrue(np.allclose(d2-d2.T, 0.0, atol=1.0e-14))
+
+    def test_fft_symbol_matches_periodic_five_point_operator(self):
+        count = 18
+        spacing = 0.07
+        rng = np.random.default_rng(13)
+        values = rng.normal(size=count)+1j*rng.normal(size=count)
+        symbol = periodic_five_point_second_eigenvalues(count, spacing)
+        spectral = np.fft.ifft(np.fft.fft(values)*symbol)
+        finite_difference = derivative(
+            values, spacing, axis=0, order=2
+        )
+        self.assertTrue(np.allclose(
+            spectral, finite_difference, atol=2.0e-12, rtol=2.0e-13
+        ))
 
     def test_independent_second_derivative_penalizes_checkerboard(self):
         spacing = 0.08

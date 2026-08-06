@@ -63,6 +63,14 @@ DIAGNOSTIC_FIELDS = {
     "max_abs_product_correction_phi": "product_correction_phi",
     "max_abs_product_correction_lam": "product_correction_lam",
     "max_abs_product_correction_chi": "product_correction_chi",
+    "max_relative_product_projection_l2": "relative_product_projection_l2",
+    "max_relative_support_product_projection_l2": (
+        "relative_support_product_projection_l2"
+    ),
+    "max_outer_probability_q": "outer_probability_q",
+    "max_outer_probability_R": "outer_probability_R",
+    "max_relative_psi_wrap_mismatch_q": "relative_psi_wrap_mismatch_q",
+    "max_relative_psi_wrap_mismatch_R": "relative_psi_wrap_mismatch_R",
     "max_product_residual_without_mask_l2": (
         "product_residual_without_mask_l2"
     ),

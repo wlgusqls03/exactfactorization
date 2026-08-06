@@ -29,6 +29,7 @@ from .core import (
     logarithmic_components,
     nested_factorize,
     occupied_support_mask,
+    periodic_five_point_second_eigenvalues,
     proton_base_operator,
     reconstruct_psi,
     regularized_ratio,
@@ -46,11 +47,11 @@ def run(args):
     # 전자축은 hard-wall DST, 두 핵 좌표는 periodic FFT를 사용한다.
     # 서로 다른 좌표의 kinetic은 commute하므로 같은 half step 안에서
     # 순서대로 적용해도 정확히 같은 exp[-i dt(Tx+Tq+TR)/2]이다.
-    kq = 2*np.pi*np.fft.fftfreq(args.nq, d=model.dq)
-    kR = 2*np.pi*np.fft.fftfreq(args.nR, d=model.dR)
+    d2q = periodic_five_point_second_eigenvalues(args.nq, model.dq)
+    d2R = periodic_five_point_second_eigenvalues(args.nR, model.dR)
     nuclear_kinetic = (
-        0.5*kq[:, None]**2/model.proton_mass
-        +0.5*kR[None, :]**2/model.heavy_mass
+        -0.5*d2q[:, None]/model.proton_mass
+        -0.5*d2R[None, :]/model.heavy_mass
     )
     nuclear_half_t = np.exp(-0.5j*args.dt_au*nuclear_kinetic)[None, :, :]
     full_v = np.exp(-1j*args.dt_au*model.potential)
@@ -171,6 +172,7 @@ def run(args):
 
     payload = dict(
         kind=np.array("full_tdse_multi_component_ef_reference"),
+        nuclear_kinetic_discretization=np.array("periodic_five_point_D2"),
         representation=np.array("nested_factorization_of_full_psi"),
         gauge=np.array("positive_marginal_nested_gauge"),
         x=model.x, q=model.q, R=model.R, times_fs=times_au/AU_PER_FS,

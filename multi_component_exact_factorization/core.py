@@ -355,6 +355,14 @@ def derivative(values, spacing, axis, order=1):
     raise ValueError("order는 1 또는 2여야 합니다.")
 
 
+def periodic_five_point_second_eigenvalues(size, spacing):
+    """Periodic 5-point ``D2``의 FFT 순서 고유값."""
+    theta = 2.0*np.pi*np.fft.fftfreq(size)
+    return (
+        -2.0*np.cos(2.0*theta)+32.0*np.cos(theta)-30.0
+    )/(12.0*spacing**2)
+
+
 def momentum(values, spacing, axis):
     """운동량 연산자 ``-i d/dcoordinate``를 적용한다."""
     return -1j*derivative(values, spacing, axis=axis)
@@ -624,18 +632,55 @@ def project_discrete_product_residual(
     def l2(values):
         return np.sqrt(np.sum(np.abs(values)**2)*volume)
 
+    target_l2 = l2(target_rhs)
+    relative_floor = max(target_l2, 1.0e-300)
+    projection_product_rhs = corrected_product_rhs-product_rhs
+    relative_product_projection_l2 = l2(
+        projection_product_rhs
+    )/relative_floor
+    support_weight = (xi_density/xi_peak)[None, :, :]
+    support_target_l2 = np.sqrt(
+        np.sum(support_weight*np.abs(target_rhs)**2)*volume
+    )
+    support_projection_l2 = np.sqrt(
+        np.sum(support_weight*np.abs(projection_product_rhs)**2)*volume
+    )
+    relative_support_product_projection_l2 = support_projection_l2/max(
+        support_target_l2, 1.0e-300
+    )
+
+    # Periodic 5-point stencil이 실제로 연결하는 양 끝과, stencil radius
+    # 두 칸에 들어온 physical joint probability를 함께 감시한다.
+    joint_total = max(np.sum(xi_density)*model.dq*model.dR, 1.0e-300)
+    edge_width_q = min(2, xi_density.shape[0]//2)
+    edge_width_R = min(2, xi_density.shape[1]//2)
+    outer_probability_q = (
+        np.sum(xi_density[:edge_width_q])
+        +np.sum(xi_density[-edge_width_q:])
+    )*model.dq*model.dR/joint_total
+    outer_probability_R = (
+        np.sum(xi_density[:, :edge_width_R])
+        +np.sum(xi_density[:, -edge_width_R:])
+    )*model.dq*model.dR/joint_total
+    psi_norm2 = max(np.sum(np.abs(psi)**2)*volume, 1.0e-300)
+    relative_psi_wrap_mismatch_q = np.sqrt(
+        np.sum(np.abs(psi[:, 0, :]-psi[:, -1, :])**2)
+        *model.dx*model.dR*model.dq/psi_norm2
+    )
+    relative_psi_wrap_mismatch_R = np.sqrt(
+        np.sum(np.abs(psi[:, :, 0]-psi[:, :, -1])**2)
+        *model.dx*model.dq*model.dR/psi_norm2
+    )
+
     if residual_without_mask is None:
-        target_l2 = 0.0
         residual_without_mask_l2 = 0.0
         residual_due_to_mask_l2 = 0.0
-        relative_floor = 1.0
         residual_alignment = 0.0
         support_without_mask_l2 = 0.0
         support_due_to_mask_l2 = 0.0
         relative_support_without_mask = 0.0
         relative_support_due_to_mask = 0.0
     else:
-        target_l2 = l2(target_rhs)
         residual_without_mask_l2 = l2(residual_without_mask)
         residual_due_to_mask_l2 = l2(residual_due_to_mask)
         relative_floor = max(target_l2, 1.0e-300)
@@ -674,6 +719,14 @@ def project_discrete_product_residual(
         product_correction_phi=np.max(np.abs(delta_phi)),
         product_correction_lam=np.max(np.abs(delta_lam)),
         product_correction_chi=np.max(np.abs(delta_chi)),
+        relative_product_projection_l2=relative_product_projection_l2,
+        relative_support_product_projection_l2=(
+            relative_support_product_projection_l2
+        ),
+        outer_probability_q=outer_probability_q,
+        outer_probability_R=outer_probability_R,
+        relative_psi_wrap_mismatch_q=relative_psi_wrap_mismatch_q,
+        relative_psi_wrap_mismatch_R=relative_psi_wrap_mismatch_R,
         product_residual_without_mask_l2=residual_without_mask_l2,
         product_residual_due_to_mask_l2=residual_due_to_mask_l2,
         relative_product_residual_without_mask=(
