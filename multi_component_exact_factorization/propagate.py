@@ -67,6 +67,20 @@ DIAGNOSTIC_FIELDS = {
     "max_relative_support_product_projection_l2": (
         "relative_support_product_projection_l2"
     ),
+    "max_inverse_support_product_correction_phi": (
+        "inverse_support_product_correction_phi"
+    ),
+    "max_inverse_support_product_correction_lam": (
+        "inverse_support_product_correction_lam"
+    ),
+    "max_inverse_support_product_correction_chi": (
+        "inverse_support_product_correction_chi"
+    ),
+    "max_weak_log_residual_q_xi": "weak_log_residual_q_xi",
+    "max_weak_log_residual_R_xi": "weak_log_residual_R_xi",
+    "max_weak_log_residual_R_chi": "weak_log_residual_R_chi",
+    "max_weak_log_iterations": "weak_log_iterations",
+    "max_weak_log_unconverged_lines": "weak_log_unconverged_lines",
     "max_outer_probability_q": "outer_probability_q",
     "max_outer_probability_R": "outer_probability_R",
     "max_relative_psi_wrap_mismatch_q": "relative_psi_wrap_mismatch_q",
@@ -457,16 +471,29 @@ def run(args):
         representation=np.array(
             "nested_realspace_independent_harmonic_hardwall_electron"
         ),
+        electronic_representation=np.array("grid"),
         local_norm_correction=np.array(
             "product_preserving_nested_tangent_correction"
         ),
         discrete_product_projection=np.array(
-            "nested_tangent_projection_to_periodic_nuclear_D2"
+            args.product_projection_backend
+            +"_tangent_projection_to_periodic_nuclear_D2"
         ),
         spatial_derivative=np.array("periodic_five_point_central_D1_D2"),
         ratio_regularization=np.array(
-            "joint_support_mask_on_log_amplitude_gradient_only"
+            args.log_derivative_backend
+            +"_joint_support_mask_on_log_amplitude_gradient_only"
         ),
+        log_derivative_backend=np.array(args.log_derivative_backend),
+        weak_log_delta=np.array(args.weak_log_delta),
+        weak_log_smoothing=np.array(args.weak_log_smoothing),
+        weak_log_tolerance=np.array(args.weak_log_tolerance),
+        weak_log_max_iterations=np.array(args.weak_log_max_iterations),
+        product_projection_backend=np.array(args.product_projection_backend),
+        projection_tau_phi=np.array(args.projection_tau_phi),
+        projection_tau_lam=np.array(args.projection_tau_lam),
+        projection_tau_chi=np.array(args.projection_tau_chi),
+        projection_support_epsilon=np.array(args.projection_support_epsilon),
         ratio_floor=np.array(args.ratio_floor),
         mask_threshold_phi=np.array(args.mask_threshold_phi),
         mask_threshold_lam=np.array(args.mask_threshold_lam),
@@ -516,6 +543,31 @@ def parse_args():
     regularization.add_argument(
         "--ratio-floor", type=float, default=1.0e-14,
         help="logarithmic derivative의 zero division만 막는 numerical floor",
+    )
+    regularization.add_argument(
+        "--log-derivative-backend", choices=("pointwise", "weak"),
+        default="pointwise",
+    )
+    regularization.add_argument("--weak-log-delta", type=float, default=1.0e-10)
+    regularization.add_argument(
+        "--weak-log-smoothing", type=float, default=0.04
+    )
+    regularization.add_argument(
+        "--weak-log-tolerance", type=float, default=1.0e-8
+    )
+    regularization.add_argument(
+        "--weak-log-max-iterations", type=int, default=40
+    )
+    regularization.add_argument(
+        "--product-projection-backend",
+        choices=("nested_inverse", "weighted_tikhonov"),
+        default="nested_inverse",
+    )
+    regularization.add_argument("--projection-tau-phi", type=float, default=1.0e-10)
+    regularization.add_argument("--projection-tau-lam", type=float, default=1.0e-10)
+    regularization.add_argument("--projection-tau-chi", type=float, default=1.0e-10)
+    regularization.add_argument(
+        "--projection-support-epsilon", type=float, default=1.0e-12
     )
     regularization.add_argument(
         "--mask-threshold-phi", type=float, default=1.0e-10,

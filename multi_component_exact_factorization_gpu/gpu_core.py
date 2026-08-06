@@ -126,6 +126,16 @@ class GPUModel:
     product_projection_floor_phi: float = 1.0e-10
     product_projection_floor_lam: float = 1.0e-10
     mask_residual_diagnostics: bool = False
+    log_derivative_backend: str = "pointwise"
+    weak_log_delta: float = 1.0e-10
+    weak_log_smoothing: float = 0.04
+    weak_log_tolerance: float = 1.0e-9
+    weak_log_max_iterations: int = 40
+    product_projection_backend: str = "nested_inverse"
+    projection_tau_phi: float = 1.0e-10
+    projection_tau_lam: float = 1.0e-10
+    projection_tau_chi: float = 1.0e-10
+    projection_support_epsilon: float = 1.0e-12
     kinetic_phase_cache: dict = field(default_factory=dict)
     potential_phase_cache: dict = field(default_factory=dict)
 
@@ -166,6 +176,16 @@ def make_gpu_model(
         product_projection_floor_phi=float(product_projection_floor_phi),
         product_projection_floor_lam=float(product_projection_floor_lam),
         mask_residual_diagnostics=bool(mask_residual_diagnostics),
+        log_derivative_backend=cpu_model.log_derivative_backend,
+        weak_log_delta=cpu_model.weak_log_delta,
+        weak_log_smoothing=cpu_model.weak_log_smoothing,
+        weak_log_tolerance=cpu_model.weak_log_tolerance,
+        weak_log_max_iterations=cpu_model.weak_log_max_iterations,
+        product_projection_backend=cpu_model.product_projection_backend,
+        projection_tau_phi=cpu_model.projection_tau_phi,
+        projection_tau_lam=cpu_model.projection_tau_lam,
+        projection_tau_chi=cpu_model.projection_tau_chi,
+        projection_support_epsilon=cpu_model.projection_support_epsilon,
     )
 
 
@@ -243,6 +263,92 @@ def logarithmic_components(
         ratio.real.astype(model.real_dtype, copy=False),
         (-ratio.imag).astype(model.real_dtype, copy=False),
     )
+
+
+def weak_log_amplitude_gradient(
+    factor, spacing, axis, model, *, delta=None, smoothing_length=None,
+    tolerance=None, max_iterations=None,
+):
+    """Batched GPU PCG solve for the density-weighted weak log amplitude."""
+    delta = model.weak_log_delta if delta is None else float(delta)
+    smoothing_length = (
+        model.weak_log_smoothing
+        if smoothing_length is None else float(smoothing_length)
+    )
+    tolerance = (
+        model.weak_log_tolerance if tolerance is None else float(tolerance)
+    )
+    max_iterations = (
+        model.weak_log_max_iterations
+        if max_iterations is None else int(max_iterations)
+    )
+    if delta <= 0.0 or smoothing_length < 0.0:
+        raise ValueError("weak-log regularization 설정이 잘못되었습니다.")
+    density = cp.real(factor*cp.conj(factor))
+    tiny = cp.asarray(1.0e-30, dtype=density.dtype)
+    peak = cp.max(density, axis=axis, keepdims=True)
+    relative = density/cp.maximum(peak, tiny)
+    rhs = 0.5*derivative(relative, spacing, axis=axis)
+    diagonal_shift = smoothing_length**2*30.0/(12.0*spacing**2)
+    preconditioner = relative+delta+diagonal_shift
+
+    def apply(values):
+        return (
+            (relative+delta)*values
+            -smoothing_length**2*derivative(
+                values, spacing, axis=axis, order=2
+            )
+        )
+
+    solution = cp.zeros_like(relative, dtype=model.real_dtype)
+    residual = rhs.astype(model.real_dtype, copy=True)
+    z = residual/preconditioner
+    direction = z.copy()
+    rz = cp.sum(
+        residual*z, axis=axis, keepdims=True,
+        dtype=model.reduction_real_dtype,
+    ).astype(model.real_dtype, copy=False)
+    rhs_norm = cp.sqrt(cp.sum(
+        rhs*rhs, axis=axis, keepdims=True,
+        dtype=model.reduction_real_dtype,
+    )).astype(model.real_dtype, copy=False)
+    scale = cp.maximum(rhs_norm, tiny)
+    relative_residual = cp.ones_like(scale)
+    iterations = 0
+    for iterations in range(1, max_iterations+1):
+        action = apply(direction)
+        denominator = cp.sum(
+            direction*action, axis=axis, keepdims=True,
+            dtype=model.reduction_real_dtype,
+        ).astype(model.real_dtype, copy=False)
+        alpha = rz/cp.maximum(denominator, tiny)
+        solution += alpha*direction
+        residual -= alpha*action
+        z = residual/preconditioner
+        rz_new = cp.sum(
+            residual*z, axis=axis, keepdims=True,
+            dtype=model.reduction_real_dtype,
+        ).astype(model.real_dtype, copy=False)
+        beta = rz_new/cp.maximum(rz, tiny)
+        direction = z+beta*direction
+        rz = rz_new
+        if iterations % 5 == 0 or iterations == max_iterations:
+            relative_residual = cp.sqrt(cp.sum(
+                residual*residual, axis=axis, keepdims=True,
+                dtype=model.reduction_real_dtype,
+            )).astype(model.real_dtype, copy=False)/scale
+            if float(cp.max(relative_residual).get()) <= tolerance:
+                break
+    diagnostics = dict(
+        weak_log_residual=cp.max(relative_residual),
+        weak_log_iterations=cp.asarray(
+            float(iterations), dtype=model.reduction_real_dtype
+        ),
+        weak_log_unconverged_lines=cp.count_nonzero(
+            relative_residual > tolerance
+        ).astype(model.reduction_real_dtype),
+    )
+    return solution, diagnostics
 
 
 def occupied_support_mask(density, relative_threshold, model):
@@ -476,6 +582,38 @@ def instantaneous_functionals(
         chi, model.dR, axis=0, model=model, numerical_floor=floor,
         momentum_factor=p_R_chi,
     )
+    weak_diagnostics = {}
+    if model.log_derivative_backend == "weak":
+        xi = lam*chi[None, :]
+        xi_logamp_q, weak_q = weak_log_amplitude_gradient(
+            xi, model.dq, axis=0, model=model
+        )
+        xi_logamp_R, weak_R = weak_log_amplitude_gradient(
+            xi, model.dR, axis=1, model=model
+        )
+        chi_logamp_R_used, weak_chi = weak_log_amplitude_gradient(
+            chi, model.dR, axis=0, model=model
+        )
+        weak_diagnostics = dict(
+            weak_log_residual_q_xi=weak_q["weak_log_residual"],
+            weak_log_residual_R_xi=weak_R["weak_log_residual"],
+            weak_log_residual_R_chi=weak_chi["weak_log_residual"],
+            weak_log_iterations=cp.maximum(
+                weak_q["weak_log_iterations"], cp.maximum(
+                    weak_R["weak_log_iterations"],
+                    weak_chi["weak_log_iterations"],
+                )
+            ),
+            weak_log_unconverged_lines=(
+                weak_q["weak_log_unconverged_lines"]
+                +weak_R["weak_log_unconverged_lines"]
+                +weak_chi["weak_log_unconverged_lines"]
+            ),
+        )
+    else:
+        xi_logamp_q = lam_logamp_q
+        xi_logamp_R = lam_logamp_R+chi_logamp_R[None, :]
+        chi_logamp_R_used = chi_logamp_R
 
     dminus_q = (
         p_q_phi-a[None, :, :]*phi
@@ -487,7 +625,7 @@ def instantaneous_functionals(
         momentum_field=p_q_phi,
     )
     coefficient_q = (
-        lam_phase_q+a-1j*mask_phi*lam_logamp_q
+        lam_phase_q+a-1j*mask_phi*xi_logamp_q
     ).astype(model.complex_dtype, copy=False)
     u_q_phi = (
         0.5*dminus_q2+coefficient_q[None, :, :]*dminus_q
@@ -504,7 +642,7 @@ def instantaneous_functionals(
     )
     coefficient_R = (
         chi_phase_R[None, :]+lam_phase_R+b
-        -1j*mask_phi*(chi_logamp_R[None, :]+lam_logamp_R)
+        -1j*mask_phi*xi_logamp_R
     ).astype(model.complex_dtype, copy=False)
     u_R_phi = (
         0.5*dminus_R2
@@ -524,7 +662,7 @@ def instantaneous_functionals(
     )*model.dx
 
     base_result = proton_base_operator(
-        lam, a, b, alpha, chi_phase_R, chi_logamp_R, mask_lam, model,
+        lam, a, b, alpha, chi_phase_R, chi_logamp_R_used, mask_lam, model,
         p_q_lam=p_q_lam, p_R_lam=p_R_lam,
         return_unmasked=include_unmasked,
     )
@@ -567,19 +705,20 @@ def instantaneous_functionals(
             cp.abs(lam_logamp_R)+cp.abs(chi_logamp_R)[None, :],
         ),
         effective_logamp_phi=cp.maximum(
-            cp.abs(mask_phi*lam_logamp_q),
-            cp.abs(mask_phi*(lam_logamp_R+chi_logamp_R[None, :])),
+            cp.abs(mask_phi*xi_logamp_q),
+            cp.abs(mask_phi*xi_logamp_R),
         ),
         raw_logamp_lam=cp.abs(chi_logamp_R),
-        effective_logamp_lam=cp.abs(mask_lam*chi_logamp_R),
+        effective_logamp_lam=cp.abs(mask_lam*chi_logamp_R_used),
+        **weak_diagnostics,
     )
     if include_unmasked:
         coefficient_q_unmasked = (
-            lam_phase_q+a-1j*lam_logamp_q
+            lam_phase_q+a-1j*xi_logamp_q
         ).astype(model.complex_dtype, copy=False)
         coefficient_R_unmasked = (
             chi_phase_R[None, :]+lam_phase_R+b
-            -1j*(chi_logamp_R[None, :]+lam_logamp_R)
+            -1j*xi_logamp_R
         ).astype(model.complex_dtype, copy=False)
         u_phi_unmasked_raw = (
             0.5*dminus_q2
@@ -716,26 +855,71 @@ def project_discrete_product_residual(
     xi_density = cp.real(xi*cp.conj(xi))
     tiny = cp.asarray(1.0e-30, dtype=xi_density.dtype)
     xi_peak = cp.maximum(cp.max(xi_density), tiny)
-    inverse_xi = cp.conj(xi)/(
-        xi_density+support_floor_phi*xi_peak
-    )
+    projection_backend = model.product_projection_backend
+    if projection_backend == "weighted_tikhonov":
+        support_epsilon = cp.asarray(
+            model.projection_support_epsilon, dtype=xi_density.dtype
+        )
+        support_phi = xi_density/(
+            xi_density+support_floor_phi*xi_peak+tiny
+        )
+        ridge_phi = (
+            model.projection_tau_phi*xi_peak/(support_phi+support_epsilon)
+        )
+        inverse_xi = support_phi*cp.conj(xi)/(
+            support_phi*xi_density+ridge_phi+tiny
+        )
+    elif projection_backend == "nested_inverse":
+        support_phi = xi_density/(
+            xi_density+support_floor_phi*xi_peak+tiny
+        )
+        inverse_xi = cp.conj(xi)/(
+            xi_density+support_floor_phi*xi_peak
+        )
+    else:
+        raise ValueError(f"지원하지 않는 product projection: {projection_backend}")
     delta_phi = perpendicular_phi*inverse_xi[None, :, :]
 
     lam_norm2 = cp.sum(
         cp.real(lam*cp.conj(lam)), axis=0,
         dtype=model.reduction_real_dtype,
     )*model.dq
-    delta_chi = cp.sum(
+    parallel_chi = cp.sum(
         cp.conj(lam)*delta_xi, axis=0,
         dtype=model.reduction_complex_dtype,
     )*model.dq/cp.maximum(lam_norm2, phi_floor)
-    delta_chi = delta_chi.astype(model.complex_dtype, copy=False)
-    perpendicular_lam = delta_xi-lam*delta_chi[None, :]
+    parallel_chi = parallel_chi.astype(model.complex_dtype, copy=False)
+    # Strong tangent gauge: the parallel chi block and perpendicular Lambda
+    # block form the structured simultaneous minimum-norm decomposition.
+    perpendicular_lam = delta_xi-lam*parallel_chi[None, :]
     chi_density = cp.real(chi*cp.conj(chi))
     chi_peak = cp.maximum(cp.max(chi_density), tiny)
-    inverse_chi = cp.conj(chi)/(
-        chi_density+support_floor_lam*chi_peak
-    )
+    if projection_backend == "weighted_tikhonov":
+        support_lam = chi_density/(
+            chi_density+support_floor_lam*chi_peak+tiny
+        )
+        ridge_lam = (
+            model.projection_tau_lam*chi_peak/(support_lam+support_epsilon)
+        )
+        inverse_chi = support_lam*cp.conj(chi)/(
+            support_lam*chi_density+ridge_lam+tiny
+        )
+        chi_shrink = support_lam/(
+            support_lam
+            +model.projection_tau_chi/(support_lam+support_epsilon)
+            +tiny
+        )
+        delta_chi = (chi_shrink*parallel_chi).astype(
+            model.complex_dtype, copy=False
+        )
+    else:
+        support_lam = chi_density/(
+            chi_density+support_floor_lam*chi_peak+tiny
+        )
+        inverse_chi = cp.conj(chi)/(
+            chi_density+support_floor_lam*chi_peak
+        )
+        delta_chi = parallel_chi
     delta_lam = perpendicular_lam*inverse_chi[None, :]
 
     dphi = (dphi+delta_phi).astype(model.complex_dtype, copy=False)
@@ -888,6 +1072,21 @@ def project_discrete_product_residual(
         product_correction_phi=cp.max(cp.abs(delta_phi)),
         product_correction_lam=cp.max(cp.abs(delta_lam)),
         product_correction_chi=cp.max(cp.abs(delta_chi)),
+        inverse_support_product_correction_phi=cp.sqrt(cp.sum(
+            cp.real(delta_phi*cp.conj(delta_phi))/(
+                support_phi[None, :, :]+1.0e-12
+            ), dtype=model.reduction_real_dtype,
+        )*volume),
+        inverse_support_product_correction_lam=cp.sqrt(cp.sum(
+            cp.real(delta_lam*cp.conj(delta_lam))/(
+                support_lam[None, :]+1.0e-12
+            ), dtype=model.reduction_real_dtype,
+        )*model.dq*model.dR),
+        inverse_support_product_correction_chi=cp.sqrt(cp.sum(
+            cp.real(delta_chi*cp.conj(delta_chi))/(
+                support_lam+1.0e-12
+            ), dtype=model.reduction_real_dtype,
+        )*model.dR),
         relative_product_projection_l2=relative_product_projection_l2,
         relative_support_product_projection_l2=(
             relative_support_product_projection_l2
@@ -1007,6 +1206,20 @@ DIAGNOSTIC_FIELDS = {
     "max_relative_support_product_projection_l2": (
         "relative_support_product_projection_l2"
     ),
+    "max_inverse_support_product_correction_phi": (
+        "inverse_support_product_correction_phi"
+    ),
+    "max_inverse_support_product_correction_lam": (
+        "inverse_support_product_correction_lam"
+    ),
+    "max_inverse_support_product_correction_chi": (
+        "inverse_support_product_correction_chi"
+    ),
+    "max_weak_log_residual_q_xi": "weak_log_residual_q_xi",
+    "max_weak_log_residual_R_xi": "weak_log_residual_R_xi",
+    "max_weak_log_residual_R_chi": "weak_log_residual_R_chi",
+    "max_weak_log_iterations": "weak_log_iterations",
+    "max_weak_log_unconverged_lines": "weak_log_unconverged_lines",
     "max_outer_probability_q": "outer_probability_q",
     "max_outer_probability_R": "outer_probability_R",
     "max_relative_psi_wrap_mismatch_q": "relative_psi_wrap_mismatch_q",

@@ -155,6 +155,71 @@ wall time은 대략 `100/limit`배로 증가한다. 기본값 100은 대기 없�
 동작이다. 더 짧은 부하 burst가 필요할 때만 `--gpu-throttle-every 10`처럼
 조절한다.
 
+### Weak derivative와 weighted tangent projection
+
+기존 pointwise/nested-inverse backend는 기본값으로 그대로 유지된다. 새
+안정화 backend는 다음처럼 명시적으로 선택한다.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m \
+  multi_component_exact_factorization_gpu.propagate_gpu \
+  --electronic-representation grid \
+  --log-derivative-backend weak \
+  --product-projection-backend weighted_tikhonov \
+  --weak-log-delta 1e-10 --weak-log-smoothing 0.04 \
+  --projection-tau-phi 1e-10 --projection-tau-lam 1e-10 \
+  --projection-tau-chi 1e-10 \
+  --electron-excitation 1 --dt-au 0.025 --t-final-fs 0.1 \
+  --outdir mcef_weak_weighted_smoke
+```
+
+Weak backend는 ``Xi=Lambda*chi``의 q/R amplitude logarithmic derivative와
+``chi``의 R derivative를 density-weighted periodic PCG로 구한다. Weighted
+projection은 ``1/Xi``와 ``1/chi``를 직접 사용하지 않고 occupied residual과
+inverse-support factor penalty 사이의 Tikhonov 해를 사용한다.
+강한 PNC tangent gauge에서 전자/양성자 수직 블록과 heavy 평행 블록이
+직교하므로, 거대한 전역 행렬 대신 동일한 structured minimum-norm 해를
+세 개의 닫힌형 block으로 계산한다.
+
+### Electronic-only Born--Huang backend
+
+``paper/MCEF_revised.pdf``의 Eqs. (71)--(86)에 따라 ``Phi``만 local BO
+basis로 전개할 수 있다. q/R의 ``Lambda``와 ``chi`` grid는 바뀌지 않는다.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m \
+  multi_component_exact_factorization_gpu.propagate_gpu \
+  --electronic-representation born_huang --bo-states 6 \
+  --log-derivative-backend weak \
+  --product-projection-backend weighted_tikhonov \
+  --electron-excitation 1 --nq 174 --nR 120 \
+  --dt-au 0.025 --t-final-fs 0.1 \
+  --no-render-after --outdir mcef_bh6_weak_weighted_smoke
+```
+
+시간 loop에는 ``C_j(q,R)``, BO energy와 q/R 1·2차 NAC만 GPU에 남는다.
+따라서 큰 동적 전자 배열의 원소 수는 ``nx*nq*nR``에서
+``N_BO*nq*nR``로 줄어든다. ``--bo-save-basis-states``를 추가하면 정적 BO
+eigenvector도 archive에 저장하여 full-Psi reference 비교가 가능하지만,
+archive가 커지므로 convergence run에서만 권장한다. BO archive는 아직 direct
+grid report 형식으로 자동 렌더링하지 않는다.
+
+BO truncation은 같은 짧은 시간에서 ``--bo-states 4``, ``6``, ``8``을
+순서대로 실행하여 ``bo_populations``와 full-Psi fidelity가 수렴하는지
+확인한다. Full-TDSE와 직접 비교할 한 run에만 ``--bo-save-basis-states``를
+추가하고 다음 비교기를 사용한다.
+
+```bash
+python -m multi_component_exact_factorization.compare \
+  results/REFERENCE/multi_component_reference.npz \
+  results/BO/multi_component_born_huang_ef_gpu.npz \
+  --progress-every 10
+```
+
+가장 높은 retained BO state의 population이 계속 커지면 state 수가 부족한
+것이므로 장시간 run으로 넘어가지 않는다. 짧은 기준을 통과한 뒤에만
+``--t-final-fs``를 2, 5, 10, 20 fs 순서로 늘린다.
+
 계산이 정상 종료되어 NPZ 저장까지 성공하면 빠른 report와 동영상을 자동으로
 만든다. GPU 전파 함수가 반환되어 계산 배열이 해제된 다음 CPU 렌더링을
 시작한다. 계산만 원하면 ``--no-render-after``, full 품질 렌더링이 필요하면

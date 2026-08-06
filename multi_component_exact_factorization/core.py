@@ -49,6 +49,16 @@ class Model:
     heavy_mass: float
     fft_workers: int             # 전자 DST에 사용할 CPU worker 수
     potential: np.ndarray         # (nx,nq,nR)
+    log_derivative_backend: str = "pointwise"
+    weak_log_delta: float = 1.0e-10
+    weak_log_smoothing: float = 0.04
+    weak_log_tolerance: float = 1.0e-9
+    weak_log_max_iterations: int = 40
+    product_projection_backend: str = "nested_inverse"
+    projection_tau_phi: float = 1.0e-10
+    projection_tau_lam: float = 1.0e-10
+    projection_tau_chi: float = 1.0e-10
+    projection_support_epsilon: float = 1.0e-12
 
 
 def soft_inverse(distance: np.ndarray, softening: float) -> np.ndarray:
@@ -107,6 +117,22 @@ def build_model(args) -> Model:
         # 예전 archive metadata에는 이 option이 없으므로 재분석 시 fallback한다.
         fft_workers=getattr(args, "fft_workers", -1),
         potential=np.asarray(potential),
+        log_derivative_backend=getattr(
+            args, "log_derivative_backend", "pointwise"
+        ),
+        weak_log_delta=float(getattr(args, "weak_log_delta", 1.0e-10)),
+        weak_log_smoothing=float(getattr(args, "weak_log_smoothing", 0.04)),
+        weak_log_tolerance=float(getattr(args, "weak_log_tolerance", 1.0e-9)),
+        weak_log_max_iterations=int(getattr(args, "weak_log_max_iterations", 40)),
+        product_projection_backend=getattr(
+            args, "product_projection_backend", "nested_inverse"
+        ),
+        projection_tau_phi=float(getattr(args, "projection_tau_phi", 1.0e-10)),
+        projection_tau_lam=float(getattr(args, "projection_tau_lam", 1.0e-10)),
+        projection_tau_chi=float(getattr(args, "projection_tau_chi", 1.0e-10)),
+        projection_support_epsilon=float(getattr(
+            args, "projection_support_epsilon", 1.0e-12
+        )),
     )
 
 
@@ -394,6 +420,83 @@ def logarithmic_components(factor, spacing, axis, numerical_floor=1.0e-14):
     return ratio.real, -ratio.imag
 
 
+def weak_log_amplitude_gradient(
+    factor, spacing, axis, *, delta=1.0e-10, smoothing_length=0.0,
+    tolerance=1.0e-9, max_iterations=40,
+):
+    """Density-weighted weak approximation to ``d log|factor|/ds``.
+
+    For ``r=|factor|^2/max(|factor|^2)`` this solves the periodic, mass-lumped
+    weak/Tikhonov problem
+
+        [diag(r+delta)-ell^2 D2] g = 0.5 D1 r.
+
+    No pointwise division by the factor is used.  A batched diagonally
+    preconditioned conjugate-gradient iteration handles every conditional line
+    along ``axis`` simultaneously.
+    """
+    if delta <= 0.0:
+        raise ValueError("weak-log delta는 양수여야 합니다.")
+    if smoothing_length < 0.0:
+        raise ValueError("weak-log smoothing length는 0 이상이어야 합니다.")
+    if tolerance <= 0.0 or max_iterations < 1:
+        raise ValueError("weak-log tolerance/iteration 설정이 잘못되었습니다.")
+    density = np.abs(factor)**2
+    peak = np.max(density, axis=axis, keepdims=True)
+    relative = density/np.maximum(peak, 1.0e-300)
+    rhs = 0.5*derivative(relative, spacing, axis=axis)
+
+    diagonal_shift = smoothing_length**2*30.0/(12.0*spacing**2)
+    preconditioner = relative+delta+diagonal_shift
+
+    def apply(values):
+        return (
+            (relative+delta)*values
+            -smoothing_length**2*derivative(
+                values, spacing, axis=axis, order=2
+            )
+        )
+
+    solution = np.zeros_like(relative, dtype=float)
+    residual = rhs.copy()
+    z = residual/preconditioner
+    direction = z.copy()
+    reduce_axes = (axis,)
+    rz = np.sum(residual*z, axis=reduce_axes, keepdims=True)
+    rhs_norm = np.sqrt(np.sum(rhs**2, axis=reduce_axes, keepdims=True))
+    scale = np.maximum(rhs_norm, 1.0e-30)
+    iterations = 0
+    for iterations in range(1, max_iterations+1):
+        action = apply(direction)
+        denominator = np.sum(
+            direction*action, axis=reduce_axes, keepdims=True
+        )
+        alpha = rz/np.maximum(denominator, 1.0e-300)
+        solution += alpha*direction
+        residual -= alpha*action
+        relative_residual = np.sqrt(np.sum(
+            residual**2, axis=reduce_axes, keepdims=True
+        ))/scale
+        if float(np.max(relative_residual)) <= tolerance:
+            break
+        z = residual/preconditioner
+        rz_new = np.sum(residual*z, axis=reduce_axes, keepdims=True)
+        beta = rz_new/np.maximum(rz, 1.0e-300)
+        direction = z+beta*direction
+        rz = rz_new
+    final_relative = np.sqrt(np.sum(
+        residual**2, axis=reduce_axes, keepdims=True
+    ))/scale
+    diagnostics = {
+        "weak_log_residual": np.asarray(float(np.max(final_relative))),
+        "weak_log_iterations": np.asarray(float(iterations)),
+        "weak_log_unconverged_lines": np.asarray(float(np.count_nonzero(
+            final_relative > tolerance
+        ))),
+    }
+    return solution, diagnostics
+
+
 def occupied_support_mask(density, relative_threshold):
     """상대 density로 정의한 부드러운 ``rho/(rho+eta*rho_max)`` mask."""
     if relative_threshold < 0.0:
@@ -553,10 +656,12 @@ def project_discrete_product_residual(
     연속 EF 유도에 쓰이는 Leibniz product rule은 finite difference에서
     정확하지 않다. 따라서 factor RHS로 재구성한 ``dPsi``와 periodic 5점
     ``D2``가 만드는 target nuclear ``dPsi``의 residual을 계산하고,
-    ``Phi -> Lambda -> chi`` 순서의 orthogonal nested tangent로 분해해
-    되돌린다. 점유 support에서는 product derivative가 target과 일치하고,
-    나눗셈이 위험한 tail에는 factor-orthogonal residual만 남으므로 full
-    norm 생성률은 만들지 않는다.
+    legacy backend는 ``Phi -> Lambda -> chi`` orthogonal nested inverse를
+    사용한다. ``weighted_tikhonov`` backend는 같은 strong PNC tangent의
+    직교 block 구조를 이용해 support-weighted residual과 inverse-support
+    factor penalty의 simultaneous minimum-norm 해를 닫힌형으로 계산한다.
+    따라서 거대한 전역 normal equation을 만들지 않으면서 tail correction과
+    남는 product residual 사이의 regularized 절충을 명시적으로 제어한다.
     """
     if support_floor_phi < 0.0 or support_floor_lam < 0.0:
         raise ValueError("product projection support floor는 0 이상이어야 합니다.")
@@ -599,24 +704,68 @@ def project_discrete_product_residual(
     xi = lam*chi[None, :]
     xi_density = np.abs(xi)**2
     xi_peak = max(float(np.max(xi_density)), 1.0e-300)
-    # conj(xi)/(|xi|^2+eta*peak)는 (1/xi)에 smooth support weight를
-    # 곱한 것과 같다. Hard cutoff가 만드는 새 경계/spike를 피한다.
-    inverse_xi = np.conj(xi)/(
-        xi_density+support_floor_phi*xi_peak
+    projection_backend = getattr(
+        model, "product_projection_backend", "nested_inverse"
     )
+    if projection_backend == "weighted_tikhonov":
+        support_epsilon = model.projection_support_epsilon
+        support_phi = xi_density/(
+            xi_density+support_floor_phi*xi_peak+1.0e-300
+        )
+        ridge_phi = (
+            model.projection_tau_phi*xi_peak/(support_phi+support_epsilon)
+        )
+        inverse_xi = support_phi*np.conj(xi)/(
+            support_phi*xi_density+ridge_phi+1.0e-300
+        )
+    elif projection_backend == "nested_inverse":
+        # Legacy smooth inverse retained for exact backward compatibility.
+        support_phi = xi_density/(
+            xi_density+support_floor_phi*xi_peak+1.0e-300
+        )
+        inverse_xi = np.conj(xi)/(
+            xi_density+support_floor_phi*xi_peak
+        )
+    else:
+        raise ValueError(f"지원하지 않는 product projection: {projection_backend}")
     delta_phi = perpendicular_phi*inverse_xi[None, :, :]
 
     lam_norm2 = np.sum(np.abs(lam)**2, axis=0)*model.dq
     safe_lam_norm2 = np.maximum(lam_norm2, 1.0e-14)
-    delta_chi = (
+    parallel_chi = (
         np.sum(np.conj(lam)*delta_xi, axis=0)*model.dq/safe_lam_norm2
     )
-    perpendicular_lam = delta_xi-lam*delta_chi[None, :]
+    # In the strong tangent gauge <Lambda|delta Lambda>_q=0 this orthogonal
+    # split is the structured simultaneous minimum-norm decomposition.
+    perpendicular_lam = delta_xi-lam*parallel_chi[None, :]
     chi_density = np.abs(chi)**2
     chi_peak = max(float(np.max(chi_density)), 1.0e-300)
-    inverse_chi = np.conj(chi)/(
-        chi_density+support_floor_lam*chi_peak
-    )
+    if projection_backend == "weighted_tikhonov":
+        support_lam = chi_density/(
+            chi_density+support_floor_lam*chi_peak+1.0e-300
+        )
+        ridge_lam = (
+            model.projection_tau_lam*chi_peak/(support_lam+support_epsilon)
+        )
+        inverse_chi = support_lam*np.conj(chi)/(
+            support_lam*chi_density+ridge_lam+1.0e-300
+        )
+        chi_shrink = support_lam/(
+            support_lam
+            +getattr(model, "projection_tau_chi", 1.0e-10)/(
+                support_lam+support_epsilon
+            )
+            +1.0e-300
+        )
+        delta_chi = chi_shrink*parallel_chi
+    else:
+        support_lam = chi_density/(
+            chi_density+support_floor_lam*chi_peak+1.0e-300
+        )
+        inverse_chi = np.conj(chi)/(
+            chi_density+support_floor_lam*chi_peak
+        )
+        delta_chi = parallel_chi
     delta_lam = perpendicular_lam*inverse_chi[None, :]
 
     dphi = dphi+delta_phi
@@ -719,6 +868,15 @@ def project_discrete_product_residual(
         product_correction_phi=np.max(np.abs(delta_phi)),
         product_correction_lam=np.max(np.abs(delta_lam)),
         product_correction_chi=np.max(np.abs(delta_chi)),
+        inverse_support_product_correction_phi=np.sqrt(np.sum(
+            np.abs(delta_phi)**2/(support_phi[None, :, :]+1.0e-12)
+        )*volume),
+        inverse_support_product_correction_lam=np.sqrt(np.sum(
+            np.abs(delta_lam)**2/(support_lam[None, :]+1.0e-12)
+        )*model.dq*model.dR),
+        inverse_support_product_correction_chi=np.sqrt(np.sum(
+            np.abs(delta_chi)**2/(support_lam+1.0e-12)
+        )*model.dR),
         relative_product_projection_l2=relative_product_projection_l2,
         relative_support_product_projection_l2=(
             relative_support_product_projection_l2
@@ -875,6 +1033,43 @@ def instantaneous_functionals(
     chi_phase_R, chi_logamp_R = logarithmic_components(
         chi, model.dR, axis=0, numerical_floor=floor
     )
+    weak_diagnostics = {}
+    if getattr(model, "log_derivative_backend", "pointwise") == "weak":
+        xi = lam*chi[None, :]
+        weak_options = dict(
+            delta=model.weak_log_delta,
+            smoothing_length=model.weak_log_smoothing,
+            tolerance=model.weak_log_tolerance,
+            max_iterations=model.weak_log_max_iterations,
+        )
+        xi_logamp_q, weak_q = weak_log_amplitude_gradient(
+            xi, model.dq, axis=0, **weak_options
+        )
+        xi_logamp_R, weak_R = weak_log_amplitude_gradient(
+            xi, model.dR, axis=1, **weak_options
+        )
+        chi_logamp_R_used, weak_chi = weak_log_amplitude_gradient(
+            chi, model.dR, axis=0, **weak_options
+        )
+        weak_diagnostics = dict(
+            weak_log_residual_q_xi=weak_q["weak_log_residual"],
+            weak_log_residual_R_xi=weak_R["weak_log_residual"],
+            weak_log_residual_R_chi=weak_chi["weak_log_residual"],
+            weak_log_iterations=max(
+                weak_q["weak_log_iterations"],
+                weak_R["weak_log_iterations"],
+                weak_chi["weak_log_iterations"],
+            ),
+            weak_log_unconverged_lines=(
+                weak_q["weak_log_unconverged_lines"]
+                +weak_R["weak_log_unconverged_lines"]
+                +weak_chi["weak_log_unconverged_lines"]
+            ),
+        )
+    else:
+        xi_logamp_q = lam_logamp_q
+        xi_logamp_R = lam_logamp_R+chi_logamp_R[None, :]
+        chi_logamp_R_used = chi_logamp_R
 
     # ----- 첫 번째 factorization: 전자 coupling U_e,pn -----
     # 양성자 좌표 q 방향 항
@@ -885,7 +1080,7 @@ def instantaneous_functionals(
     # Gauge-invariant K_q=d_q T+a는 보존하고 singular amplitude gradient만
     # joint nuclear density support에서 감쇠한다.
     coefficient_q = (
-        lam_phase_q+a-1j*mask_phi*lam_logamp_q
+        lam_phase_q+a-1j*mask_phi*xi_logamp_q
     )                                                               # (nq,nR)
     u_q_phi = (
         0.5*dminus_q2+coefficient_q[None, :, :]*dminus_q
@@ -898,7 +1093,7 @@ def instantaneous_functionals(
     )
     coefficient_R = (
         chi_phase_R[None, :]+lam_phase_R+b
-        -1j*mask_phi*(chi_logamp_R[None, :]+lam_logamp_R)
+        -1j*mask_phi*xi_logamp_R
     )                                                               # (nq,nR)
     u_R_phi = (
         0.5*dminus_R2
@@ -920,7 +1115,7 @@ def instantaneous_functionals(
 
     # ----- 두 번째 factorization: 양성자와 바깥 무거운 핵 -----
     base_result = proton_base_operator(
-        lam, a, b, alpha, chi_phase_R, chi_logamp_R, mask_lam, model,
+        lam, a, b, alpha, chi_phase_R, chi_logamp_R_used, mask_lam, model,
         return_unmasked=include_unmasked,
     )                                                               # (nq,nR)
     if include_unmasked:
@@ -962,19 +1157,20 @@ def instantaneous_functionals(
             np.abs(lam_logamp_R)+np.abs(chi_logamp_R)[None, :],
         ),
         effective_logamp_phi=np.maximum(
-            np.abs(mask_phi*lam_logamp_q),
-            np.abs(mask_phi*(lam_logamp_R+chi_logamp_R[None, :])),
+            np.abs(mask_phi*xi_logamp_q),
+            np.abs(mask_phi*xi_logamp_R),
         ),
         raw_logamp_lam=np.abs(chi_logamp_R),
-        effective_logamp_lam=np.abs(mask_lam*chi_logamp_R),
+        effective_logamp_lam=np.abs(mask_lam*chi_logamp_R_used),
+        **weak_diagnostics,
     )
     if include_unmasked:
         coefficient_q_unmasked = (
-            lam_phase_q+a-1j*lam_logamp_q
+            lam_phase_q+a-1j*xi_logamp_q
         )
         coefficient_R_unmasked = (
             chi_phase_R[None, :]+lam_phase_R+b
-            -1j*(chi_logamp_R[None, :]+lam_logamp_R)
+            -1j*xi_logamp_R
         )
         u_phi_unmasked_raw = (
             0.5*dminus_q2

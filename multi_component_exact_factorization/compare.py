@@ -20,6 +20,18 @@ def _array_keys(member_names):
     """비교에 필요한 최소 archive key 목록."""
     if "psi.npy" in member_names:
         return (*ARCHIVE_BASE_KEYS, "psi")
+    if "electronic_coefficients.npy" in member_names:
+        required = (
+            "electronic_coefficients", "bo_basis_states",
+            "lambda_wavefunction", "chi",
+        )
+        missing = [key for key in required if f"{key}.npy" not in member_names]
+        if missing:
+            raise ValueError(
+                "Born--Huang 비교에는 --bo-save-basis-states로 저장한 "
+                f"archive가 필요합니다: {', '.join(missing)}"
+            )
+        return (*ARCHIVE_BASE_KEYS, *required)
     required = ("phi", "lambda_wavefunction", "chi")
     missing = [key for key in required if f"{key}.npy" not in member_names]
     if missing:
@@ -71,6 +83,16 @@ def psi_from_archive(data, frame):
     """저장된 Psi가 없으면 세 factor의 곱으로 재구성한다."""
     if "psi" in data:
         return data["psi"][frame]
+    if "electronic_coefficients" in data:
+        phi = np.einsum(
+            "jqR,jxqR->xqR",
+            data["electronic_coefficients"][frame],
+            data["bo_basis_states"], optimize=True,
+        )
+        return (
+            phi*data["lambda_wavefunction"][frame][None, :, :]
+            *data["chi"][frame][None, None, :]
+        )
     return (
         data["phi"][frame]
         *data["lambda_wavefunction"][frame][None, :, :]

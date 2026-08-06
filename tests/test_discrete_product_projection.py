@@ -18,6 +18,11 @@ class DiscreteProductProjectionTests(unittest.TestCase):
         self.model = SimpleNamespace(
             dx=0.2, dq=2.0*np.pi/9, dR=2.0*np.pi/8,
             proton_mass=7.0, heavy_mass=19.0,
+            product_projection_backend="nested_inverse",
+            projection_tau_phi=1.0e-10,
+            projection_tau_lam=1.0e-10,
+            projection_tau_chi=1.0e-10,
+            projection_support_epsilon=1.0e-12,
         )
         nx, nq, nR = 7, 9, 8
         x = np.arange(nx)[:, None, None]
@@ -116,6 +121,57 @@ class DiscreteProductProjectionTests(unittest.TestCase):
             mask = occupied_support_mask(density, eta)
             measured = suppressed_probability(density, mask, 1.0)
             self.assertAlmostEqual(measured, budget, delta=budget*1.0e-6)
+
+    def test_weighted_projection_limits_tail_factor_correction(self):
+        rng = np.random.default_rng(19)
+        dphi = (
+            rng.normal(size=self.phi.shape)+1j*rng.normal(size=self.phi.shape)
+        )*1.0e-3
+        dlam = np.zeros_like(self.lam)
+        dchi = np.zeros_like(self.chi)
+        chi = self.chi.copy()
+        chi[0] *= 1.0e-10
+        legacy_model = SimpleNamespace(**vars(self.model))
+        weighted_model = SimpleNamespace(**vars(self.model))
+        weighted_model.product_projection_backend = "weighted_tikhonov"
+        _, _, _, legacy = project_discrete_product_residual(
+            self.phi, self.lam, chi, dphi, dlam, dchi, legacy_model,
+            support_floor_phi=1.0e-10, support_floor_lam=1.0e-10,
+        )
+        _, _, _, weighted = project_discrete_product_residual(
+            self.phi, self.lam, chi, dphi, dlam, dchi, weighted_model,
+            support_floor_phi=1.0e-10, support_floor_lam=1.0e-10,
+        )
+        self.assertLessEqual(
+            weighted["product_correction_phi"],
+            legacy["product_correction_phi"]+1.0e-15,
+        )
+        self.assertLessEqual(
+            weighted["product_correction_chi"],
+            legacy["product_correction_chi"]+1.0e-15,
+        )
+        self.assertTrue(np.isfinite(
+            weighted["inverse_support_product_correction_phi"]
+        ))
+
+    def test_weighted_projection_keeps_strong_factor_tangents(self):
+        model = SimpleNamespace(**vars(self.model))
+        model.product_projection_backend = "weighted_tikhonov"
+        zeros = (
+            np.zeros_like(self.phi), np.zeros_like(self.lam),
+            np.zeros_like(self.chi),
+        )
+        dphi, dlam, _, diagnostics = project_discrete_product_residual(
+            self.phi, self.lam, self.chi, *zeros, model,
+            support_floor_phi=1.0e-10, support_floor_lam=1.0e-10,
+        )
+        phi_tangent = np.sum(np.conj(self.phi)*dphi, axis=0)*self.model.dx
+        lam_tangent = np.sum(np.conj(self.lam)*dlam, axis=0)*self.model.dq
+        self.assertLess(np.max(np.abs(phi_tangent)), 2.0e-14)
+        self.assertLess(np.max(np.abs(lam_tangent)), 2.0e-14)
+        self.assertTrue(np.isfinite(
+            diagnostics["inverse_support_product_correction_chi"]
+        ))
 
 
 if __name__ == "__main__":

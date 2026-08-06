@@ -112,12 +112,28 @@ def run(args):
     args.mask_probability_budgets = getattr(
         args, "mask_probability_budgets", (1.0e-9, 1.0e-8, 1.0e-7)
     )
+    if args.weak_log_delta <= 0.0 or args.weak_log_smoothing < 0.0:
+        raise ValueError("weak-log delta는 양수, smoothing은 0 이상이어야 합니다")
+    if args.weak_log_tolerance <= 0.0 or args.weak_log_max_iterations < 1:
+        raise ValueError("weak-log tolerance/iterations 설정이 잘못되었습니다")
+    if min(
+        args.projection_tau_phi, args.projection_tau_lam,
+        args.projection_tau_chi,
+    ) < 0.0:
+        raise ValueError("projection tau는 0 이상이어야 합니다")
+    if args.projection_support_epsilon <= 0.0:
+        raise ValueError("projection support epsilon은 양수여야 합니다")
     for name in (
         "mask_threshold_phi", "mask_threshold_lam",
         "product_projection_floor_phi", "product_projection_floor_lam",
     ):
         if getattr(args, name) < 0.0:
             raise ValueError(f"--{name.replace('_', '-')}는 0 이상이어야 합니다")
+    if args.ratio_floor <= 0.0:
+        raise ValueError("--ratio-floor는 양수여야 합니다")
+    if getattr(args, "electronic_representation", "grid") == "born_huang":
+        from .propagate_born_huang import run_born_huang
+        return run_born_huang(args)
     cp.cuda.Device(args.device).use()
     print(device_description(args.device))
     print(f"계산 정밀도: {args.precision}")
@@ -162,6 +178,8 @@ def run(args):
     print(
         "수치 scheme: periodic 5-point central D1/D2; "
         "product-preserving gamma transfer + discrete product projection; "
+        f"log_backend={cpu_model.log_derivative_backend}, "
+        f"projection_backend={cpu_model.product_projection_backend}; "
         f"ratio_floor={args.ratio_floor:.1e}, "
         f"mask(Phi,Lambda)=({args.mask_threshold_phi:.1e},"
         f"{args.mask_threshold_lam:.1e}), "
@@ -462,16 +480,29 @@ def run(args):
         representation=np.array(
             "nested_realspace_independent_harmonic_hardwall_electron"
         ),
+        electronic_representation=np.array("grid"),
         local_norm_correction=np.array(
             "product_preserving_nested_tangent_correction"
         ),
         discrete_product_projection=np.array(
-            "nested_tangent_projection_to_periodic_nuclear_D2"
+            args.product_projection_backend
+            +"_tangent_projection_to_periodic_nuclear_D2"
         ),
         spatial_derivative=np.array("periodic_five_point_central_D1_D2"),
         ratio_regularization=np.array(
-            "joint_support_mask_on_log_amplitude_gradient_only"
+            args.log_derivative_backend
+            +"_joint_support_mask_on_log_amplitude_gradient_only"
         ),
+        log_derivative_backend=np.array(args.log_derivative_backend),
+        weak_log_delta=np.array(args.weak_log_delta),
+        weak_log_smoothing=np.array(args.weak_log_smoothing),
+        weak_log_tolerance=np.array(args.weak_log_tolerance),
+        weak_log_max_iterations=np.array(args.weak_log_max_iterations),
+        product_projection_backend=np.array(args.product_projection_backend),
+        projection_tau_phi=np.array(args.projection_tau_phi),
+        projection_tau_lam=np.array(args.projection_tau_lam),
+        projection_tau_chi=np.array(args.projection_tau_chi),
+        projection_support_epsilon=np.array(args.projection_support_epsilon),
         ratio_floor=np.array(args.ratio_floor),
         mask_threshold_phi=np.array(args.mask_threshold_phi),
         mask_threshold_lam=np.array(args.mask_threshold_lam),
@@ -679,6 +710,20 @@ def parse_args():
     )
     parser.add_argument("--dt-au", type=float, default=0.005)
     parser.add_argument("--t-final-fs", type=float, default=0.05)
+    electronic = parser.add_argument_group("conditional electronic representation")
+    electronic.add_argument(
+        "--electronic-representation", choices=("grid", "born_huang"),
+        default="grid",
+        help="Phi를 x-grid 또는 electronic-only Born--Huang coefficients로 전파",
+    )
+    electronic.add_argument(
+        "--bo-states", type=int, default=6,
+        help="Born--Huang backend에서 유지할 local BO state 수",
+    )
+    electronic.add_argument(
+        "--bo-save-basis-states", action="store_true",
+        help="큰 static BO eigenvector tensor도 archive에 저장",
+    )
     parser.add_argument(
         "--save-every", type=int, default=0,
         help="저장 step 간격; 0이면 약 200 frame이 되도록 자동 선택",
@@ -698,6 +743,49 @@ def parse_args():
     regularization.add_argument(
         "--ratio-floor", type=float, default=1.0e-14,
         help="logarithmic derivative의 zero division만 막는 numerical floor",
+    )
+    regularization.add_argument(
+        "--log-derivative-backend", choices=("pointwise", "weak"),
+        default="pointwise",
+        help="amplitude logarithmic derivative 계산 방식",
+    )
+    regularization.add_argument(
+        "--weak-log-delta", type=float, default=1.0e-10,
+        help="weak mass operator의 dimensionless positive floor",
+    )
+    regularization.add_argument(
+        "--weak-log-smoothing", type=float, default=0.04,
+        help="weak log-amplitude Tikhonov smoothing length (bohr)",
+    )
+    regularization.add_argument(
+        "--weak-log-tolerance", type=float, default=1.0e-8,
+        help="batched weak PCG relative residual tolerance",
+    )
+    regularization.add_argument(
+        "--weak-log-max-iterations", type=int, default=40,
+        help="batched weak PCG 최대 iteration",
+    )
+    regularization.add_argument(
+        "--product-projection-backend",
+        choices=("nested_inverse", "weighted_tikhonov"),
+        default="nested_inverse",
+        help="discrete product residual의 factor tangent 분배 방식",
+    )
+    regularization.add_argument(
+        "--projection-tau-phi", type=float, default=1.0e-10,
+        help="weighted projection의 electronic tangent ridge",
+    )
+    regularization.add_argument(
+        "--projection-tau-lam", type=float, default=1.0e-10,
+        help="weighted projection의 proton tangent ridge",
+    )
+    regularization.add_argument(
+        "--projection-tau-chi", type=float, default=1.0e-10,
+        help="weighted projection의 heavy tangent ridge",
+    )
+    regularization.add_argument(
+        "--projection-support-epsilon", type=float, default=1.0e-12,
+        help="inverse-support penalty의 denominator floor",
     )
     regularization.add_argument(
         "--mask-threshold-phi", type=float, default=1.0e-10,
@@ -775,7 +863,16 @@ def parse_args():
 def _execute(args):
     """GPU 전파 배열이 해제된 뒤 선택적으로 CPU 렌더링을 실행한다."""
     path = run(args)
-    if getattr(args, "render_after", False):
+    if (
+        getattr(args, "render_after", False)
+        and getattr(args, "electronic_representation", "grid") == "born_huang"
+    ):
+        print(
+            "Born--Huang archive는 전자 x-grid trajectory를 저장하지 않아 "
+            "현재 compact 자동 렌더링을 생략합니다. --bo-save-basis-states는 "
+            "full-Psi reference 비교용입니다."
+        )
+    elif getattr(args, "render_after", False):
         from multi_component_exact_factorization.render_all import (
             render_completed_run,
         )

@@ -1,0 +1,149 @@
+import unittest
+from unittest.mock import patch
+import sys
+
+import numpy as np
+
+from multi_component_exact_factorization.born_huang import (
+    build_born_huang_basis,
+    coefficient_vector_potential,
+    projected_plain_second,
+    projected_residual_momentum,
+    projected_residual_square,
+    reconstruct_electronic_grid,
+)
+from multi_component_exact_factorization.core import (
+    build_model, covariant_square, derivative,
+)
+from multi_component_exact_factorization.propagate import parse_args
+from multi_component_exact_factorization.compare import psi_from_archive
+
+
+class BornHuangOperatorTests(unittest.TestCase):
+    def setUp(self):
+        self.ns, self.nx, self.nq, self.nR = 3, 5, 17, 13
+        self.dq = 2.0*np.pi/self.nq
+        self.dR = 2.0*np.pi/self.nR
+        q = np.arange(self.nq)*self.dq
+        R = np.arange(self.nR)*self.dR
+        self.c = np.empty((self.ns, self.nq, self.nR), complex)
+        for state in range(self.ns):
+            self.c[state] = (0.3+0.1*state)*np.exp(
+                1j*((state+1)*q[:, None]+0.2*np.sin(R)[None, :])
+            )
+        shape = (self.ns, self.ns, self.nq, self.nR)
+        self.zero = np.zeros(shape, complex)
+        self.vector = 0.1*np.sin(q)[:, None]+0.03*np.cos(R)[None, :]
+
+    def test_zero_nac_matches_grid_formula(self):
+        momentum = projected_residual_momentum(
+            self.c, self.zero, self.vector, self.dq, 1
+        )
+        expected = -1j*derivative(self.c, self.dq, 1)-self.vector[None]*self.c
+        self.assertTrue(np.allclose(momentum, expected, atol=2.0e-13))
+        square = projected_residual_square(
+            self.c, self.zero, self.zero, self.vector, self.dq, 1
+        )
+        expected_square = (
+            -derivative(self.c, self.dq, 1, order=2)
+            +1j*derivative(self.vector, self.dq, 0)[None]*self.c
+            +2j*self.vector[None]*derivative(self.c, self.dq, 1)
+            +self.vector[None]**2*self.c
+        )
+        self.assertTrue(np.allclose(square, expected_square, atol=2.0e-13))
+
+    def test_plain_second_and_reconstruction(self):
+        actual = projected_plain_second(
+            self.c, self.zero, self.zero, self.dR, 2
+        )
+        self.assertTrue(np.allclose(
+            actual, derivative(self.c, self.dR, 2, order=2), atol=2.0e-13
+        ))
+        states = np.zeros((self.ns, self.nx, self.nq, self.nR), complex)
+        states[:, :self.ns] = np.eye(self.ns)[:, :, None, None]
+        reconstructed = reconstruct_electronic_grid(self.c, states)
+        self.assertTrue(np.allclose(reconstructed[:self.ns], self.c))
+
+        lam = np.ones((1, self.nq, self.nR), complex)
+        chi = np.ones((1, self.nR), complex)
+        archive = {
+            "electronic_coefficients": self.c[None],
+            "bo_basis_states": states,
+            "lambda_wavefunction": lam,
+            "chi": chi,
+        }
+        self.assertTrue(np.allclose(
+            psi_from_archive(archive, 0), reconstructed
+        ))
+
+    def test_vector_potential_is_real(self):
+        norm = np.sqrt(np.sum(np.abs(self.c)**2, axis=0))
+        normalized = self.c/norm[None]
+        value = coefficient_vector_potential(
+            normalized, self.zero, self.dq, 1
+        )
+        self.assertTrue(np.isrealobj(value))
+        self.assertTrue(np.all(np.isfinite(value)))
+
+    def test_projected_operators_match_complete_grid_basis(self):
+        ns = nx = 2
+        nq, nR = 101, 7
+        dq = 2.0*np.pi/nq
+        q = np.arange(nq)*dq
+        angle = 0.3*np.sin(q)
+        states = np.zeros((ns, nx, nq, nR), complex)
+        states[0, 0] = np.cos(angle)[:, None]
+        states[0, 1] = np.sin(angle)[:, None]
+        states[1, 0] = -np.sin(angle)[:, None]
+        states[1, 1] = np.cos(angle)[:, None]
+        d = np.empty((ns, ns, nq, nR), complex)
+        D = np.empty_like(d)
+        for right in range(ns):
+            first = derivative(states[right], dq, axis=1)
+            second = derivative(states[right], dq, axis=1, order=2)
+            d[:, right] = np.einsum("lxqr,xqr->lqr", np.conj(states), first)
+            D[:, right] = np.einsum("lxqr,xqr->lqr", np.conj(states), second)
+        c = np.empty((ns, nq, nR), complex)
+        c[0] = 0.8*np.exp(0.2j*np.sin(q))[:, None]
+        c[1] = 0.6*np.exp(-0.1j*np.cos(q))[:, None]
+        vector = 0.07*np.cos(q)[:, None]*np.ones((1, nR))
+        phi = reconstruct_electronic_grid(c, states)
+        direct_first = -1j*derivative(phi, dq, axis=1)-vector[None]*phi
+        projected_first = np.einsum(
+            "lxqr,xqr->lqr", np.conj(states), direct_first
+        )
+        actual_first = projected_residual_momentum(c, d, vector, dq, 1)
+        # A finite-difference stencil has no exact Leibniz rule; the projected
+        # Born--Huang formula and direct-grid product agree to the expected
+        # fourth-order truncation error rather than machine precision.
+        self.assertLess(np.max(np.abs(actual_first-projected_first)), 5.0e-7)
+        direct_second = covariant_square(
+            phi, vector[None], dq, axis=1, sign=-1
+        )
+        projected_second = np.einsum(
+            "lxqr,xqr->lqr", np.conj(states), direct_second
+        )
+        actual_second = projected_residual_square(c, d, D, vector, dq, 1)
+        self.assertLess(np.max(np.abs(
+            actual_second-projected_second
+        )), 3.0e-7)
+
+    def test_local_basis_nacs_are_finite_and_normalized(self):
+        with patch.object(sys, "argv", [
+            "test", "--nx", "18", "--nq", "7", "--nR", "6",
+            "--electron-excitation", "1",
+        ]):
+            args = parse_args()
+        model = build_model(args)
+        basis = build_born_huang_basis(model, 2)
+        overlap = np.einsum(
+            "lxqr,jxqr->ljqr", np.conj(basis.states), basis.states
+        )*model.dx
+        identity = np.eye(2)[:, :, None, None]
+        self.assertLess(np.max(np.abs(overlap-identity)), 2.0e-13)
+        for values in (basis.energies, basis.d_q, basis.D_q, basis.d_R, basis.D_R):
+            self.assertTrue(np.all(np.isfinite(values)))
+
+
+if __name__ == "__main__":
+    unittest.main()
