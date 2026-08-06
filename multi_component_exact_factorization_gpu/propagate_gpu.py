@@ -498,6 +498,10 @@ def run(args):
         weak_log_smoothing=np.array(args.weak_log_smoothing),
         weak_log_tolerance=np.array(args.weak_log_tolerance),
         weak_log_max_iterations=np.array(args.weak_log_max_iterations),
+        weak_log_preconditioner=np.array(
+            "exact_diagonal" if args.weak_log_smoothing == 0.0
+            else "periodic_five_point_fourier_mean_density"
+        ),
         product_projection_backend=np.array(args.product_projection_backend),
         projection_tau_phi=np.array(args.projection_tau_phi),
         projection_tau_lam=np.array(args.projection_tau_lam),
@@ -762,8 +766,8 @@ def parse_args():
         help="batched weak PCG relative residual tolerance",
     )
     regularization.add_argument(
-        "--weak-log-max-iterations", type=int, default=40,
-        help="batched weak PCG 최대 iteration",
+        "--weak-log-max-iterations", type=int, default=80,
+        help="Fourier-preconditioned batched weak PCG 최대 iteration",
     )
     regularization.add_argument(
         "--product-projection-backend",

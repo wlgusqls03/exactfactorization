@@ -181,6 +181,18 @@ inverse-support factor penalty 사이의 Tikhonov 해를 사용한다.
 직교하므로, 거대한 전역 행렬 대신 동일한 structured minimum-norm 해를
 세 개의 닫힌형 block으로 계산한다.
 
+Weak PCG의 전처리기는 각 conditional line에서 density를 그 평균으로 바꾼
+
+```text
+P = <rho> + delta - ell^2 D2
+```
+
+를 사용한다. ``D2``가 periodic 5점 operator이므로 ``P``는 FFT 공간에서
+정확히 대각화된다. 실제 variable-density weak operator는 바꾸지 않고 PCG의
+탐색 방향만 개선하며, Jacobi 전처리보다 적은 iteration으로 같은 해에
+수렴한다. 기본 최대 iteration은 안전 여유를 위해 80이지만 residual tolerance를
+만족하면 즉시 종료한다.
+
 ### Electronic-only Born--Huang backend
 
 ``paper/MCEF_revised.pdf``의 Eqs. (71)--(86)에 따라 ``Phi``만 local BO

@@ -32,7 +32,34 @@ class WeakLogAmplitudeTests(unittest.TestCase):
             max_iterations=80,
         )
         self.assertTrue(np.all(np.isfinite(actual)))
-        self.assertTrue(np.isfinite(diagnostics["weak_log_residual"]))
+        self.assertLess(float(diagnostics["weak_log_residual"]), 1.0e-8)
+        self.assertEqual(float(diagnostics["weak_log_unconverged_lines"]), 0.0)
+
+    def test_fourier_preconditioner_converges_narrow_joint_gaussian(self):
+        nq, nR = 174, 120
+        dq, dR = 0.04, 0.02
+        q = (np.arange(nq)-nq//2)*dq
+        R = (np.arange(nR)-nR//2)*dR
+        proton = np.exp(-0.25*(q/0.169222)**2)
+        heavy = np.exp(-0.25*(R/0.105435)**2)
+        xi = proton[:, None]*heavy[None, :]
+        for factor, spacing, axis in (
+            (xi, dq, 0), (xi, dR, 1), (heavy, dR, 0),
+        ):
+            _, diagnostics = weak_log_amplitude_gradient(
+                factor, spacing, axis, delta=1.0e-10,
+                smoothing_length=0.04, tolerance=1.0e-8,
+                max_iterations=40,
+            )
+            self.assertLess(
+                float(diagnostics["weak_log_residual"]), 1.0e-8
+            )
+            self.assertEqual(
+                float(diagnostics["weak_log_unconverged_lines"]), 0.0
+            )
+            self.assertLessEqual(
+                float(diagnostics["weak_log_iterations"]), 40.0
+            )
 
 
 if __name__ == "__main__":

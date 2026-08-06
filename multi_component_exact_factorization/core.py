@@ -53,7 +53,7 @@ class Model:
     weak_log_delta: float = 1.0e-10
     weak_log_smoothing: float = 0.04
     weak_log_tolerance: float = 1.0e-9
-    weak_log_max_iterations: int = 40
+    weak_log_max_iterations: int = 80
     product_projection_backend: str = "nested_inverse"
     projection_tau_phi: float = 1.0e-10
     projection_tau_lam: float = 1.0e-10
@@ -123,7 +123,7 @@ def build_model(args) -> Model:
         weak_log_delta=float(getattr(args, "weak_log_delta", 1.0e-10)),
         weak_log_smoothing=float(getattr(args, "weak_log_smoothing", 0.04)),
         weak_log_tolerance=float(getattr(args, "weak_log_tolerance", 1.0e-9)),
-        weak_log_max_iterations=int(getattr(args, "weak_log_max_iterations", 40)),
+        weak_log_max_iterations=int(getattr(args, "weak_log_max_iterations", 80)),
         product_projection_backend=getattr(
             args, "product_projection_backend", "nested_inverse"
         ),
@@ -422,7 +422,7 @@ def logarithmic_components(factor, spacing, axis, numerical_floor=1.0e-14):
 
 def weak_log_amplitude_gradient(
     factor, spacing, axis, *, delta=1.0e-10, smoothing_length=0.0,
-    tolerance=1.0e-9, max_iterations=40,
+    tolerance=1.0e-9, max_iterations=80,
 ):
     """Density-weighted weak approximation to ``d log|factor|/ds``.
 
@@ -431,9 +431,10 @@ def weak_log_amplitude_gradient(
 
         [diag(r+delta)-ell^2 D2] g = 0.5 D1 r.
 
-    No pointwise division by the factor is used.  A batched diagonally
-    preconditioned conjugate-gradient iteration handles every conditional line
-    along ``axis`` simultaneously.
+    No pointwise division by the factor is used.  Batched PCG handles every
+    conditional line along ``axis`` simultaneously.  For nonzero smoothing,
+    its preconditioner replaces the variable density by its line average, so
+    the resulting periodic 5-point operator is inverted exactly by real FFT.
     """
     if delta <= 0.0:
         raise ValueError("weak-log delta는 양수여야 합니다.")
@@ -446,9 +447,6 @@ def weak_log_amplitude_gradient(
     relative = density/np.maximum(peak, 1.0e-300)
     rhs = 0.5*derivative(relative, spacing, axis=axis)
 
-    diagonal_shift = smoothing_length**2*30.0/(12.0*spacing**2)
-    preconditioner = relative+delta+diagonal_shift
-
     def apply(values):
         return (
             (relative+delta)*values
@@ -457,9 +455,35 @@ def weak_log_amplitude_gradient(
             )
         )
 
+    if smoothing_length == 0.0:
+        # The weak operator is diagonal in this limit; retain the exact old
+        # Jacobi inverse rather than replacing it by a weaker scalar mean.
+        def apply_preconditioner(values):
+            return values/(relative+delta)
+    else:
+        n = factor.shape[axis]
+        theta = 2.0*np.pi*np.fft.rfftfreq(n)
+        minus_d2_symbol = (
+            2.0*np.cos(2.0*theta)-32.0*np.cos(theta)+30.0
+        )/(12.0*spacing**2)
+        symbol_shape = [1]*factor.ndim
+        symbol_shape[axis] = len(theta)
+        line_mean = np.mean(relative, axis=axis, keepdims=True)
+        preconditioner_spectrum = (
+            line_mean+delta
+            +smoothing_length**2*minus_d2_symbol.reshape(symbol_shape)
+        )
+
+        def apply_preconditioner(values):
+            transformed = np.fft.rfft(values, axis=axis)
+            return np.fft.irfft(
+                transformed/preconditioner_spectrum,
+                n=n, axis=axis,
+            )
+
     solution = np.zeros_like(relative, dtype=float)
     residual = rhs.copy()
-    z = residual/preconditioner
+    z = apply_preconditioner(residual)
     direction = z.copy()
     reduce_axes = (axis,)
     rz = np.sum(residual*z, axis=reduce_axes, keepdims=True)
@@ -479,7 +503,7 @@ def weak_log_amplitude_gradient(
         ))/scale
         if float(np.max(relative_residual)) <= tolerance:
             break
-        z = residual/preconditioner
+        z = apply_preconditioner(residual)
         rz_new = np.sum(residual*z, axis=reduce_axes, keepdims=True)
         beta = rz_new/np.maximum(rz, 1.0e-300)
         direction = z+beta*direction

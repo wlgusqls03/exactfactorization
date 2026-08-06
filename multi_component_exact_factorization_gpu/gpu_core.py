@@ -130,7 +130,7 @@ class GPUModel:
     weak_log_delta: float = 1.0e-10
     weak_log_smoothing: float = 0.04
     weak_log_tolerance: float = 1.0e-9
-    weak_log_max_iterations: int = 40
+    weak_log_max_iterations: int = 80
     product_projection_backend: str = "nested_inverse"
     projection_tau_phi: float = 1.0e-10
     projection_tau_lam: float = 1.0e-10
@@ -289,9 +289,6 @@ def weak_log_amplitude_gradient(
     peak = cp.max(density, axis=axis, keepdims=True)
     relative = density/cp.maximum(peak, tiny)
     rhs = 0.5*derivative(relative, spacing, axis=axis)
-    diagonal_shift = smoothing_length**2*30.0/(12.0*spacing**2)
-    preconditioner = relative+delta+diagonal_shift
-
     def apply(values):
         return (
             (relative+delta)*values
@@ -300,9 +297,35 @@ def weak_log_amplitude_gradient(
             )
         )
 
+    if smoothing_length == 0.0:
+        def apply_preconditioner(values):
+            return values/(relative+delta)
+    else:
+        n = factor.shape[axis]
+        theta = 2.0*cp.pi*cp.arange(
+            n//2+1, dtype=model.real_dtype
+        )/n
+        minus_d2_symbol = (
+            2.0*cp.cos(2.0*theta)-32.0*cp.cos(theta)+30.0
+        )/(12.0*spacing**2)
+        symbol_shape = [1]*factor.ndim
+        symbol_shape[axis] = theta.size
+        line_mean = cp.mean(relative, axis=axis, keepdims=True)
+        preconditioner_spectrum = (
+            line_mean+delta
+            +smoothing_length**2*minus_d2_symbol.reshape(symbol_shape)
+        )
+
+        def apply_preconditioner(values):
+            transformed = cp.fft.rfft(values, axis=axis)
+            return cp.fft.irfft(
+                transformed/preconditioner_spectrum,
+                n=n, axis=axis,
+            ).astype(model.real_dtype, copy=False)
+
     solution = cp.zeros_like(relative, dtype=model.real_dtype)
     residual = rhs.astype(model.real_dtype, copy=True)
-    z = residual/preconditioner
+    z = apply_preconditioner(residual)
     direction = z.copy()
     rz = cp.sum(
         residual*z, axis=axis, keepdims=True,
@@ -324,7 +347,7 @@ def weak_log_amplitude_gradient(
         alpha = rz/cp.maximum(denominator, tiny)
         solution += alpha*direction
         residual -= alpha*action
-        z = residual/preconditioner
+        z = apply_preconditioner(residual)
         rz_new = cp.sum(
             residual*z, axis=axis, keepdims=True,
             dtype=model.reduction_real_dtype,

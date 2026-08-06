@@ -219,6 +219,10 @@ def run_born_huang(args):
         product_projection_backend=np.array(args.product_projection_backend),
         weak_log_delta=np.array(args.weak_log_delta),
         weak_log_smoothing=np.array(args.weak_log_smoothing),
+        weak_log_preconditioner=np.array(
+            "exact_diagonal" if args.weak_log_smoothing == 0.0
+            else "periodic_five_point_fourier_mean_density"
+        ),
         projection_tau_phi=np.array(args.projection_tau_phi),
         projection_tau_lam=np.array(args.projection_tau_lam),
         projection_tau_chi=np.array(args.projection_tau_chi),
