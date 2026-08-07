@@ -285,9 +285,23 @@ def weak_log_amplitude_gradient(
     if delta <= 0.0 or smoothing_length < 0.0:
         raise ValueError("weak-log regularization 설정이 잘못되었습니다.")
     density = cp.real(factor*cp.conj(factor))
-    tiny = cp.asarray(1.0e-30, dtype=density.dtype)
+    # Do not reuse one floor for quantities with different units.  The old
+    # 1e-30 density floor classified physically empty-but-representable FP64
+    # q-lines as unsolved and kept every PCG call running to max_iterations.
+    # Match the CPU solver in double precision; retain safe representable
+    # floors for the non-production float32 path.
+    is_double = np.dtype(model.real_dtype).itemsize >= 8
+    density_floor = cp.asarray(
+        1.0e-300 if is_double else 1.0e-30, dtype=density.dtype
+    )
+    algebra_floor = cp.asarray(
+        1.0e-300 if is_double else 1.0e-30, dtype=density.dtype
+    )
+    scale_floor = cp.asarray(
+        1.0e-30 if is_double else 1.0e-15, dtype=density.dtype
+    )
     peak = cp.max(density, axis=axis, keepdims=True)
-    relative = density/cp.maximum(peak, tiny)
+    relative = density/cp.maximum(peak, density_floor)
     rhs = 0.5*derivative(relative, spacing, axis=axis)
     def apply(values):
         return (
@@ -335,7 +349,7 @@ def weak_log_amplitude_gradient(
         rhs*rhs, axis=axis, keepdims=True,
         dtype=model.reduction_real_dtype,
     )).astype(model.real_dtype, copy=False)
-    scale = cp.maximum(rhs_norm, tiny)
+    scale = cp.maximum(rhs_norm, scale_floor)
     relative_residual = cp.ones_like(scale)
     iterations = 0
     for iterations in range(1, max_iterations+1):
@@ -344,7 +358,7 @@ def weak_log_amplitude_gradient(
             direction*action, axis=axis, keepdims=True,
             dtype=model.reduction_real_dtype,
         ).astype(model.real_dtype, copy=False)
-        alpha = rz/cp.maximum(denominator, tiny)
+        alpha = rz/cp.maximum(denominator, algebra_floor)
         solution += alpha*direction
         residual -= alpha*action
         z = apply_preconditioner(residual)
@@ -352,7 +366,7 @@ def weak_log_amplitude_gradient(
             residual*z, axis=axis, keepdims=True,
             dtype=model.reduction_real_dtype,
         ).astype(model.real_dtype, copy=False)
-        beta = rz_new/cp.maximum(rz, tiny)
+        beta = rz_new/cp.maximum(rz, algebra_floor)
         direction = z+beta*direction
         rz = rz_new
         if iterations % 5 == 0 or iterations == max_iterations:
