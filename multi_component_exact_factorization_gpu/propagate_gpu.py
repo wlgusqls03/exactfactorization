@@ -160,6 +160,7 @@ def run(args):
         product_projection_floor_lam=args.product_projection_floor_lam,
         # 비교 RHS는 check 시점에만 명시적으로 평가한다.
         mask_residual_diagnostics=False,
+        factor_stability_diagnostics=args.verbose_diagnostics,
     )
     phi, lam, chi = to_gpu_factors(phi_cpu, lam_cpu, chi_cpu, gpu_model)
     real_dtype, complex_dtype = numpy_dtypes(args.precision)
@@ -232,41 +233,58 @@ def run(args):
     save_steps = list(range(0, n_steps+1, args.save_every))
     if save_steps[-1] != n_steps:
         save_steps.append(n_steps)
-    nt = len(save_steps)
+    scheduled_nt = len(save_steps)
+    # Reserve one extra frame for the latest finite check-point when a later
+    # step becomes non-finite between regular save times.
+    capacity = scheduled_nt+1
 
     # 저장 배열만 host RAM에 둔다. Production archive는 complex128이다.
-    times_fs = np.empty(nt)
-    phis = np.empty((nt, args.nx, args.nq, args.nR), dtype=complex_dtype)
-    lams = np.empty((nt, args.nq, args.nR), dtype=complex_dtype)
-    chis = np.empty((nt, args.nR), dtype=complex_dtype)
-    avec = np.empty((nt, args.nq, args.nR), dtype=real_dtype)
+    times_fs = np.empty(capacity)
+    saved_step_numbers = np.empty(capacity, dtype=np.int64)
+    phis = np.empty(
+        (capacity, args.nx, args.nq, args.nR), dtype=complex_dtype
+    )
+    lams = np.empty((capacity, args.nq, args.nR), dtype=complex_dtype)
+    chis = np.empty((capacity, args.nR), dtype=complex_dtype)
+    avec = np.empty((capacity, args.nq, args.nR), dtype=real_dtype)
     bvec = np.empty_like(avec)
-    alpha = np.empty((nt, args.nR), dtype=real_dtype)
+    alpha = np.empty((capacity, args.nR), dtype=real_dtype)
     eps1 = np.empty_like(avec)
-    eps2 = np.empty((nt, args.nR), dtype=real_dtype)
+    eps2 = np.empty((capacity, args.nR), dtype=real_dtype)
     theta1 = np.empty_like(avec)
-    theta2 = np.empty((nt, args.nR), dtype=real_dtype)
-    norm = np.empty(nt)
-    pnc = np.empty(nt)
-    projection_correction = np.empty(nt)
+    theta2 = np.empty((capacity, args.nR), dtype=real_dtype)
+    norm = np.empty(capacity)
+    pnc = np.empty(capacity)
+    projection_correction = np.empty(capacity)
     diagnostic_history = {
-        name: np.empty(nt) for name in DIAGNOSTIC_FIELDS
+        name: np.empty(capacity) for name in DIAGNOSTIC_FIELDS
     }
     mask_probability_budgets = np.asarray(
         args.mask_probability_budgets, dtype=float
     )
-    mask_budget_eta_phi = np.empty((nt, len(mask_probability_budgets)))
+    mask_budget_eta_phi = np.empty(
+        (capacity, len(mask_probability_budgets))
+    )
     mask_budget_eta_lam = np.empty_like(mask_budget_eta_phi)
     psis = []
 
-    def save_frame(frame, step, correction=0.0, interval_diagnostics=None):
+    def save_frame(
+        frame, step, correction=0.0, interval_diagnostics=None,
+        factor_state=None,
+    ):
         """저장 시점에만 GPU factor/field를 CPU로 내려 동일 NPZ 형식으로 기록."""
+        state_phi, state_lam, state_chi = (
+            (phi, lam, chi) if factor_state is None else factor_state
+        )
         fields_gpu = instantaneous_functionals(
-            phi, lam, chi, gpu_model, floor=args.ratio_floor,
+            state_phi, state_lam, state_chi, gpu_model,
+            floor=args.ratio_floor,
             mask_threshold_phi=args.mask_threshold_phi,
             mask_threshold_lam=args.mask_threshold_lam,
         )
-        phi_base, lam_base, chi_base = cp.asnumpy(phi), cp.asnumpy(lam), cp.asnumpy(chi)
+        phi_base = cp.asnumpy(state_phi)
+        lam_base = cp.asnumpy(state_lam)
+        chi_base = cp.asnumpy(state_chi)
         rho_R_base = np.abs(chi_base)**2
         rho_qR_base = np.abs(lam_base)**2*rho_R_base[None, :]
         for index, budget in enumerate(mask_probability_budgets):
@@ -291,6 +309,7 @@ def run(args):
         psi = phi_out*lam_out[None, :, :]*chi_out[None, None, :]
 
         times_fs[frame] = time_au/AU_PER_FS
+        saved_step_numbers[frame] = step
         phis[frame], lams[frame], chis[frame] = phi_out, lam_out, chi_out
         avec[frame], bvec[frame] = saved["a"], saved["b"]
         alpha[frame] = saved["alpha"]
@@ -299,13 +318,14 @@ def run(args):
         norm[frame] = np.sum(np.abs(psi)**2, dtype=np.float64)*(
             cpu_model.dx*cpu_model.dq*cpu_model.dR
         )
-        pnc[frame] = float(pnc_error(phi, lam, gpu_model).get())
+        pnc[frame] = float(pnc_error(state_phi, state_lam, gpu_model).get())
         projection_correction[frame] = float(
             correction.get() if hasattr(correction, "get") else correction
         )
         if args.mask_residual_diagnostics and interval_diagnostics is None:
             interval_diagnostics = evaluate_mask_residual_diagnostics(
-                phi, lam, chi, gpu_model, args.ratio_floor,
+                state_phi, state_lam, state_chi,
+                gpu_model, args.ratio_floor,
                 args.mask_threshold_phi, args.mask_threshold_lam,
             )
         saved_diagnostics = merge_maxima(
@@ -331,7 +351,16 @@ def run(args):
     failure_reason = ""
     failure_step = -1
     nonfinite_factors = ()
+    failure_nonfinite_counts = np.zeros(3, dtype=np.int64)
+    failure_max_finite_abs = np.zeros(3, dtype=float)
+    failure_checkpoint_saved = False
     steps_attempted = 0
+    last_finite_step = 0
+    last_finite_phi = phi.copy()
+    last_finite_lam = lam.copy()
+    last_finite_chi = chi.copy()
+    last_finite_correction = cp.asarray(0.0)
+    last_finite_diagnostics = merge_maxima()
     try:
         for step in range(1, n_steps+1):
             steps_attempted = step
@@ -362,7 +391,9 @@ def run(args):
                     time.sleep(delay)
                     throttle_sleep_seconds += delay
                 throttle_chunk_start = None
-            must_save = frame < nt and step == save_steps[frame]
+            must_save = (
+                frame < scheduled_nt and step == save_steps[frame]
+            )
             must_check = (
                 step % max(1, args.check_every) == 0
                 or must_save or step == n_steps
@@ -383,6 +414,33 @@ def run(args):
                     )
                 )
                 print(f"전파 중단 감지: {failure_reason}")
+                for index, factor in enumerate((phi, lam, chi)):
+                    finite = cp.isfinite(factor)
+                    failure_nonfinite_counts[index] = int(
+                        (factor.size-cp.count_nonzero(finite)).get()
+                    )
+                    failure_max_finite_abs[index] = float(cp.max(
+                        cp.where(finite, cp.abs(factor), 0.0)
+                    ).get())
+                if (
+                    last_finite_step > saved_step_numbers[frame-1]
+                    and frame < capacity
+                ):
+                    save_frame(
+                        frame, last_finite_step, last_finite_correction,
+                        last_finite_diagnostics,
+                        factor_state=(
+                            last_finite_phi, last_finite_lam,
+                            last_finite_chi,
+                        ),
+                    )
+                    frame += 1
+                    failure_checkpoint_saved = True
+                    print(
+                        "마지막 finite check-point 추가 저장: "
+                        f"step {last_finite_step} "
+                        f"(t={last_finite_step*args.dt_au/AU_PER_FS:.6f} fs)"
+                    )
                 break
             if must_check and args.mask_residual_diagnostics:
                 mask_diagnostics = evaluate_mask_residual_diagnostics(
@@ -399,6 +457,16 @@ def run(args):
                 frame += 1
                 interval_correction = cp.asarray(0.0)
                 interval_diagnostics = merge_maxima()
+            if must_check:
+                last_finite_step = step
+                last_finite_phi = phi.copy()
+                last_finite_lam = lam.copy()
+                last_finite_chi = chi.copy()
+                last_finite_correction = interval_correction.copy()
+                last_finite_diagnostics = {
+                    name: value.copy()
+                    for name, value in interval_diagnostics.items()
+                }
             if step % max(1, args.progress_every) == 0 or step == n_steps:
                 print(
                     f"step {step:7d}/{n_steps}  "
@@ -415,12 +483,13 @@ def run(args):
     wall_seconds = time.perf_counter()-wall_start
 
     completed = not failure_reason
-    last_saved_step = int(save_steps[frame-1])
+    last_saved_step = int(saved_step_numbers[frame-1])
     # 실패한 GPU state는 archive에 섞지 않는다. 마지막으로 finite 판정을 통과해
     # host에 내려온 frame까지만 잘라서 후처리가 일반 완료 archive와 동일하게
     # 동작하도록 한다.
     nt = frame
     times_fs = times_fs[:nt]
+    saved_step_numbers = saved_step_numbers[:nt]
     phis, lams, chis = phis[:nt], lams[:nt], chis[:nt]
     avec, bvec, alpha = avec[:nt], bvec[:nt], alpha[:nt]
     eps1, eps2 = eps1[:nt], eps2[:nt]
@@ -439,6 +508,14 @@ def run(args):
     diagnostic_history["max_abs_support_gamma_lam_dt"] = (
         diagnostic_history["max_abs_support_gamma_lam"]*args.dt_au
     )
+    for factor_name in ("phi", "lam", "chi"):
+        for statistic in ("support", "weighted_rms"):
+            source = (
+                f"max_{statistic}_rhs_{factor_name}_after_product_projection"
+            )
+            diagnostic_history[source+"_dt"] = (
+                diagnostic_history[source]*args.dt_au
+            )
 
     # Gauge-dependent time connection은 저장된 작은 시간축을 CPU에서 계산한다.
     if nt >= 2:
@@ -526,6 +603,7 @@ def run(args):
         gauge=np.array(gauge_name),
         base_gauge=np.array("parallel_transport_two_level"),
         x=cpu_model.x, q=cpu_model.q, R=cpu_model.R, times_fs=times_fs,
+        saved_steps=saved_step_numbers,
         phi=phis, lambda_wavefunction=lams, chi=chis,
         a=avec, b=bvec, alpha=alpha,
         epsilon_1=eps1, epsilon_2=eps2,
@@ -546,6 +624,10 @@ def run(args):
         failure_detected_step=np.array(failure_step),
         failure_reason=np.array(failure_reason),
         nonfinite_factors=np.asarray(nonfinite_factors, dtype="U16"),
+        failure_nonfinite_counts=failure_nonfinite_counts,
+        failure_max_finite_abs=failure_max_finite_abs,
+        failure_last_finite_check_step=np.array(last_finite_step),
+        failure_checkpoint_saved=np.array(failure_checkpoint_saved),
         args=np.array([vars(args)], dtype=object),
     )
     if args.save_psi:
@@ -565,6 +647,12 @@ def run(args):
         f"failure_detected_step={failure_step}",
         f"failure_reason={failure_reason or 'none'}",
         f"nonfinite_factors={','.join(nonfinite_factors) or 'none'}",
+        "failure_nonfinite_counts="
+        +",".join(str(int(value)) for value in failure_nonfinite_counts),
+        "failure_max_finite_abs="
+        +",".join(f"{value:.12e}" for value in failure_max_finite_abs),
+        f"failure_last_finite_check_step={last_finite_step}",
+        f"failure_checkpoint_saved={int(failure_checkpoint_saved)}",
         f"mask_threshold_phi={args.mask_threshold_phi:.12e}",
         f"mask_threshold_lam={args.mask_threshold_lam:.12e}",
         f"product_projection_floor_phi={args.product_projection_floor_phi:.12e}",
@@ -595,6 +683,19 @@ def run(args):
         "max_support_product_residual_due_to_mask_l2",
         "max_relative_support_product_residual_without_mask",
         "max_relative_support_product_residual_due_to_mask",
+        "max_support_pnc_phi_projection_load",
+        "max_support_pnc_lam_projection_load",
+        "max_weighted_rms_pnc_phi_projection_load",
+        "max_weighted_rms_pnc_lam_projection_load",
+        "max_support_rhs_phi_after_product_projection_dt",
+        "max_support_rhs_lam_after_product_projection_dt",
+        "max_support_rhs_chi_after_product_projection_dt",
+        "max_weighted_rms_rhs_phi_after_product_projection_dt",
+        "max_weighted_rms_rhs_lam_after_product_projection_dt",
+        "max_weighted_rms_rhs_chi_after_product_projection_dt",
+        "max_rk_stage_amplification_phi",
+        "max_rk_stage_amplification_lam",
+        "max_rk_stage_amplification_chi",
     ):
         if name in diagnostic_history:
             status_lines.append(
@@ -657,6 +758,19 @@ def run(args):
         "max_support_product_residual_due_to_mask_l2",
         "max_relative_support_product_residual_without_mask",
         "max_relative_support_product_residual_due_to_mask",
+        "max_support_pnc_phi_projection_load",
+        "max_support_pnc_lam_projection_load",
+        "max_weighted_rms_pnc_phi_projection_load",
+        "max_weighted_rms_pnc_lam_projection_load",
+        "max_support_rhs_phi_after_product_projection_dt",
+        "max_support_rhs_lam_after_product_projection_dt",
+        "max_support_rhs_chi_after_product_projection_dt",
+        "max_weighted_rms_rhs_phi_after_product_projection_dt",
+        "max_weighted_rms_rhs_lam_after_product_projection_dt",
+        "max_weighted_rms_rhs_chi_after_product_projection_dt",
+        "max_rk_stage_amplification_phi",
+        "max_rk_stage_amplification_lam",
+        "max_rk_stage_amplification_chi",
     ):
         if name in diagnostic_history:
             print(f"  {name}: {np.max(diagnostic_history[name]):.3e}")

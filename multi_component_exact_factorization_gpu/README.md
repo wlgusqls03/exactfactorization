@@ -80,6 +80,22 @@ archive의 `max_abs_support_gamma_*`와 `max_abs_support_gamma_*_dt`가 각각
 이 값들과 `max_raw_rate_*`, `max_corrected_rate_*`,
 `pnc_projection_correction`은 각 저장 간격 전체의 최댓값이다.
 
+Factor-level 발산을 분리하기 위해 archive에는 다음 진단도 저장한다.
+큰 factor reduction의 production overhead를 피하기 위해 세부 RHS/PNC 진단은
+`--verbose-diagnostics`를 지정한 실행에서 활성화된다.
+
+- `max_support_pnc_*_projection_load`: 빈 conditional tail을 감쇠한 PNC load
+- `max_weighted_rms_pnc_*_projection_load`: 실제 nuclear density로 평균한 PNC load
+- `max_*_rhs_*_before/after_product_projection`: product projection 전후 factor RHS
+- `max_*_rhs_*_after_product_projection_dt`: 한 step의 dimensionless factor 변화량
+- `max_rk_stage_amplification_*`: RK4의 첫 RHS에 대한 후속 stage RHS 증폭률
+
+전파가 regular save 사이에서 non-finite가 되면 실패 배열 자체를 trajectory에
+섞지 않는다. 대신 마지막 finite check-point를 추가 frame으로 저장하고
+`saved_steps`, `failure_last_finite_check_step`,
+`failure_nonfinite_counts`, `failure_max_finite_abs`를 기록한다. 따라서 실패
+지점에 더 가까운 checkpoint가 필요하면 `--check-every`를 줄이면 된다.
+
 ## 3. CPU/GPU 결과 비교
 
 CPU와 GPU 계산은 `dt`, grid, 초기상태, `save-every`가 완전히 같아야 한다.

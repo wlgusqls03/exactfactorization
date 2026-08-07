@@ -136,6 +136,7 @@ class GPUModel:
     projection_tau_lam: float = 1.0e-10
     projection_tau_chi: float = 1.0e-10
     projection_support_epsilon: float = 1.0e-12
+    factor_stability_diagnostics: bool = False
     kinetic_phase_cache: dict = field(default_factory=dict)
     potential_phase_cache: dict = field(default_factory=dict)
 
@@ -157,6 +158,7 @@ def make_gpu_model(
     product_projection_floor_phi=1.0e-10,
     product_projection_floor_lam=1.0e-10,
     mask_residual_diagnostics=False,
+    factor_stability_diagnostics=False,
 ):
     """CPU model의 고정 Hamiltonian 자료를 현재 GPU로 한 번만 복사한다."""
     real, complex_, reduction_real, reduction_complex = precision_types(precision)
@@ -186,6 +188,7 @@ def make_gpu_model(
         projection_tau_lam=cpu_model.projection_tau_lam,
         projection_tau_chi=cpu_model.projection_tau_chi,
         projection_support_epsilon=cpu_model.projection_support_epsilon,
+        factor_stability_diagnostics=bool(factor_stability_diagnostics),
     )
 
 
@@ -794,12 +797,31 @@ def instantaneous_functionals(
     return result
 
 
-def pnc_project(phi, lam, chi, model):
+def pnc_project(phi, lam, chi, model, *, return_diagnostics=False):
     """두 PNC를 고정밀도 reduction으로 복원하며 full Psi를 보존한다."""
     phi_density = cp.sum(
         cp.real(phi*cp.conj(phi)), axis=0, dtype=model.reduction_real_dtype
     )*model.dx
-    phi_error = cp.max(cp.abs(phi_density-1.0))
+    phi_error_field = cp.abs(phi_density-1.0)
+    phi_error = cp.max(phi_error_field)
+    if return_diagnostics:
+        rho_R_before = cp.real(chi*cp.conj(chi))
+        rho_qR_before = cp.real(lam*cp.conj(lam))*rho_R_before[None, :]
+        support_phi = occupied_support_mask(
+            rho_qR_before, model.product_projection_floor_phi, model
+        )
+        joint_total = cp.maximum(
+            cp.sum(rho_qR_before, dtype=model.reduction_real_dtype)
+            *model.dq*model.dR,
+            cp.asarray(1.0e-300, dtype=model.reduction_real_dtype),
+        )
+        support_phi_error = cp.max(support_phi*phi_error_field)
+        weighted_rms_phi_error = cp.sqrt(
+            cp.sum(
+                rho_qR_before*phi_error_field**2,
+                dtype=model.reduction_real_dtype,
+            )*model.dq*model.dR/joint_total
+        )
     phi_norm = cp.sqrt(phi_density).astype(model.real_dtype, copy=False)
     safe_phi = cp.where(phi_norm > 1.0e-14, phi_norm, 1.0)
     phi = phi/safe_phi[None, :, :]
@@ -808,12 +830,39 @@ def pnc_project(phi, lam, chi, model):
     lam_density = cp.sum(
         cp.real(lam*cp.conj(lam)), axis=0, dtype=model.reduction_real_dtype
     )*model.dq
-    lam_error = cp.max(cp.abs(lam_density-1.0))
+    lam_error_field = cp.abs(lam_density-1.0)
+    lam_error = cp.max(lam_error_field)
+    if return_diagnostics:
+        support_lam = occupied_support_mask(
+            rho_R_before, model.product_projection_floor_lam, model
+        )
+        heavy_total = cp.maximum(
+            cp.sum(rho_R_before, dtype=model.reduction_real_dtype)*model.dR,
+            cp.asarray(1.0e-300, dtype=model.reduction_real_dtype),
+        )
+        support_lam_error = cp.max(support_lam*lam_error_field)
+        weighted_rms_lam_error = cp.sqrt(
+            cp.sum(
+                rho_R_before*lam_error_field**2,
+                dtype=model.reduction_real_dtype,
+            )*model.dR/heavy_total
+        )
     lam_norm = cp.sqrt(lam_density).astype(model.real_dtype, copy=False)
     safe_lam = cp.where(lam_norm > 1.0e-14, lam_norm, 1.0)
     lam = lam/safe_lam[None, :]
     chi = chi*safe_lam
-    return phi, lam, chi, cp.maximum(phi_error, lam_error)
+    result = (phi, lam, chi, cp.maximum(phi_error, lam_error))
+    if not return_diagnostics:
+        return result
+    diagnostics = {
+        "max_pnc_phi_projection_load": phi_error,
+        "max_pnc_lam_projection_load": lam_error,
+        "max_support_pnc_phi_projection_load": support_phi_error,
+        "max_support_pnc_lam_projection_load": support_lam_error,
+        "max_weighted_rms_pnc_phi_projection_load": weighted_rms_phi_error,
+        "max_weighted_rms_pnc_lam_projection_load": weighted_rms_lam_error,
+    }
+    return (*result, diagnostics)
 
 
 def pnc_error(phi, lam, model):
@@ -837,6 +886,12 @@ def project_discrete_product_residual(
     """GPU factor RHS를 periodic full nuclear D2의 nested tangent에 투영."""
     if support_floor_phi < 0.0 or support_floor_lam < 0.0:
         raise ValueError("product projection support floor는 0 이상이어야 합니다.")
+    # The additions below allocate new arrays.  Retaining these references is
+    # therefore enough to compare the factor rates before/after projection
+    # without another full-size copy.
+    dphi_before_projection = dphi
+    dlam_before_projection = dlam
+    dchi_before_projection = dchi
     xi = lam*chi[None, :]
     reuse = getattr(model, "reuse_stage_derivatives", True)
     if reuse:
@@ -975,6 +1030,65 @@ def project_discrete_product_residual(
         )
     effective_residual = target_rhs-corrected_product_rhs
     volume = model.dx*model.dq*model.dR
+
+    def factor_rhs_metrics(rhs_phi, rhs_lam, rhs_chi):
+        """Support maximum and density-weighted RMS factor rates."""
+        phi_local2 = cp.sum(
+            cp.real(rhs_phi*cp.conj(rhs_phi)), axis=0,
+            dtype=model.reduction_real_dtype,
+        )*model.dx
+        lam_local2 = cp.sum(
+            cp.real(rhs_lam*cp.conj(rhs_lam)), axis=0,
+            dtype=model.reduction_real_dtype,
+        )*model.dq
+        joint_norm = cp.maximum(
+            cp.sum(xi_density, dtype=model.reduction_real_dtype)
+            *model.dq*model.dR,
+            cp.asarray(1.0e-300, dtype=model.reduction_real_dtype),
+        )
+        heavy_norm = cp.maximum(
+            cp.sum(chi_density, dtype=model.reduction_real_dtype)*model.dR,
+            cp.asarray(1.0e-300, dtype=model.reduction_real_dtype),
+        )
+        return {
+            "support_phi": cp.sqrt(cp.max(support_phi*phi_local2)),
+            "weighted_phi": cp.sqrt(
+                cp.sum(
+                    xi_density*phi_local2,
+                    dtype=model.reduction_real_dtype,
+                )*model.dq*model.dR/joint_norm
+            ),
+            "support_lam": cp.sqrt(cp.max(support_lam*lam_local2)),
+            "weighted_lam": cp.sqrt(
+                cp.sum(
+                    chi_density*lam_local2,
+                    dtype=model.reduction_real_dtype,
+                )*model.dR/heavy_norm
+            ),
+            "support_chi": cp.max(support_lam*cp.abs(rhs_chi)),
+            "weighted_chi": cp.sqrt(
+                cp.sum(
+                    cp.real(rhs_chi*cp.conj(rhs_chi)),
+                    dtype=model.reduction_real_dtype,
+                )*model.dR/heavy_norm
+            ),
+        }
+
+    if model.factor_stability_diagnostics:
+        rhs_before = factor_rhs_metrics(
+            dphi_before_projection, dlam_before_projection,
+            dchi_before_projection,
+        )
+        rhs_after = factor_rhs_metrics(dphi, dlam, dchi)
+    else:
+        zero_rate = cp.asarray(0.0, dtype=model.reduction_real_dtype)
+        rhs_before = {
+            key: zero_rate for key in (
+                "support_phi", "weighted_phi", "support_lam",
+                "weighted_lam", "support_chi", "weighted_chi",
+            )
+        }
+        rhs_after = rhs_before
 
     def l2(values):
         return cp.sqrt(cp.sum(
@@ -1124,6 +1238,30 @@ def project_discrete_product_residual(
                 support_lam+1.0e-12
             ), dtype=model.reduction_real_dtype,
         )*model.dR),
+        support_rhs_phi_before_product_projection=rhs_before["support_phi"],
+        support_rhs_lam_before_product_projection=rhs_before["support_lam"],
+        support_rhs_chi_before_product_projection=rhs_before["support_chi"],
+        weighted_rms_rhs_phi_before_product_projection=(
+            rhs_before["weighted_phi"]
+        ),
+        weighted_rms_rhs_lam_before_product_projection=(
+            rhs_before["weighted_lam"]
+        ),
+        weighted_rms_rhs_chi_before_product_projection=(
+            rhs_before["weighted_chi"]
+        ),
+        support_rhs_phi_after_product_projection=rhs_after["support_phi"],
+        support_rhs_lam_after_product_projection=rhs_after["support_lam"],
+        support_rhs_chi_after_product_projection=rhs_after["support_chi"],
+        weighted_rms_rhs_phi_after_product_projection=(
+            rhs_after["weighted_phi"]
+        ),
+        weighted_rms_rhs_lam_after_product_projection=(
+            rhs_after["weighted_lam"]
+        ),
+        weighted_rms_rhs_chi_after_product_projection=(
+            rhs_after["weighted_chi"]
+        ),
         relative_product_projection_l2=relative_product_projection_l2,
         relative_support_product_projection_l2=(
             relative_support_product_projection_l2
@@ -1252,6 +1390,59 @@ DIAGNOSTIC_FIELDS = {
     "max_inverse_support_product_correction_chi": (
         "inverse_support_product_correction_chi"
     ),
+    "max_support_rhs_phi_before_product_projection": (
+        "support_rhs_phi_before_product_projection"
+    ),
+    "max_support_rhs_lam_before_product_projection": (
+        "support_rhs_lam_before_product_projection"
+    ),
+    "max_support_rhs_chi_before_product_projection": (
+        "support_rhs_chi_before_product_projection"
+    ),
+    "max_weighted_rms_rhs_phi_before_product_projection": (
+        "weighted_rms_rhs_phi_before_product_projection"
+    ),
+    "max_weighted_rms_rhs_lam_before_product_projection": (
+        "weighted_rms_rhs_lam_before_product_projection"
+    ),
+    "max_weighted_rms_rhs_chi_before_product_projection": (
+        "weighted_rms_rhs_chi_before_product_projection"
+    ),
+    "max_support_rhs_phi_after_product_projection": (
+        "support_rhs_phi_after_product_projection"
+    ),
+    "max_support_rhs_lam_after_product_projection": (
+        "support_rhs_lam_after_product_projection"
+    ),
+    "max_support_rhs_chi_after_product_projection": (
+        "support_rhs_chi_after_product_projection"
+    ),
+    "max_weighted_rms_rhs_phi_after_product_projection": (
+        "weighted_rms_rhs_phi_after_product_projection"
+    ),
+    "max_weighted_rms_rhs_lam_after_product_projection": (
+        "weighted_rms_rhs_lam_after_product_projection"
+    ),
+    "max_weighted_rms_rhs_chi_after_product_projection": (
+        "weighted_rms_rhs_chi_after_product_projection"
+    ),
+    "max_pnc_phi_projection_load": "pnc_phi_projection_load",
+    "max_pnc_lam_projection_load": "pnc_lam_projection_load",
+    "max_support_pnc_phi_projection_load": (
+        "support_pnc_phi_projection_load"
+    ),
+    "max_support_pnc_lam_projection_load": (
+        "support_pnc_lam_projection_load"
+    ),
+    "max_weighted_rms_pnc_phi_projection_load": (
+        "weighted_rms_pnc_phi_projection_load"
+    ),
+    "max_weighted_rms_pnc_lam_projection_load": (
+        "weighted_rms_pnc_lam_projection_load"
+    ),
+    "max_rk_stage_amplification_phi": "rk_stage_amplification_phi",
+    "max_rk_stage_amplification_lam": "rk_stage_amplification_lam",
+    "max_rk_stage_amplification_chi": "rk_stage_amplification_chi",
     "max_weak_log_residual_q_xi": "weak_log_residual_q_xi",
     "max_weak_log_residual_R_xi": "weak_log_residual_R_xi",
     "max_weak_log_residual_R_chi": "weak_log_residual_R_chi",
@@ -1353,8 +1544,27 @@ def rk4_coupled_step(
     phi = phi+dt*(k1p+2*k2p+2*k3p+k4p)/6.0
     lam = lam+dt*(k1l+2*k2l+2*k3l+k4l)/6.0
     chi = chi+dt*(k1c+2*k2c+2*k3c+k4c)/6.0
-    phi, lam, chi, pnc_error = pnc_project(phi, lam, chi, model)
-    diagnostics = merge_maxima(d1, d2, d3, d4)
+    pnc_result = pnc_project(
+        phi, lam, chi, model,
+        return_diagnostics=model.factor_stability_diagnostics,
+    )
+    if model.factor_stability_diagnostics:
+        phi, lam, chi, pnc_error, pnc_diagnostics = pnc_result
+    else:
+        phi, lam, chi, pnc_error = pnc_result
+        pnc_diagnostics = {}
+    diagnostics = merge_maxima(d1, d2, d3, d4, pnc_diagnostics)
+    algebra_floor = cp.asarray(1.0e-300, dtype=model.reduction_real_dtype)
+    for factor_name in ("phi", "lam", "chi"):
+        rhs_key = (
+            f"max_weighted_rms_rhs_{factor_name}_after_product_projection"
+        )
+        stage_peak = cp.maximum(
+            d2[rhs_key], cp.maximum(d3[rhs_key], d4[rhs_key])
+        )
+        diagnostics[f"max_rk_stage_amplification_{factor_name}"] = (
+            stage_peak/cp.maximum(d1[rhs_key], algebra_floor)
+        )
     return phi, lam, chi, pnc_error, diagnostics
 
 
@@ -1369,7 +1579,18 @@ def full_step(
         mask_threshold_lam,
     )
     phi = electronic_split_step(phi, 0.5*dt, model)
-    phi, lam, chi, final_error = pnc_project(phi, lam, chi, model)
+    final_pnc_result = pnc_project(
+        phi, lam, chi, model,
+        return_diagnostics=model.factor_stability_diagnostics,
+    )
+    if model.factor_stability_diagnostics:
+        (
+            phi, lam, chi, final_error, final_pnc_diagnostics
+        ) = final_pnc_result
+    else:
+        phi, lam, chi, final_error = final_pnc_result
+        final_pnc_diagnostics = {}
+    diagnostics = merge_maxima(diagnostics, final_pnc_diagnostics)
     return (
         phi, lam, chi, cp.maximum(first_error, final_error), diagnostics
     )
