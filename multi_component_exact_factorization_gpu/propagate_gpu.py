@@ -123,6 +123,8 @@ def run(args):
         raise ValueError("projection tau는 0 이상이어야 합니다")
     if args.projection_support_epsilon <= 0.0:
         raise ValueError("projection support epsilon은 양수여야 합니다")
+    if args.deep_tail_zero_threshold < 0.0:
+        raise ValueError("--deep-tail-zero-threshold는 0 이상이어야 합니다")
     for name in (
         "mask_threshold_phi", "mask_threshold_lam",
         "product_projection_floor_phi", "product_projection_floor_lam",
@@ -171,6 +173,11 @@ def run(args):
         f"dR={cpu_model.dR:.6f}; hard wall "
         f"{cpu_model.x_left:.3f}..{cpu_model.x_right:.3f}"
     )
+    if args.full_nuclear_range:
+        print(
+            "핵 좌표 범위 실험: q와 R 모두 전자 hard-wall 전체 범위 "
+            f"[{cpu_model.x_left:.3f},{cpu_model.x_right:.3f}) 사용"
+        )
     print(
         "초기 Gaussian: "
         f"q0={args.q0:.4f}, sigma_q={args.proton_sigma:.6f}; "
@@ -184,6 +191,7 @@ def run(args):
         f"ratio_floor={args.ratio_floor:.1e}, "
         f"mask(Phi,Lambda)=({args.mask_threshold_phi:.1e},"
         f"{args.mask_threshold_lam:.1e}), "
+        f"deep_tail_zero={args.deep_tail_zero_threshold:.1e}, "
         "product_floor(Phi,Lambda)="
         f"({args.product_projection_floor_phi:.1e},"
         f"{args.product_projection_floor_lam:.1e})"
@@ -318,7 +326,9 @@ def run(args):
         norm[frame] = np.sum(np.abs(psi)**2, dtype=np.float64)*(
             cpu_model.dx*cpu_model.dq*cpu_model.dR
         )
-        pnc[frame] = float(pnc_error(state_phi, state_lam, gpu_model).get())
+        pnc[frame] = float(
+            pnc_error(state_phi, state_lam, state_chi, gpu_model).get()
+        )
         projection_correction[frame] = float(
             correction.get() if hasattr(correction, "get") else correction
         )
@@ -568,7 +578,7 @@ def run(args):
         spatial_derivative=np.array("periodic_five_point_central_D1_D2"),
         ratio_regularization=np.array(
             args.log_derivative_backend
-            +"_joint_support_mask_on_log_amplitude_gradient_only"
+            +"_amplitude_mask_plus_deep_tail_phase_log_exact_zero"
         ),
         log_derivative_backend=np.array(args.log_derivative_backend),
         weak_log_delta=np.array(args.weak_log_delta),
@@ -584,6 +594,8 @@ def run(args):
         projection_tau_lam=np.array(args.projection_tau_lam),
         projection_tau_chi=np.array(args.projection_tau_chi),
         projection_support_epsilon=np.array(args.projection_support_epsilon),
+        deep_tail_zero_threshold=np.array(args.deep_tail_zero_threshold),
+        full_nuclear_range=np.array(args.full_nuclear_range),
         ratio_floor=np.array(args.ratio_floor),
         mask_threshold_phi=np.array(args.mask_threshold_phi),
         mask_threshold_lam=np.array(args.mask_threshold_lam),
@@ -668,6 +680,10 @@ def run(args):
         "max_abs_full_norm_rate_after_product_projection",
         "max_relative_product_projection_l2",
         "max_relative_support_product_projection_l2",
+        "deep_tail_suppressed_probability_phi",
+        "deep_tail_suppressed_probability_lam",
+        "deep_tail_zero_fraction_phi",
+        "deep_tail_zero_fraction_lam",
         "max_outer_probability_q",
         "max_outer_probability_R",
         "max_relative_psi_wrap_mismatch_q",
@@ -743,6 +759,10 @@ def run(args):
         "max_abs_full_norm_rate_after_product_projection",
         "max_relative_product_projection_l2",
         "max_relative_support_product_projection_l2",
+        "deep_tail_suppressed_probability_phi",
+        "deep_tail_suppressed_probability_lam",
+        "deep_tail_zero_fraction_phi",
+        "deep_tail_zero_fraction_lam",
         "max_outer_probability_q",
         "max_outer_probability_R",
         "max_relative_psi_wrap_mismatch_q",

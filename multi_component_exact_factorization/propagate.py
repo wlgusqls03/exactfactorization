@@ -48,6 +48,14 @@ DIAGNOSTIC_FIELDS = {
     "max_corrected_rate_lam": "corrected_rate_lam",
     "suppressed_probability_phi": "suppressed_probability_phi",
     "suppressed_probability_lam": "suppressed_probability_lam",
+    "deep_tail_suppressed_probability_phi": (
+        "deep_tail_suppressed_probability_phi"
+    ),
+    "deep_tail_suppressed_probability_lam": (
+        "deep_tail_suppressed_probability_lam"
+    ),
+    "deep_tail_zero_fraction_phi": "deep_tail_zero_fraction_phi",
+    "deep_tail_zero_fraction_lam": "deep_tail_zero_fraction_lam",
     "max_raw_logamp_phi": "raw_logamp_phi",
     "max_effective_logamp_phi": "effective_logamp_phi",
     "max_raw_logamp_lam": "raw_logamp_lam",
@@ -299,6 +307,11 @@ def run(args):
         f"dq={model.dq:.6f}, dR={model.dR:.6f}; "
         f"Z_L={args.left_charge:.3f}"
     )
+    if args.full_nuclear_range:
+        print(
+            "핵 좌표 범위 실험: q와 R 모두 전자 hard-wall 전체 범위 "
+            f"[{model.x_left:.3f},{model.x_right:.3f}) 사용"
+        )
     print(
         "초기 independent nuclear Gaussians: "
         f"(q0,R0)=({args.q0:.4f},{args.R0:.4f}), "
@@ -313,7 +326,8 @@ def run(args):
         "product-preserving gamma transfer + discrete product projection; "
         f"ratio_floor={args.ratio_floor:.1e}, "
         f"mask(Phi,Lambda)=({args.mask_threshold_phi:.1e},"
-        f"{args.mask_threshold_lam:.1e})"
+        f"{args.mask_threshold_lam:.1e}), "
+        f"deep_tail_zero={args.deep_tail_zero_threshold:.1e}"
     )
 
     n_steps = int(round(args.t_final_fs*AU_PER_FS/args.dt_au))
@@ -482,7 +496,7 @@ def run(args):
         spatial_derivative=np.array("periodic_five_point_central_D1_D2"),
         ratio_regularization=np.array(
             args.log_derivative_backend
-            +"_joint_support_mask_on_log_amplitude_gradient_only"
+            +"_amplitude_mask_plus_deep_tail_phase_log_exact_zero"
         ),
         log_derivative_backend=np.array(args.log_derivative_backend),
         weak_log_delta=np.array(args.weak_log_delta),
@@ -498,6 +512,8 @@ def run(args):
         projection_tau_lam=np.array(args.projection_tau_lam),
         projection_tau_chi=np.array(args.projection_tau_chi),
         projection_support_epsilon=np.array(args.projection_support_epsilon),
+        deep_tail_zero_threshold=np.array(args.deep_tail_zero_threshold),
+        full_nuclear_range=np.array(args.full_nuclear_range),
         ratio_floor=np.array(args.ratio_floor),
         mask_threshold_phi=np.array(args.mask_threshold_phi),
         mask_threshold_lam=np.array(args.mask_threshold_lam),

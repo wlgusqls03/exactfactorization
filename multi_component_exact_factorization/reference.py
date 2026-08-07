@@ -23,6 +23,7 @@ from .core import (
     add_model_arguments,
     build_model,
     covariant_square,
+    deep_tail_gate,
     electronic_kinetic_step,
     geometric_fields,
     initial_factors,
@@ -160,9 +161,12 @@ def run(args):
         mask_lam = occupied_support_mask(
             np.abs(chis[it])**2, args.mask_threshold_lam
         )
+        tail_gate_lam = deep_tail_gate(
+            np.abs(chis[it])**2, model.deep_tail_zero_threshold
+        )
         base_lam = proton_base_operator(
             lams[it], avec[it], bvec[it], alpha[it],
-            chi_phase_R, chi_logamp_R, mask_lam, model,
+            chi_phase_R, chi_logamp_R, mask_lam, tail_gate_lam, model,
         )
         eps1_complex = regularized_ratio(
             1j*dlam_dt[it]-base_lam+epsilon_2[it][None, :]*lams[it],

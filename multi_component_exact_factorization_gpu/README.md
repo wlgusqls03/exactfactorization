@@ -209,6 +209,36 @@ P = <rho> + delta - ell^2 D2
 수렴한다. 기본 최대 iteration은 안전 여유를 위해 80이지만 residual tolerance를
 만족하면 즉시 종료한다.
 
+### Deep-tail exact-zero gate와 전체 핵 좌표 범위
+
+기본 ``--deep-tail-zero-threshold 1e-12``는 full-Psi에서 계산한 실제 qR/R
+marginal의 상대밀도를 사용한다. 상대밀도 ``1e-13`` 이하는 phase ratio,
+log-amplitude ratio, product inverse correction과 PNC gauge transfer를 정확히
+0으로 만들고, ``1e-11`` 이상은 정확히 1로 보존한다. 그 사이는 log-density
+축의 C2 quintic gate로 연결한다. Vector potential과 factor 자체는 자르지
+않는다. 완전한 기존 동작을 재현하려면 다음 옵션을 쓴다.
+
+```bash
+--deep-tail-zero-threshold 0
+```
+
+q와 R box가 좁아서 생기는 boundary/vector-potential noise를 분리해 검사할
+때는 ``--full-nuclear-range``를 추가할 수 있다. 이 옵션은 q와 R 범위를
+전자 hard-wall 범위 ``[left-position,x-max)``와 같게 만들지만 점 수는 자동으로
+늘리지 않는다. 따라서 동일한 공간 해상도를 유지하려면 점 수도 box 길이에
+맞게 늘려야 하며, direct-grid 메모리 비용이 ``nx*nq*nR``로 증가한다. 먼저
+작은 점 수와 짧은 시간으로 boundary 진단만 수행한 뒤 production에 사용한다.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m \
+  multi_component_exact_factorization_gpu.propagate_gpu \
+  --electronic-representation grid --full-nuclear-range \
+  --deep-tail-zero-threshold 1e-12 \
+  --nx 174 --nq 174 --nR 120 \
+  --dt-au 0.025 --t-final-fs 0.1 --no-render-after \
+  --outdir mcef_full_nuclear_range_smoke
+```
+
 ### Electronic-only Born--Huang backend
 
 ``paper/MCEF_revised.pdf``의 Eqs. (71)--(86)에 따라 ``Phi``만 local BO

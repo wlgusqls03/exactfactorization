@@ -9,11 +9,14 @@ import numpy as np
 from .gpu_core import (
     cp,
     covariant_square,
+    deep_tail_gate,
     derivative,
+    gated_values,
     logarithmic_components,
     occupied_support_mask,
     proton_base_operator,
     remove_local_norm_generator,
+    suppressed_probability,
     weak_log_amplitude_gradient,
 )
 
@@ -98,20 +101,36 @@ def pnc_project_coefficients(coefficients, lam, chi, model):
         dtype=model.reduction_real_dtype,
     )
     c_error = cp.max(cp.abs(c_norm2-1.0))
+    physical_qR = c_norm2*cp.real(
+        (lam*chi[None, :])*cp.conj(lam*chi[None, :])
+    )
+    gate_c = deep_tail_gate(
+        physical_qR, model.deep_tail_zero_threshold, model
+    )
     c_norm = cp.sqrt(c_norm2).astype(model.real_dtype, copy=False)
     safe_c = cp.where(c_norm > 1.0e-14, c_norm, 1.0)
-    coefficients = coefficients/safe_c[None, :, :]
-    lam = lam*safe_c
+    scale_c = cp.exp(gated_values(cp.log(safe_c), gate_c))
+    c_applied_error = cp.max(cp.abs(scale_c**2-1.0))
+    coefficients = coefficients/scale_c[None, :, :]
+    lam = lam*scale_c
     lam_norm2 = cp.sum(
         cp.real(lam*cp.conj(lam)), axis=0,
         dtype=model.reduction_real_dtype,
     )*model.dq
     lam_error = cp.max(cp.abs(lam_norm2-1.0))
+    physical_R = cp.sum(
+        physical_qR, axis=0, dtype=model.reduction_real_dtype
+    )*model.dq
+    gate_lam = deep_tail_gate(
+        physical_R, model.deep_tail_zero_threshold, model
+    )
     lam_norm = cp.sqrt(lam_norm2).astype(model.real_dtype, copy=False)
     safe_lam = cp.where(lam_norm > 1.0e-14, lam_norm, 1.0)
-    lam = lam/safe_lam[None, :]
-    chi = chi*safe_lam
-    return coefficients, lam, chi, cp.maximum(c_error, lam_error)
+    scale_lam = cp.exp(gated_values(cp.log(safe_lam), gate_lam))
+    lam_applied_error = cp.max(cp.abs(scale_lam**2-1.0))
+    lam = lam/scale_lam[None, :]
+    chi = chi*scale_lam
+    return coefficients, lam, chi, cp.maximum(c_applied_error, lam_applied_error)
 
 
 def instantaneous_functionals_bh(
@@ -141,10 +160,24 @@ def instantaneous_functionals_bh(
     ).real*model.dq
     alpha = alpha.astype(model.real_dtype, copy=False)
 
-    rho_R = cp.real(chi*cp.conj(chi))
-    rho_qR = cp.real(lam*cp.conj(lam))*rho_R[None, :]
+    c_norm2 = cp.sum(
+        cp.real(coefficients*cp.conj(coefficients)), axis=0,
+        dtype=model.reduction_real_dtype,
+    )
+    rho_qR = c_norm2*cp.real(
+        (lam*chi[None, :])*cp.conj(lam*chi[None, :])
+    )
+    rho_R = cp.sum(
+        rho_qR, axis=0, dtype=model.reduction_real_dtype
+    )*model.dq
     mask_phi = occupied_support_mask(rho_qR, mask_threshold_phi, model)
     mask_lam = occupied_support_mask(rho_R, mask_threshold_lam, model)
+    tail_gate_phi = deep_tail_gate(
+        rho_qR, model.deep_tail_zero_threshold, model
+    )
+    tail_gate_lam = deep_tail_gate(
+        rho_R, model.deep_tail_zero_threshold, model
+    )
     p_q_lam = -1j*derivative(lam, model.dq, axis=0)
     lam_phase_q, lam_logamp_q = logarithmic_components(
         lam, model.dq, axis=0, model=model, numerical_floor=ratio_floor,
@@ -208,9 +241,13 @@ def instantaneous_functionals_bh(
         +1j*derivative(b, model.dR, axis=1)[None, :, :]*coefficients
         +2j*b[None, :, :]*gradient_R+b[None, :, :]**2*coefficients
     )
-    coefficient_q = lam_phase_q+a-1j*mask_phi*xi_logamp_q
+    coefficient_q = (
+        gated_values(lam_phase_q, tail_gate_phi)+a
+        -1j*mask_phi*gated_values(xi_logamp_q, tail_gate_phi)
+    )
     coefficient_R = (
-        lam_phase_R+chi_phase_R[None, :]+b-1j*mask_phi*xi_logamp_R
+        gated_values(lam_phase_R+chi_phase_R[None, :], tail_gate_phi)+b
+        -1j*mask_phi*gated_values(xi_logamp_R, tail_gate_phi)
     )
     u_c = (
         0.5*p2_q+coefficient_q[None, :, :]*p_q
@@ -227,7 +264,8 @@ def instantaneous_functionals_bh(
     ).real.astype(model.real_dtype, copy=False)
 
     base_lam = proton_base_operator(
-        lam, a, b, alpha, chi_phase_R, chi_logamp_used, mask_lam, model
+        lam, a, b, alpha, chi_phase_R, chi_logamp_used, mask_lam,
+        tail_gate_lam, model
     )
     hpr_raw = base_lam+epsilon_1*lam+1j*gamma_c*lam
     hpr, gamma_lam, raw_rate_lam, corrected_rate_lam = (
@@ -240,7 +278,9 @@ def instantaneous_functionals_bh(
     return dict(
         a=a, b=b, alpha=alpha, epsilon_1=epsilon_1, epsilon_2=epsilon_2,
         u_c=u_c, hpr_lam=hpr, gamma_c=gamma_c, gamma_lam=gamma_lam,
-        mask_phi=mask_phi, mask_lam=mask_lam, p_R_chi=p_R_chi,
+        mask_phi=mask_phi, mask_lam=mask_lam,
+        tail_gate_phi=tail_gate_phi, tail_gate_lam=tail_gate_lam,
+        p_R_chi=p_R_chi,
         raw_rate_phi=raw_rate_c, corrected_rate_phi=corrected_rate_c,
         raw_rate_lam=raw_rate_lam, corrected_rate_lam=corrected_rate_lam,
         raw_logamp_phi=cp.maximum(
@@ -248,8 +288,17 @@ def instantaneous_functionals_bh(
             cp.abs(lam_logamp_R)+cp.abs(chi_logamp_R)[None, :],
         ),
         effective_logamp_phi=cp.maximum(
-            cp.abs(mask_phi*xi_logamp_q), cp.abs(mask_phi*xi_logamp_R)
+            cp.abs(mask_phi*gated_values(xi_logamp_q, tail_gate_phi)),
+            cp.abs(mask_phi*gated_values(xi_logamp_R, tail_gate_phi)),
         ),
+        deep_tail_suppressed_probability_phi=suppressed_probability(
+            rho_qR, tail_gate_phi, model.dq*model.dR, model
+        ),
+        deep_tail_suppressed_probability_lam=suppressed_probability(
+            rho_R, tail_gate_lam, model.dR, model
+        ),
+        deep_tail_zero_fraction_phi=cp.mean(tail_gate_phi == 0.0),
+        deep_tail_zero_fraction_lam=cp.mean(tail_gate_lam == 0.0),
         **weak_diag,
     )
 
@@ -271,13 +320,24 @@ def project_product_residual_bh(
         )/model.heavy_mass
     )
     residual = target-product_rhs
+    xi_density = cp.real(xi*cp.conj(xi))
+    c_norm2 = cp.sum(
+        cp.real(coefficients*cp.conj(coefficients)), axis=0,
+        dtype=model.reduction_real_dtype,
+    )
+    physical_qR = c_norm2*xi_density
+    tail_gate_phi = deep_tail_gate(
+        physical_qR, model.deep_tail_zero_threshold, model
+    )
+    tiny = cp.asarray(1.0e-30, dtype=xi_density.dtype)
     delta_xi = cp.sum(
         cp.conj(coefficients)*residual, axis=0,
         dtype=model.reduction_complex_dtype,
-    ).astype(model.complex_dtype, copy=False)
+    )/cp.maximum(c_norm2, tiny)
+    delta_xi = gated_values(
+        delta_xi.astype(model.complex_dtype, copy=False), tail_gate_phi
+    )
     perp_c = residual-coefficients*delta_xi[None, :, :]
-    xi_density = cp.real(xi*cp.conj(xi))
-    tiny = cp.asarray(1.0e-30, dtype=xi_density.dtype)
     xi_peak = cp.maximum(cp.max(xi_density), tiny)
     support = xi_density/(
         xi_density+model.product_projection_floor_phi*xi_peak+tiny
@@ -293,13 +353,27 @@ def project_product_residual_bh(
         inverse_xi = cp.conj(xi)/(
             xi_density+model.product_projection_floor_phi*xi_peak
         )
+    inverse_xi = gated_values(inverse_xi, tail_gate_phi)
     delta_c = perp_c*inverse_xi[None, :, :]
+    chi_density = cp.real(chi*cp.conj(chi))
+    physical_R = cp.sum(
+        physical_qR, axis=0, dtype=model.reduction_real_dtype
+    )*model.dq
+    tail_gate_lam = deep_tail_gate(
+        physical_R, model.deep_tail_zero_threshold, model
+    )
+    lam_norm2 = cp.sum(
+        cp.real(lam*cp.conj(lam)), axis=0,
+        dtype=model.reduction_real_dtype,
+    )*model.dq
     parallel_chi = cp.sum(
         cp.conj(lam)*delta_xi, axis=0,
         dtype=model.reduction_complex_dtype,
-    )*model.dq
+    )*model.dq/cp.maximum(lam_norm2, tiny)
+    parallel_chi = gated_values(
+        parallel_chi.astype(model.complex_dtype, copy=False), tail_gate_lam
+    )
     perp_lam = delta_xi-lam*parallel_chi[None, :]
-    chi_density = cp.real(chi*cp.conj(chi))
     chi_peak = cp.maximum(cp.max(chi_density), tiny)
     support_R = chi_density/(
         chi_density+model.product_projection_floor_lam*chi_peak+tiny
@@ -317,12 +391,13 @@ def project_product_residual_bh(
                 support_R+model.projection_support_epsilon
             )+tiny
         )
-        delta_chi = chi_shrink*parallel_chi
+        delta_chi = gated_values(chi_shrink, tail_gate_lam)*parallel_chi
     else:
         inverse_chi = cp.conj(chi)/(
             chi_density+model.product_projection_floor_lam*chi_peak
         )
-        delta_chi = parallel_chi
+        delta_chi = gated_values(parallel_chi, tail_gate_lam)
+    inverse_chi = gated_values(inverse_chi, tail_gate_lam)
     delta_lam = perp_lam*inverse_chi[None, :]
     dc = dc+delta_c
     dlam = dlam+delta_lam
@@ -397,15 +472,23 @@ def coupled_rhs_bh(
         max_abs_gamma_phi=cp.max(cp.abs(fields["gamma_c"])),
         max_abs_gamma_lam=cp.max(cp.abs(fields["gamma_lam"])),
         max_abs_support_gamma_phi=cp.max(cp.abs(
-            fields["mask_phi"]*fields["gamma_c"]
+            fields["tail_gate_phi"]*fields["mask_phi"]*fields["gamma_c"]
         )),
         max_abs_support_gamma_lam=cp.max(cp.abs(
-            fields["mask_lam"]*fields["gamma_lam"]
+            fields["tail_gate_lam"]*fields["mask_lam"]*fields["gamma_lam"]
         )),
         max_raw_logamp_phi=cp.max(cp.abs(fields["raw_logamp_phi"])),
         max_effective_logamp_phi=cp.max(cp.abs(
             fields["effective_logamp_phi"]
         )),
+        deep_tail_suppressed_probability_phi=fields[
+            "deep_tail_suppressed_probability_phi"
+        ],
+        deep_tail_suppressed_probability_lam=fields[
+            "deep_tail_suppressed_probability_lam"
+        ],
+        deep_tail_zero_fraction_phi=fields["deep_tail_zero_fraction_phi"],
+        deep_tail_zero_fraction_lam=fields["deep_tail_zero_fraction_lam"],
     )
     for key in (
         "weak_log_residual_q_xi", "weak_log_residual_R_xi",

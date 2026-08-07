@@ -136,6 +136,7 @@ class GPUModel:
     projection_tau_lam: float = 1.0e-10
     projection_tau_chi: float = 1.0e-10
     projection_support_epsilon: float = 1.0e-12
+    deep_tail_zero_threshold: float = 1.0e-12
     factor_stability_diagnostics: bool = False
     kinetic_phase_cache: dict = field(default_factory=dict)
     potential_phase_cache: dict = field(default_factory=dict)
@@ -188,6 +189,7 @@ def make_gpu_model(
         projection_tau_lam=cpu_model.projection_tau_lam,
         projection_tau_chi=cpu_model.projection_tau_chi,
         projection_support_epsilon=cpu_model.projection_support_epsilon,
+        deep_tail_zero_threshold=cpu_model.deep_tail_zero_threshold,
         factor_stability_diagnostics=bool(factor_stability_diagnostics),
     )
 
@@ -404,6 +406,37 @@ def occupied_support_mask(density, relative_threshold, model):
     )
 
 
+def deep_tail_gate(density, relative_threshold, model):
+    """Exact-zero/C2 support gate using relative physical density."""
+    if relative_threshold < 0.0:
+        raise ValueError("deep-tail zero threshold는 0 이상이어야 합니다.")
+    if relative_threshold == 0.0:
+        return cp.ones_like(density, dtype=model.real_dtype)
+    tiny = cp.asarray(1.0e-300, dtype=model.reduction_real_dtype)
+    peak = cp.maximum(cp.max(density), tiny)
+    relative = density/peak
+    lower = relative_threshold/10.0
+    upper = relative_threshold*10.0
+    gate = cp.zeros_like(relative, dtype=model.real_dtype)
+    gate[relative >= upper] = 1.0
+    transition = (relative > lower) & (relative < upper)
+    coordinate = cp.where(
+        transition,
+        cp.log(cp.maximum(relative, tiny)/lower)/cp.log(upper/lower),
+        0.0,
+    )
+    smooth = coordinate**3*(10.0+coordinate*(-15.0+6.0*coordinate))
+    gate = cp.where(transition, smooth, gate)
+    return gate.astype(model.real_dtype, copy=False)
+
+
+def gated_values(values, gate):
+    """Apply a gate without ever evaluating 0*Inf in the exact-zero tail."""
+    result = cp.zeros_like(values)
+    cp.multiply(values, gate, out=result, where=gate > 0.0)
+    return result
+
+
 def suppressed_probability(density, mask, volume, model):
     """Support mask가 감쇠한 정규화 probability mass."""
     total = cp.sum(density, dtype=model.reduction_real_dtype)*volume
@@ -551,7 +584,8 @@ def geometric_fields(phi, lam, model, return_momenta=False):
 
 
 def proton_base_operator(
-    lam, a, b, alpha, chi_phase_R, chi_logamp_R, mask_lam, model,
+    lam, a, b, alpha, chi_phase_R, chi_logamp_R, mask_lam, tail_gate_lam,
+    model,
     p_q_lam=None, p_R_lam=None, return_unmasked=False,
 ):
     """epsilon_1을 제외한 proton-heavy Hamiltonian을 Lambda에 적용."""
@@ -569,7 +603,8 @@ def proton_base_operator(
         momentum_field=p_R_lam,
     )
     coefficient = (
-        chi_phase_R+alpha-1j*mask_lam*chi_logamp_R
+        gated_values(chi_phase_R, tail_gate_lam)+alpha
+        -1j*mask_lam*gated_values(chi_logamp_R, tail_gate_lam)
     ).astype(model.complex_dtype, copy=False)
     coupling = (
         0.5*dplus_R2+coefficient[None, :]*dplus_R
@@ -578,7 +613,8 @@ def proton_base_operator(
     if not return_unmasked:
         return masked
     coefficient_unmasked = (
-        chi_phase_R+alpha-1j*chi_logamp_R
+        gated_values(chi_phase_R, tail_gate_lam)+alpha
+        -1j*gated_values(chi_logamp_R, tail_gate_lam)
     ).astype(model.complex_dtype, copy=False)
     unmasked = proton_kinetic+(
         0.5*dplus_R2+coefficient_unmasked[None, :]*dplus_R
@@ -605,10 +641,24 @@ def instantaneous_functionals(
         a, b, alpha = geometric_fields(phi, lam, model)
         p_q_phi = p_R_phi = p_q_lam = p_R_lam = None
 
-    rho_R = cp.real(chi*cp.conj(chi))
-    rho_qR = cp.real(lam*cp.conj(lam))*rho_R[None, :]
+    phi_norm2 = cp.sum(
+        cp.real(phi*cp.conj(phi)), axis=0,
+        dtype=model.reduction_real_dtype,
+    )*model.dx
+    rho_qR = phi_norm2*cp.real(
+        (lam*chi[None, :])*cp.conj(lam*chi[None, :])
+    )
+    rho_R = cp.sum(
+        rho_qR, axis=0, dtype=model.reduction_real_dtype
+    )*model.dq
     mask_phi = occupied_support_mask(rho_qR, mask_threshold_phi, model)
     mask_lam = occupied_support_mask(rho_R, mask_threshold_lam, model)
+    tail_gate_phi = deep_tail_gate(
+        rho_qR, model.deep_tail_zero_threshold, model
+    )
+    tail_gate_lam = deep_tail_gate(
+        rho_R, model.deep_tail_zero_threshold, model
+    )
     lam_phase_q, lam_logamp_q = logarithmic_components(
         lam, model.dq, axis=0, model=model, numerical_floor=floor,
         momentum_factor=p_q_lam,
@@ -665,7 +715,8 @@ def instantaneous_functionals(
         momentum_field=p_q_phi,
     )
     coefficient_q = (
-        lam_phase_q+a-1j*mask_phi*xi_logamp_q
+        gated_values(lam_phase_q, tail_gate_phi)+a
+        -1j*mask_phi*gated_values(xi_logamp_q, tail_gate_phi)
     ).astype(model.complex_dtype, copy=False)
     u_q_phi = (
         0.5*dminus_q2+coefficient_q[None, :, :]*dminus_q
@@ -681,8 +732,8 @@ def instantaneous_functionals(
         momentum_field=p_R_phi,
     )
     coefficient_R = (
-        chi_phase_R[None, :]+lam_phase_R+b
-        -1j*mask_phi*xi_logamp_R
+        gated_values(chi_phase_R[None, :]+lam_phase_R, tail_gate_phi)+b
+        -1j*mask_phi*gated_values(xi_logamp_R, tail_gate_phi)
     ).astype(model.complex_dtype, copy=False)
     u_R_phi = (
         0.5*dminus_R2
@@ -702,7 +753,8 @@ def instantaneous_functionals(
     )*model.dx
 
     base_result = proton_base_operator(
-        lam, a, b, alpha, chi_phase_R, chi_logamp_R_used, mask_lam, model,
+        lam, a, b, alpha, chi_phase_R, chi_logamp_R_used, mask_lam,
+        tail_gate_lam, model,
         p_q_lam=p_q_lam, p_R_lam=p_R_lam,
         return_unmasked=include_unmasked,
     )
@@ -728,37 +780,49 @@ def instantaneous_functionals(
         # 다시 계산하지 않도록 한 stage 안에서만 재사용한다.
         _p_R_chi=p_R_chi,
         gamma_phi=gamma_phi, gamma_lam=gamma_lam,
-        support_gamma_phi=mask_phi*gamma_phi,
-        support_gamma_lam=mask_lam*gamma_lam,
+        support_gamma_phi=tail_gate_phi*mask_phi*gamma_phi,
+        support_gamma_lam=tail_gate_lam*mask_lam*gamma_lam,
         raw_rate_phi=raw_rate_phi, raw_rate_lam=raw_rate_lam,
         corrected_rate_phi=corrected_rate_phi,
         corrected_rate_lam=corrected_rate_lam,
         mask_phi=mask_phi, mask_lam=mask_lam,
+        tail_gate_phi=tail_gate_phi, tail_gate_lam=tail_gate_lam,
         suppressed_probability_phi=suppressed_probability(
             rho_qR, mask_phi, model.dq*model.dR, model
         ),
         suppressed_probability_lam=suppressed_probability(
             rho_R, mask_lam, model.dR, model
         ),
+        deep_tail_suppressed_probability_phi=suppressed_probability(
+            rho_qR, tail_gate_phi, model.dq*model.dR, model
+        ),
+        deep_tail_suppressed_probability_lam=suppressed_probability(
+            rho_R, tail_gate_lam, model.dR, model
+        ),
+        deep_tail_zero_fraction_phi=cp.mean(tail_gate_phi == 0.0),
+        deep_tail_zero_fraction_lam=cp.mean(tail_gate_lam == 0.0),
         raw_logamp_phi=cp.maximum(
             cp.abs(lam_logamp_q),
             cp.abs(lam_logamp_R)+cp.abs(chi_logamp_R)[None, :],
         ),
         effective_logamp_phi=cp.maximum(
-            cp.abs(mask_phi*xi_logamp_q),
-            cp.abs(mask_phi*xi_logamp_R),
+            cp.abs(mask_phi*gated_values(xi_logamp_q, tail_gate_phi)),
+            cp.abs(mask_phi*gated_values(xi_logamp_R, tail_gate_phi)),
         ),
         raw_logamp_lam=cp.abs(chi_logamp_R),
-        effective_logamp_lam=cp.abs(mask_lam*chi_logamp_R_used),
+        effective_logamp_lam=cp.abs(
+            mask_lam*gated_values(chi_logamp_R_used, tail_gate_lam)
+        ),
         **weak_diagnostics,
     )
     if include_unmasked:
         coefficient_q_unmasked = (
-            lam_phase_q+a-1j*xi_logamp_q
+            gated_values(lam_phase_q, tail_gate_phi)+a
+            -1j*gated_values(xi_logamp_q, tail_gate_phi)
         ).astype(model.complex_dtype, copy=False)
         coefficient_R_unmasked = (
-            chi_phase_R[None, :]+lam_phase_R+b
-            -1j*xi_logamp_R
+            gated_values(chi_phase_R[None, :]+lam_phase_R, tail_gate_phi)+b
+            -1j*gated_values(xi_logamp_R, tail_gate_phi)
         ).astype(model.complex_dtype, copy=False)
         u_phi_unmasked_raw = (
             0.5*dminus_q2
@@ -804,9 +868,17 @@ def pnc_project(phi, lam, chi, model, *, return_diagnostics=False):
     )*model.dx
     phi_error_field = cp.abs(phi_density-1.0)
     phi_error = cp.max(phi_error_field)
+    physical_qR = phi_density*cp.real(
+        (lam*chi[None, :])*cp.conj(lam*chi[None, :])
+    )
+    gate_phi = deep_tail_gate(
+        physical_qR, model.deep_tail_zero_threshold, model
+    )
     if return_diagnostics:
-        rho_R_before = cp.real(chi*cp.conj(chi))
-        rho_qR_before = cp.real(lam*cp.conj(lam))*rho_R_before[None, :]
+        rho_qR_before = physical_qR
+        rho_R_before = cp.sum(
+            physical_qR, axis=0, dtype=model.reduction_real_dtype
+        )*model.dq
         support_phi = occupied_support_mask(
             rho_qR_before, model.product_projection_floor_phi, model
         )
@@ -824,14 +896,22 @@ def pnc_project(phi, lam, chi, model, *, return_diagnostics=False):
         )
     phi_norm = cp.sqrt(phi_density).astype(model.real_dtype, copy=False)
     safe_phi = cp.where(phi_norm > 1.0e-14, phi_norm, 1.0)
-    phi = phi/safe_phi[None, :, :]
-    lam = lam*safe_phi
+    phi_scale = cp.exp(gated_values(cp.log(safe_phi), gate_phi))
+    phi_applied_error = cp.max(cp.abs(phi_scale**2-1.0))
+    phi = phi/phi_scale[None, :, :]
+    lam = lam*phi_scale
 
     lam_density = cp.sum(
         cp.real(lam*cp.conj(lam)), axis=0, dtype=model.reduction_real_dtype
     )*model.dq
     lam_error_field = cp.abs(lam_density-1.0)
     lam_error = cp.max(lam_error_field)
+    physical_R = cp.sum(
+        physical_qR, axis=0, dtype=model.reduction_real_dtype
+    )*model.dq
+    gate_lam = deep_tail_gate(
+        physical_R, model.deep_tail_zero_threshold, model
+    )
     if return_diagnostics:
         support_lam = occupied_support_mask(
             rho_R_before, model.product_projection_floor_lam, model
@@ -849,14 +929,20 @@ def pnc_project(phi, lam, chi, model, *, return_diagnostics=False):
         )
     lam_norm = cp.sqrt(lam_density).astype(model.real_dtype, copy=False)
     safe_lam = cp.where(lam_norm > 1.0e-14, lam_norm, 1.0)
-    lam = lam/safe_lam[None, :]
-    chi = chi*safe_lam
-    result = (phi, lam, chi, cp.maximum(phi_error, lam_error))
+    lam_scale = cp.exp(gated_values(cp.log(safe_lam), gate_lam))
+    lam_applied_error = cp.max(cp.abs(lam_scale**2-1.0))
+    lam = lam/lam_scale[None, :]
+    chi = chi*lam_scale
+    result = (
+        phi, lam, chi, cp.maximum(phi_applied_error, lam_applied_error)
+    )
     if not return_diagnostics:
         return result
     diagnostics = {
-        "max_pnc_phi_projection_load": phi_error,
-        "max_pnc_lam_projection_load": lam_error,
+        "max_pnc_phi_projection_load": phi_applied_error,
+        "max_pnc_lam_projection_load": lam_applied_error,
+        "max_raw_pnc_phi_norm_error": phi_error,
+        "max_raw_pnc_lam_norm_error": lam_error,
         "max_support_pnc_phi_projection_load": support_phi_error,
         "max_support_pnc_lam_projection_load": support_lam_error,
         "max_weighted_rms_pnc_phi_projection_load": weighted_rms_phi_error,
@@ -865,16 +951,29 @@ def pnc_project(phi, lam, chi, model, *, return_diagnostics=False):
     return (*result, diagnostics)
 
 
-def pnc_error(phi, lam, model):
-    """현재 저장 factor의 두 PNC 최대 오차를 GPU scalar로 반환한다."""
+def pnc_error(phi, lam, chi, model):
+    """현재 저장 factor의 occupied-support PNC 최대 오차."""
     phi_density = cp.sum(
         cp.real(phi*cp.conj(phi)), axis=0, dtype=model.reduction_real_dtype
     )*model.dx
     lam_density = cp.sum(
         cp.real(lam*cp.conj(lam)), axis=0, dtype=model.reduction_real_dtype
     )*model.dq
+    physical_qR = phi_density*cp.real(
+        (lam*chi[None, :])*cp.conj(lam*chi[None, :])
+    )
+    physical_R = cp.sum(
+        physical_qR, axis=0, dtype=model.reduction_real_dtype
+    )*model.dq
+    gate_phi = deep_tail_gate(
+        physical_qR, model.deep_tail_zero_threshold, model
+    )
+    gate_lam = deep_tail_gate(
+        physical_R, model.deep_tail_zero_threshold, model
+    )
     return cp.maximum(
-        cp.max(cp.abs(phi_density-1.0)), cp.max(cp.abs(lam_density-1.0))
+        cp.max(gate_phi*cp.abs(phi_density-1.0)),
+        cp.max(gate_lam*cp.abs(lam_density-1.0)),
     )
 
 
@@ -937,14 +1036,19 @@ def project_discrete_product_residual(
         dtype=model.reduction_real_dtype,
     )*model.dx
     phi_floor = cp.asarray(1.0e-14, dtype=phi_norm2.dtype)
+    xi_density = cp.real(xi*cp.conj(xi))
+    physical_qR = phi_norm2*xi_density
+    tail_gate_phi = deep_tail_gate(
+        physical_qR, model.deep_tail_zero_threshold, model
+    )
     delta_xi = cp.sum(
         cp.conj(phi)*residual, axis=0,
         dtype=model.reduction_complex_dtype,
     )*model.dx/cp.maximum(phi_norm2, phi_floor)
     delta_xi = delta_xi.astype(model.complex_dtype, copy=False)
+    delta_xi = gated_values(delta_xi, tail_gate_phi)
     perpendicular_phi = residual-phi*delta_xi[None, :, :]
 
-    xi_density = cp.real(xi*cp.conj(xi))
     tiny = cp.asarray(1.0e-30, dtype=xi_density.dtype)
     xi_peak = cp.maximum(cp.max(xi_density), tiny)
     projection_backend = model.product_projection_backend
@@ -970,17 +1074,25 @@ def project_discrete_product_residual(
         )
     else:
         raise ValueError(f"지원하지 않는 product projection: {projection_backend}")
+    inverse_xi = gated_values(inverse_xi, tail_gate_phi)
     delta_phi = perpendicular_phi*inverse_xi[None, :, :]
 
     lam_norm2 = cp.sum(
         cp.real(lam*cp.conj(lam)), axis=0,
         dtype=model.reduction_real_dtype,
     )*model.dq
+    physical_R = cp.sum(
+        physical_qR, axis=0, dtype=model.reduction_real_dtype
+    )*model.dq
+    tail_gate_lam = deep_tail_gate(
+        physical_R, model.deep_tail_zero_threshold, model
+    )
     parallel_chi = cp.sum(
         cp.conj(lam)*delta_xi, axis=0,
         dtype=model.reduction_complex_dtype,
     )*model.dq/cp.maximum(lam_norm2, phi_floor)
     parallel_chi = parallel_chi.astype(model.complex_dtype, copy=False)
+    parallel_chi = gated_values(parallel_chi, tail_gate_lam)
     # Strong tangent gauge: the parallel chi block and perpendicular Lambda
     # block form the structured simultaneous minimum-norm decomposition.
     perpendicular_lam = delta_xi-lam*parallel_chi[None, :]
@@ -1001,7 +1113,7 @@ def project_discrete_product_residual(
             +model.projection_tau_chi/(support_lam+support_epsilon)
             +tiny
         )
-        delta_chi = (chi_shrink*parallel_chi).astype(
+        delta_chi = (gated_values(chi_shrink, tail_gate_lam)*parallel_chi).astype(
             model.complex_dtype, copy=False
         )
     else:
@@ -1011,7 +1123,8 @@ def project_discrete_product_residual(
         inverse_chi = cp.conj(chi)/(
             chi_density+support_floor_lam*chi_peak
         )
-        delta_chi = parallel_chi
+        delta_chi = gated_values(parallel_chi, tail_gate_lam)
+    inverse_chi = gated_values(inverse_chi, tail_gate_lam)
     delta_lam = perpendicular_lam*inverse_chi[None, :]
 
     dphi = (dphi+delta_phi).astype(model.complex_dtype, copy=False)
@@ -1362,6 +1475,14 @@ DIAGNOSTIC_FIELDS = {
     "max_corrected_rate_lam": "corrected_rate_lam",
     "suppressed_probability_phi": "suppressed_probability_phi",
     "suppressed_probability_lam": "suppressed_probability_lam",
+    "deep_tail_suppressed_probability_phi": (
+        "deep_tail_suppressed_probability_phi"
+    ),
+    "deep_tail_suppressed_probability_lam": (
+        "deep_tail_suppressed_probability_lam"
+    ),
+    "deep_tail_zero_fraction_phi": "deep_tail_zero_fraction_phi",
+    "deep_tail_zero_fraction_lam": "deep_tail_zero_fraction_lam",
     "max_raw_logamp_phi": "raw_logamp_phi",
     "max_effective_logamp_phi": "effective_logamp_phi",
     "max_raw_logamp_lam": "raw_logamp_lam",
@@ -1428,6 +1549,8 @@ DIAGNOSTIC_FIELDS = {
     ),
     "max_pnc_phi_projection_load": "pnc_phi_projection_load",
     "max_pnc_lam_projection_load": "pnc_lam_projection_load",
+    "max_raw_pnc_phi_norm_error": "raw_pnc_phi_norm_error",
+    "max_raw_pnc_lam_norm_error": "raw_pnc_lam_norm_error",
     "max_support_pnc_phi_projection_load": (
         "support_pnc_phi_projection_load"
     ),

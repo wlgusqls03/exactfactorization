@@ -59,6 +59,7 @@ class Model:
     projection_tau_lam: float = 1.0e-10
     projection_tau_chi: float = 1.0e-10
     projection_support_epsilon: float = 1.0e-12
+    deep_tail_zero_threshold: float = 1.0e-12
 
 
 def soft_inverse(distance: np.ndarray, softening: float) -> np.ndarray:
@@ -86,8 +87,21 @@ def build_model(args) -> Model:
     # q와 R은 density가 경계에서 충분히 작다는 전제 아래 finite box에 둔다.
     # 배열 배치는 기존 archive와 호환되도록 endpoint=False를 유지하지만,
     # 미분은 경계를 wrap하지 않는 5점 one-sided stencil을 사용한다.
-    q = np.linspace(args.q_min, args.q_max, args.nq, endpoint=False)
-    R = np.linspace(args.R_min, args.R_max, args.nR, endpoint=False)
+    if getattr(args, "full_nuclear_range", False):
+        q_min = R_min = x_left
+        q_max = R_max = x_right
+        # Persist the effective values in archive metadata and command reports.
+        args.q_min, args.q_max = q_min, q_max
+        args.R_min, args.R_max = R_min, R_max
+    else:
+        q_min, q_max = float(args.q_min), float(args.q_max)
+        R_min, R_max = float(args.R_min), float(args.R_max)
+    if q_max <= q_min or R_max <= R_min:
+        raise ValueError("q와 R 격자의 최댓값은 최솟값보다 커야 합니다.")
+    if args.nq < 2 or args.nR < 2:
+        raise ValueError("q와 R 격자에는 각각 최소 2개 점이 필요합니다.")
+    q = np.linspace(q_min, q_max, args.nq, endpoint=False)
+    R = np.linspace(R_min, R_max, args.nR, endpoint=False)
     dq = float(q[1] - q[0])
     dR = float(R[1] - R[0])
 
@@ -132,6 +146,9 @@ def build_model(args) -> Model:
         projection_tau_chi=float(getattr(args, "projection_tau_chi", 1.0e-10)),
         projection_support_epsilon=float(getattr(
             args, "projection_support_epsilon", 1.0e-12
+        )),
+        deep_tail_zero_threshold=float(getattr(
+            args, "deep_tail_zero_threshold", 1.0e-12
         )),
     )
 
@@ -531,6 +548,42 @@ def occupied_support_mask(density, relative_threshold):
     return density/(density+relative_threshold*peak)
 
 
+def deep_tail_gate(density, relative_threshold):
+    """Physical support gate with an exact-zero tail and smooth transition.
+
+    ``relative_threshold`` is the logarithmic midpoint.  The gate is exactly
+    zero below one tenth of that relative density, exactly one above ten times
+    it, and uses a C2 quintic smoothstep between the two limits.  A nonpositive
+    threshold disables the gate for exact backward compatibility.
+    """
+    if relative_threshold < 0.0:
+        raise ValueError("deep-tail zero threshold는 0 이상이어야 합니다.")
+    if relative_threshold == 0.0:
+        return np.ones_like(density, dtype=float)
+    peak = max(float(np.max(density)), 1.0e-300)
+    relative = np.asarray(density, dtype=float)/peak
+    lower = relative_threshold/10.0
+    upper = relative_threshold*10.0
+    gate = np.zeros_like(relative)
+    gate[relative >= upper] = 1.0
+    transition = (relative > lower) & (relative < upper)
+    if np.any(transition):
+        coordinate = (
+            np.log(relative[transition]/lower)/np.log(upper/lower)
+        )
+        gate[transition] = coordinate**3*(
+            10.0+coordinate*(-15.0+6.0*coordinate)
+        )
+    return gate
+
+
+def gated_values(values, gate):
+    """Multiply only active entries, so an exact-zero tail cannot form 0*Inf."""
+    result = np.zeros_like(values)
+    np.multiply(values, gate, out=result, where=gate > 0.0)
+    return result
+
+
 def suppressed_probability(density, mask, *spacings):
     """Support mask가 감쇠한 정규화 probability mass."""
     volume = float(np.prod(spacings))
@@ -651,18 +704,33 @@ def pnc_project(phi, lam, chi, model: Model):
     Phi에서 빠진 local norm은 Lambda로, Lambda에서 빠진 local norm은
     chi로 옮긴다. 따라서 ``Phi*Lambda*chi``는 점별로 바뀌지 않는다.
     """
-    phi_norm = np.sqrt(np.sum(np.abs(phi)**2, axis=0)*model.dx)      # (nq,nR)
+    phi_norm2 = np.sum(np.abs(phi)**2, axis=0)*model.dx             # (nq,nR)
+    phi_norm = np.sqrt(phi_norm2)
     phi_error = float(np.max(np.abs(phi_norm**2-1.0)))
     safe_phi = np.where(phi_norm > 1.0e-14, phi_norm, 1.0)
-    phi = phi/safe_phi[None, :, :]
-    lam = lam*safe_phi
+    # Once strict PNC is skipped in an empty tail, |Lambda*chi|^2 is no
+    # longer gauge invariant.  Use the actual full-Psi qR marginal instead.
+    physical_qR = phi_norm2*np.abs(lam*chi[None, :])**2
+    gate_phi = deep_tail_gate(
+        physical_qR, getattr(model, "deep_tail_zero_threshold", 0.0)
+    )
+    phi_scale = np.exp(gated_values(np.log(safe_phi), gate_phi))
+    phi_applied_error = float(np.max(np.abs(phi_scale**2-1.0)))
+    phi = phi/phi_scale[None, :, :]
+    lam = lam*phi_scale
 
     lam_norm = np.sqrt(np.sum(np.abs(lam)**2, axis=0)*model.dq)     # (nR,)
     lam_error = float(np.max(np.abs(lam_norm**2-1.0)))
     safe_lam = np.where(lam_norm > 1.0e-14, lam_norm, 1.0)
-    lam = lam/safe_lam[None, :]
-    chi = chi*safe_lam
-    return phi, lam, chi, max(phi_error, lam_error)
+    physical_R = np.sum(physical_qR, axis=0)*model.dq
+    gate_lam = deep_tail_gate(
+        physical_R, getattr(model, "deep_tail_zero_threshold", 0.0)
+    )
+    lam_scale = np.exp(gated_values(np.log(safe_lam), gate_lam))
+    lam_applied_error = float(np.max(np.abs(lam_scale**2-1.0)))
+    lam = lam/lam_scale[None, :]
+    chi = chi*lam_scale
+    return phi, lam, chi, max(phi_applied_error, lam_applied_error)
 
 
 def reconstruct_psi(phi, lam, chi):
@@ -720,13 +788,18 @@ def project_discrete_product_residual(
 
     phi_norm2 = np.sum(np.abs(phi)**2, axis=0)*model.dx
     safe_phi_norm2 = np.maximum(phi_norm2, 1.0e-14)
+    xi = lam*chi[None, :]
+    xi_density = np.abs(xi)**2
+    physical_qR = phi_norm2*xi_density
+    tail_gate_phi = deep_tail_gate(
+        physical_qR, getattr(model, "deep_tail_zero_threshold", 0.0)
+    )
     delta_xi = (
         np.sum(np.conj(phi)*residual, axis=0)*model.dx/safe_phi_norm2
     )
+    delta_xi = gated_values(delta_xi, tail_gate_phi)
     perpendicular_phi = residual-phi*delta_xi[None, :, :]
 
-    xi = lam*chi[None, :]
-    xi_density = np.abs(xi)**2
     xi_peak = max(float(np.max(xi_density)), 1.0e-300)
     projection_backend = getattr(
         model, "product_projection_backend", "nested_inverse"
@@ -752,13 +825,19 @@ def project_discrete_product_residual(
         )
     else:
         raise ValueError(f"지원하지 않는 product projection: {projection_backend}")
+    inverse_xi = gated_values(inverse_xi, tail_gate_phi)
     delta_phi = perpendicular_phi*inverse_xi[None, :, :]
 
     lam_norm2 = np.sum(np.abs(lam)**2, axis=0)*model.dq
     safe_lam_norm2 = np.maximum(lam_norm2, 1.0e-14)
+    physical_R = np.sum(physical_qR, axis=0)*model.dq
+    tail_gate_lam = deep_tail_gate(
+        physical_R, getattr(model, "deep_tail_zero_threshold", 0.0)
+    )
     parallel_chi = (
         np.sum(np.conj(lam)*delta_xi, axis=0)*model.dq/safe_lam_norm2
     )
+    parallel_chi = gated_values(parallel_chi, tail_gate_lam)
     # In the strong tangent gauge <Lambda|delta Lambda>_q=0 this orthogonal
     # split is the structured simultaneous minimum-norm decomposition.
     perpendicular_lam = delta_xi-lam*parallel_chi[None, :]
@@ -781,7 +860,7 @@ def project_discrete_product_residual(
             )
             +1.0e-300
         )
-        delta_chi = chi_shrink*parallel_chi
+        delta_chi = gated_values(chi_shrink, tail_gate_lam)*parallel_chi
     else:
         support_lam = chi_density/(
             chi_density+support_floor_lam*chi_peak+1.0e-300
@@ -789,7 +868,8 @@ def project_discrete_product_residual(
         inverse_chi = np.conj(chi)/(
             chi_density+support_floor_lam*chi_peak
         )
-        delta_chi = parallel_chi
+        delta_chi = gated_values(parallel_chi, tail_gate_lam)
+    inverse_chi = gated_values(inverse_chi, tail_gate_lam)
     delta_lam = perpendicular_lam*inverse_chi[None, :]
 
     dphi = dphi+delta_phi
@@ -985,7 +1065,7 @@ def geometric_fields(phi, lam, model: Model):
 
 
 def proton_base_operator(
-    lam, a, b, alpha, chi_phase_R, chi_logamp_R, mask_lam,
+    lam, a, b, alpha, chi_phase_R, chi_logamp_R, mask_lam, tail_gate_lam,
     model: Model, return_unmasked=False,
 ):
     """``H_pr`` 중 epsilon_1을 제외한 부분을 Lambda에 적용한다.
@@ -1004,10 +1084,11 @@ def proton_base_operator(
     dplus_R2 = covariant_square(
         lam, vector_R, model.dR, axis=1, sign=+1
     )
-    # K_R^(chi)=d_R S+alpha는 유지하고 node에서 singular한
-    # d_R ln|chi|만 rho_R support로 감쇠한다.
+    # Smooth support에서는 원식을 유지한다. Deep tail에서는 의미가 약한
+    # chi phase/log ratio만 정확히 0으로 보내고 vector alpha는 보존한다.
     chi_coefficient = (
-        chi_phase_R+alpha-1j*mask_lam*chi_logamp_R
+        gated_values(chi_phase_R, tail_gate_lam)+alpha
+        -1j*mask_lam*gated_values(chi_logamp_R, tail_gate_lam)
     )                                                               # (nR,)
     proton_nuclear_coupling = (
         0.5*dplus_R2+chi_coefficient[None, :]*dplus_R
@@ -1018,7 +1099,8 @@ def proton_base_operator(
     # 같은 derivative를 재사용하여 support mask만 끈 비교 action을 만든다.
     # numerical logarithmic-derivative floor는 그대로 유지한다.
     chi_coefficient_unmasked = (
-        chi_phase_R+alpha-1j*chi_logamp_R
+        gated_values(chi_phase_R, tail_gate_lam)+alpha
+        -1j*gated_values(chi_logamp_R, tail_gate_lam)
     )
     unmasked = proton_kinetic+(
         0.5*dplus_R2+chi_coefficient_unmasked[None, :]*dplus_R
@@ -1043,10 +1125,14 @@ def instantaneous_functionals(
     a, b, alpha = geometric_fields(phi, lam, model)
 
     # 각 nested conditional factor가 실제로 정의되는 physical support.
-    rho_R = np.abs(chi)**2
-    rho_qR = np.abs(lam)**2*rho_R[None, :]
+    phi_norm2 = np.sum(np.abs(phi)**2, axis=0)*model.dx
+    rho_qR = phi_norm2*np.abs(lam*chi[None, :])**2
+    rho_R = np.sum(rho_qR, axis=0)*model.dq
     mask_phi = occupied_support_mask(rho_qR, mask_threshold_phi)
     mask_lam = occupied_support_mask(rho_R, mask_threshold_lam)
+    tail_threshold = getattr(model, "deep_tail_zero_threshold", 0.0)
+    tail_gate_phi = deep_tail_gate(rho_qR, tail_threshold)
+    tail_gate_lam = deep_tail_gate(rho_R, tail_threshold)
 
     lam_phase_q, lam_logamp_q = logarithmic_components(
         lam, model.dq, axis=0, numerical_floor=floor
@@ -1101,10 +1187,11 @@ def instantaneous_functionals(
     dminus_q2 = covariant_square(
         phi, a[None, :, :], model.dq, axis=1, sign=-1
     )
-    # Gauge-invariant K_q=d_q T+a는 보존하고 singular amplitude gradient만
-    # joint nuclear density support에서 감쇠한다.
+    # Smooth support에서는 원식을 유지한다. Deep tail에서는 ratio에서 온
+    # phase/log-amplitude를 함께 0으로 보내되 vector potential a는 보존한다.
     coefficient_q = (
-        lam_phase_q+a-1j*mask_phi*xi_logamp_q
+        gated_values(lam_phase_q, tail_gate_phi)+a
+        -1j*mask_phi*gated_values(xi_logamp_q, tail_gate_phi)
     )                                                               # (nq,nR)
     u_q_phi = (
         0.5*dminus_q2+coefficient_q[None, :, :]*dminus_q
@@ -1116,8 +1203,9 @@ def instantaneous_functionals(
         phi, b[None, :, :], model.dR, axis=2, sign=-1
     )
     coefficient_R = (
-        chi_phase_R[None, :]+lam_phase_R+b
-        -1j*mask_phi*xi_logamp_R
+        gated_values(
+            chi_phase_R[None, :]+lam_phase_R, tail_gate_phi
+        )+b-1j*mask_phi*gated_values(xi_logamp_R, tail_gate_phi)
     )                                                               # (nq,nR)
     u_R_phi = (
         0.5*dminus_R2
@@ -1139,7 +1227,8 @@ def instantaneous_functionals(
 
     # ----- 두 번째 factorization: 양성자와 바깥 무거운 핵 -----
     base_result = proton_base_operator(
-        lam, a, b, alpha, chi_phase_R, chi_logamp_R_used, mask_lam, model,
+        lam, a, b, alpha, chi_phase_R, chi_logamp_R_used, mask_lam,
+        tail_gate_lam, model,
         return_unmasked=include_unmasked,
     )                                                               # (nq,nR)
     if include_unmasked:
@@ -1164,37 +1253,49 @@ def instantaneous_functionals(
         epsilon_2=epsilon_2, u_phi=u_phi, base_lam=base_lam,
         hbo_phi=hbo_phi, hpr_lam=hpr_lam,
         gamma_phi=gamma_phi, gamma_lam=gamma_lam,
-        support_gamma_phi=mask_phi*gamma_phi,
-        support_gamma_lam=mask_lam*gamma_lam,
+        support_gamma_phi=tail_gate_phi*mask_phi*gamma_phi,
+        support_gamma_lam=tail_gate_lam*mask_lam*gamma_lam,
         raw_rate_phi=raw_rate_phi, raw_rate_lam=raw_rate_lam,
         corrected_rate_phi=corrected_rate_phi,
         corrected_rate_lam=corrected_rate_lam,
         mask_phi=mask_phi, mask_lam=mask_lam,
+        tail_gate_phi=tail_gate_phi, tail_gate_lam=tail_gate_lam,
         suppressed_probability_phi=np.asarray(suppressed_probability(
             rho_qR, mask_phi, model.dq, model.dR
         )),
         suppressed_probability_lam=np.asarray(suppressed_probability(
             rho_R, mask_lam, model.dR
         )),
+        deep_tail_suppressed_probability_phi=np.asarray(
+            suppressed_probability(rho_qR, tail_gate_phi, model.dq, model.dR)
+        ),
+        deep_tail_suppressed_probability_lam=np.asarray(
+            suppressed_probability(rho_R, tail_gate_lam, model.dR)
+        ),
+        deep_tail_zero_fraction_phi=np.asarray(np.mean(tail_gate_phi == 0.0)),
+        deep_tail_zero_fraction_lam=np.asarray(np.mean(tail_gate_lam == 0.0)),
         raw_logamp_phi=np.maximum(
             np.abs(lam_logamp_q),
             np.abs(lam_logamp_R)+np.abs(chi_logamp_R)[None, :],
         ),
         effective_logamp_phi=np.maximum(
-            np.abs(mask_phi*xi_logamp_q),
-            np.abs(mask_phi*xi_logamp_R),
+            np.abs(mask_phi*gated_values(xi_logamp_q, tail_gate_phi)),
+            np.abs(mask_phi*gated_values(xi_logamp_R, tail_gate_phi)),
         ),
         raw_logamp_lam=np.abs(chi_logamp_R),
-        effective_logamp_lam=np.abs(mask_lam*chi_logamp_R_used),
+        effective_logamp_lam=np.abs(
+            mask_lam*gated_values(chi_logamp_R_used, tail_gate_lam)
+        ),
         **weak_diagnostics,
     )
     if include_unmasked:
         coefficient_q_unmasked = (
-            lam_phase_q+a-1j*xi_logamp_q
+            gated_values(lam_phase_q, tail_gate_phi)+a
+            -1j*gated_values(xi_logamp_q, tail_gate_phi)
         )
         coefficient_R_unmasked = (
-            chi_phase_R[None, :]+lam_phase_R+b
-            -1j*xi_logamp_R
+            gated_values(chi_phase_R[None, :]+lam_phase_R, tail_gate_phi)+b
+            -1j*gated_values(xi_logamp_R, tail_gate_phi)
         )
         u_phi_unmasked_raw = (
             0.5*dminus_q2
@@ -1292,8 +1393,22 @@ def add_model_arguments(parser):
     grid.add_argument("--R-min", type=float, default=3.0)
     grid.add_argument("--R-max", type=float, default=5.4)
     grid.add_argument(
+        "--full-nuclear-range", action="store_true",
+        help=(
+            "실험적으로 q와 R box를 전자 hard-wall 전체 범위 "
+            "[left-position, x-max)와 같게 설정"
+        ),
+    )
+    grid.add_argument(
         "--fft-workers", type=int, default=-1,
         help="전자 DST worker 수; -1은 사용 가능한 CPU core를 모두 사용",
+    )
+    parser.add_argument(
+        "--deep-tail-zero-threshold", type=float, default=1.0e-12,
+        help=(
+            "phase/log-amplitude 및 factor correction을 정확히 0으로 만드는 "
+            "상대 physical-density 전이 중심; 0이면 비활성화"
+        ),
     )
 
     particle = parser.add_argument_group("입자와 초기상태")

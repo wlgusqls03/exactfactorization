@@ -98,6 +98,9 @@ def run_born_huang(args):
         "max_weak_log_residual_q_xi", "max_weak_log_residual_R_xi",
         "max_weak_log_residual_R_chi", "max_weak_log_iterations",
         "max_weak_log_unconverged_lines",
+        "deep_tail_suppressed_probability_phi",
+        "deep_tail_suppressed_probability_lam",
+        "deep_tail_zero_fraction_phi", "deep_tail_zero_fraction_lam",
     )
     diagnostics = {name: [] for name in diagnostic_names}
 
@@ -226,6 +229,8 @@ def run_born_huang(args):
         projection_tau_phi=np.array(args.projection_tau_phi),
         projection_tau_lam=np.array(args.projection_tau_lam),
         projection_tau_chi=np.array(args.projection_tau_chi),
+        deep_tail_zero_threshold=np.array(args.deep_tail_zero_threshold),
+        full_nuclear_range=np.array(args.full_nuclear_range),
         propagation_completed=np.array(completed),
         requested_final_time_fs=np.array(args.t_final_fs),
         requested_steps=np.array(n_steps), attempted_steps=np.array(attempted),
