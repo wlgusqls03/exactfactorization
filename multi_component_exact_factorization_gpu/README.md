@@ -269,7 +269,12 @@ archive가 커지므로 convergence run에서만 권장한다.
 
 Born--Huang archive에는 x-grid basis가 없어도 동작하는 전용 compact report가
 있다. q/R marginal과 경계 확률, 정규화한 BO population, 핵 밀도로 평균한
-BO energy ladder, norm/projection 진단과 state-ladder dynamics 영상을 만든다.
+BO energy ladder와 norm/projection 진단을 만든다. 영상도 direct-grid report와
+같은 역할의 세 종류를 제공한다.
+
+* ``born_huang_dynamics_overview``: q/R 이동, 경계 확률, BO population
+* ``born_huang_exact_potentials``: epsilon1/epsilon2 및 a/b/alpha
+* ``born_huang_state_ladder_dynamics``: BO level 사이 population transfer
 
 ```bash
 python -m multi_component_exact_factorization.render_all \

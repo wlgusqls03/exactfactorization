@@ -22,10 +22,22 @@ class BornHuangReportTests(unittest.TestCase):
         energies = np.empty((ns, nq, nR))
         for state in range(ns):
             energies[state] = state+0.01*q[:, None]+0.02*R[None, :]
+        qR_field = np.empty((nt, nq, nR))
+        for frame in range(nt):
+            qR_field[frame] = (
+                0.1*frame+0.03*q[:, None]-0.02*R[None, :]
+            )
         return dict(
             times_fs=np.array([0.0, 0.5, 1.0]), q=q, R=R,
             lambda_wavefunction=lam, chi=chi, norm=norm,
             bo_populations=populations, bo_energies=energies,
+            epsilon_1=qR_field, a=0.2*qR_field, b=-0.1*qR_field,
+            epsilon_2=np.array([
+                0.1*frame+0.02*R for frame in range(nt)
+            ]),
+            alpha=np.array([
+                0.01*frame-0.005*R for frame in range(nt)
+            ]),
             args=np.array([{"electron_excitation": 1}], dtype=object),
         )
 
@@ -60,17 +72,26 @@ class BornHuangReportTests(unittest.TestCase):
             ):
                 self.assertTrue((report/name).is_file(), name)
 
-    def test_state_ladder_animation_writes_without_electronic_grid(self):
-        obs = born_huang_report.calculate_observables(self.synthetic_data())
+    def test_three_animations_write_without_electronic_grid(self):
+        data = self.synthetic_data()
+        obs = born_huang_report.calculate_observables(data)
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
-            born_huang_report.make_dynamics_animation(
+            born_huang_report.make_overview_animation(
                 obs, root, fps=2, max_frames=3, dpi=35, fmt="gif"
             )
-            self.assertGreater(
-                (root/"born_huang_state_ladder_dynamics.gif").stat().st_size,
-                0,
+            born_huang_report.make_potential_animation(
+                data, obs, root, fps=2, max_frames=3, dpi=35, fmt="gif"
             )
+            born_huang_report.make_state_ladder_animation(
+                obs, root, fps=2, max_frames=3, dpi=35, fmt="gif"
+            )
+            for name in (
+                "born_huang_dynamics_overview.gif",
+                "born_huang_exact_potentials.gif",
+                "born_huang_state_ladder_dynamics.gif",
+            ):
+                self.assertGreater((root/name).stat().st_size, 0, name)
 
 
 if __name__ == "__main__":

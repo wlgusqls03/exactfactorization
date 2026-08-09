@@ -33,11 +33,12 @@ def load_archive(path):
         missing = sorted(required.difference(archive.files))
         if missing:
             raise KeyError(f"Born--Huang report에 필요한 key가 없습니다: {missing}")
-        # C_j(q,R,t), NAC tensors and saved exact potentials can each be
-        # several GiB.  None is required for this coefficient-native report.
+        # C_j(q,R,t), NAC tensors and x-grid basis can each be several GiB.
+        # The saved factor potentials are used by the potential movie.
         wanted = required | {
             "args", "propagation_completed", "requested_final_time_fs",
             "failure_reason", "pnc_projection_correction",
+            "epsilon_1", "epsilon_2", "a", "b", "alpha",
             "max_abs_full_norm_rate_after_product_projection",
             "max_abs_support_gamma_phi_dt", "max_abs_support_gamma_lam_dt",
             "max_effective_product_residual_l2",
@@ -271,7 +272,219 @@ def plot_reliability(data, obs, outdir, dpi):
     print(f"Born--Huang numerical reliability 저장: {path}")
 
 
-def make_dynamics_animation(obs, outdir, fps, max_frames, dpi, fmt):
+def _save_animation(animation, fig, outdir, stem, fps, dpi, fmt):
+    if fmt == "mp4" and shutil.which("ffmpeg"):
+        path = outdir/f"{stem}.mp4"
+        animation.save(path, writer=FFMpegWriter(fps=fps, bitrate=3000), dpi=dpi)
+    else:
+        if fmt == "mp4":
+            print(f"ffmpeg을 찾지 못해 {stem} 영상을 GIF로 저장합니다.")
+        path = outdir/f"{stem}.gif"
+        animation.save(path, writer=PillowWriter(fps=fps), dpi=min(dpi, 110))
+    plt.close(fig)
+    print(f"Born--Huang dynamics 저장: {path}")
+    return path
+
+
+def make_overview_animation(obs, outdir, fps, max_frames, dpi, fmt):
+    """Nuclear motion and BO populations in the standard overview role."""
+    times, q, R = obs["times_fs"], obs["q"], obs["R"]
+    populations = obs["normalized_state_populations"]
+    frames = selected_frames(len(times), min(max_frames, len(times)))
+    first = int(frames[0])
+    fig, axes = plt.subplots(2, 2, figsize=(14.0, 9.0), constrained_layout=True)
+    joint_ax, marginal_ax, population_ax, motion_ax = axes.flat
+    vmax = max(float(np.max(obs["nuclear_joint_density"][frame])) for frame in frames)
+    joint_image = joint_ax.imshow(
+        obs["nuclear_joint_density"][first].T, origin="lower", aspect="auto",
+        extent=[q[0], q[-1], R[0], R[-1]], cmap="magma", vmin=0.0, vmax=vmax,
+    )
+    peak = np.unravel_index(
+        int(np.argmax(obs["nuclear_joint_density"][first])),
+        obs["nuclear_joint_density"][first].shape,
+    )
+    peak_marker, = joint_ax.plot(q[peak[0]], R[peak[1]], "wo", ms=4)
+    joint_ax.set_xlabel("proton q")
+    joint_ax.set_ylabel("heavy R")
+    joint_ax.set_title("Nuclear joint density", loc="left", fontweight="semibold")
+    fig.colorbar(joint_image, ax=joint_ax, pad=0.012, format=NUMBER_FORMATTER)
+
+    q_line, = marginal_ax.plot(q, obs["proton_density"][first], color=COLORS[0], label="q")
+    R_line, = marginal_ax.plot(R, obs["heavy_density"][first], color=COLORS[2], label="R")
+    marginal_ax.set_xlim(min(q[0], R[0]), max(q[-1], R[-1]))
+    marginal_ax.set_ylim(0.0, 1.08*max(np.max(obs["proton_density"]), np.max(obs["heavy_density"])))
+    marginal_ax.set_xlabel("position (a.u.)")
+    marginal_ax.set_ylabel("probability density")
+    marginal_ax.set_title("Nuclear marginals", loc="left", fontweight="semibold")
+    marginal_ax.legend(frameon=False)
+
+    states = np.arange(populations.shape[1])
+    bars = population_ax.bar(states, np.maximum(populations[first], 1.0e-12), color=[
+        COLORS[state % len(COLORS)] for state in states
+    ])
+    population_ax.set_yscale("log")
+    population_ax.set_ylim(1.0e-12, 1.5)
+    population_ax.set_xticks(states)
+    population_ax.set_xlabel("BO state n")
+    population_ax.set_ylabel("normalized population")
+    population_ax.set_title("Instantaneous BO populations", loc="left", fontweight="semibold")
+
+    motion_ax.plot(times, obs["proton_mean"], color=COLORS[0], label=r"$\langle q\rangle$")
+    motion_ax.plot(times, obs["heavy_mean"], color=COLORS[2], label=r"$\langle R\rangle$")
+    edge_ax = motion_ax.twinx()
+    edge_ax.semilogy(times, np.maximum(obs["outer_probability_q"], 1.0e-14),
+                     color=COLORS[0], ls=":", label="q edge probability")
+    edge_ax.semilogy(times, np.maximum(obs["outer_probability_R"], 1.0e-14),
+                     color=COLORS[2], ls=":", label="R edge probability")
+    edge_ax.set_ylabel("outer-5 probability")
+    time_marker = motion_ax.axvline(times[first], color="black", lw=1.2)
+    motion_ax.set_xlabel("time (fs)")
+    motion_ax.set_title("Transport and boundary contact", loc="left", fontweight="semibold")
+    handles, labels = motion_ax.get_legend_handles_labels()
+    edge_handles, edge_labels = edge_ax.get_legend_handles_labels()
+    motion_ax.legend(
+        handles+edge_handles, labels+edge_labels,
+        frameon=False, fontsize=8, ncol=2,
+    )
+    title = fig.suptitle(f"Born--Huang dynamics overview | t={times[first]:.4f} fs")
+
+    def update(number):
+        frame = int(frames[number])
+        density = obs["nuclear_joint_density"][frame]
+        joint_image.set_data(density.T)
+        peak = np.unravel_index(int(np.argmax(density)), density.shape)
+        peak_marker.set_data([q[peak[0]]], [R[peak[1]]])
+        q_line.set_ydata(obs["proton_density"][frame])
+        R_line.set_ydata(obs["heavy_density"][frame])
+        for bar, value in zip(bars, populations[frame]):
+            bar.set_height(max(float(value), 1.0e-12))
+        time_marker.set_xdata([times[frame], times[frame]])
+        title.set_text(
+            f"Born--Huang dynamics overview | t={times[frame]:.4f} fs | "
+            f"norm-1={obs['norm'][frame]-1:+.2e}"
+        )
+        return joint_image, peak_marker, q_line, R_line, *bars, time_marker, title
+
+    animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
+    return _save_animation(
+        animation, fig, outdir, "born_huang_dynamics_overview",
+        fps, dpi, fmt,
+    )
+
+
+def _robust_animation_limit(values, frames, shift=None):
+    samples = []
+    for frame in frames:
+        array = np.asarray(values[int(frame)], float)
+        if shift is not None:
+            array = array-shift(int(frame), array)
+        finite = np.abs(array[np.isfinite(array)])
+        if finite.size:
+            samples.append(float(np.percentile(finite, 99.5)))
+    return max(samples+[1.0e-12])
+
+
+def make_potential_animation(data, obs, outdir, fps, max_frames, dpi, fmt):
+    """Animate saved exact scalar/vector potentials on occupied coordinates."""
+    required = ("epsilon_1", "epsilon_2", "a", "b", "alpha")
+    missing = [key for key in required if key not in data]
+    if missing:
+        print("Born--Huang potential 영상 생략; archive key 없음: " + ", ".join(missing))
+        return None
+    times, q, R = obs["times_fs"], obs["q"], obs["R"]
+    frames = selected_frames(len(times), min(max_frames, len(times)))
+    first = int(frames[0])
+    epsilon_1 = np.asarray(data["epsilon_1"], float)
+    epsilon_2 = np.asarray(data["epsilon_2"], float)
+    vector_a = np.asarray(data["a"], float)
+    vector_b = np.asarray(data["b"], float)
+    alpha = np.asarray(data["alpha"], float)
+
+    def joint_peak_shift(frame, array):
+        peak = np.unravel_index(
+            int(np.argmax(obs["nuclear_joint_density"][frame])), array.shape
+        )
+        return float(array[peak])
+
+    def heavy_peak_shift(frame, array):
+        return float(array[int(np.argmax(obs["heavy_density"][frame]))])
+
+    limits = (
+        _robust_animation_limit(epsilon_1, frames, joint_peak_shift),
+        _robust_animation_limit(vector_a, frames),
+        _robust_animation_limit(vector_b, frames),
+    )
+    fig, axes = plt.subplots(2, 2, figsize=(14.0, 9.0), constrained_layout=True)
+    map_axes = (axes[0, 0], axes[0, 1], axes[1, 0])
+    arrays = (
+        epsilon_1[first]-joint_peak_shift(first, epsilon_1[first]),
+        vector_a[first], vector_b[first],
+    )
+    names = (r"shifted $\epsilon_1(q,R)$", r"$a(q,R)$", r"$b(q,R)$")
+    images = []
+    markers = []
+    for ax, array, name, limit in zip(map_axes, arrays, names, limits):
+        image = ax.imshow(
+            array.T, origin="lower", aspect="auto",
+            extent=[q[0], q[-1], R[0], R[-1]], cmap="coolwarm",
+            vmin=-limit, vmax=limit,
+        )
+        peak = np.unravel_index(
+            int(np.argmax(obs["nuclear_joint_density"][first])),
+            obs["nuclear_joint_density"][first].shape,
+        )
+        marker, = ax.plot(q[peak[0]], R[peak[1]], "ko", ms=3.5)
+        ax.set_xlabel("proton q")
+        ax.set_ylabel("heavy R")
+        ax.set_title(name, loc="left", fontweight="semibold")
+        fig.colorbar(image, ax=ax, pad=0.012, format=NUMBER_FORMATTER)
+        images.append(image)
+        markers.append(marker)
+
+    line_ax = axes[1, 1]
+    shifted_epsilon_2 = epsilon_2[first]-heavy_peak_shift(first, epsilon_2[first])
+    epsilon_line, = line_ax.plot(R, shifted_epsilon_2, color=COLORS[1], label=r"shifted $\epsilon_2$")
+    line_ax.set_xlabel("heavy R")
+    line_ax.set_ylabel(r"$\epsilon_2$ (a.u.)", color=COLORS[1])
+    line_ax.tick_params(axis="y", colors=COLORS[1])
+    alpha_ax = line_ax.twinx()
+    alpha_line, = alpha_ax.plot(R, alpha[first], color=COLORS[4], label=r"$\alpha$")
+    alpha_ax.set_ylabel(r"$\alpha$ (a.u.)", color=COLORS[4])
+    alpha_ax.tick_params(axis="y", colors=COLORS[4])
+    epsilon_limit = _robust_animation_limit(epsilon_2, frames, heavy_peak_shift)
+    alpha_limit = _robust_animation_limit(alpha, frames)
+    line_ax.set_ylim(-epsilon_limit, epsilon_limit)
+    alpha_ax.set_ylim(-alpha_limit, alpha_limit)
+    line_ax.set_title("Heavy scalar/vector potentials", loc="left", fontweight="semibold")
+    line_ax.grid(alpha=0.18)
+    title = fig.suptitle(f"Born--Huang exact potentials | t={times[first]:.4f} fs")
+
+    def update(number):
+        frame = int(frames[number])
+        fields = (
+            epsilon_1[frame]-joint_peak_shift(frame, epsilon_1[frame]),
+            vector_a[frame], vector_b[frame],
+        )
+        density = obs["nuclear_joint_density"][frame]
+        peak = np.unravel_index(int(np.argmax(density)), density.shape)
+        for image, marker, field in zip(images, markers, fields):
+            image.set_data(field.T)
+            marker.set_data([q[peak[0]]], [R[peak[1]]])
+        epsilon_line.set_ydata(
+            epsilon_2[frame]-heavy_peak_shift(frame, epsilon_2[frame])
+        )
+        alpha_line.set_ydata(alpha[frame])
+        title.set_text(f"Born--Huang exact potentials | t={times[frame]:.4f} fs")
+        return *images, *markers, epsilon_line, alpha_line, title
+
+    animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
+    return _save_animation(
+        animation, fig, outdir, "born_huang_exact_potentials",
+        fps, dpi, fmt,
+    )
+
+
+def make_state_ladder_animation(obs, outdir, fps, max_frames, dpi, fmt):
     times, q, R = obs["times_fs"], obs["q"], obs["R"]
     populations = obs["normalized_state_populations"]
     frames = selected_frames(len(times), min(max_frames, len(times)))
@@ -343,16 +556,10 @@ def make_dynamics_animation(obs, outdir, fps, max_frames, dpi, fmt):
 
     update(0)
     animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
-    if fmt == "mp4" and shutil.which("ffmpeg"):
-        path = outdir/"born_huang_state_ladder_dynamics.mp4"
-        animation.save(path, writer=FFMpegWriter(fps=fps, bitrate=3000), dpi=dpi)
-    else:
-        if fmt == "mp4":
-            print("ffmpeg을 찾지 못해 Born--Huang 영상을 GIF로 저장합니다.")
-        path = outdir/"born_huang_state_ladder_dynamics.gif"
-        animation.save(path, writer=PillowWriter(fps=fps), dpi=min(dpi, 110))
-    plt.close(fig)
-    print(f"Born--Huang state-ladder dynamics 저장: {path}")
+    return _save_animation(
+        animation, fig, outdir, "born_huang_state_ladder_dynamics",
+        fps, dpi, fmt,
+    )
 
 
 def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
@@ -367,7 +574,14 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
     plot_energy_ladders(obs, outdir, dpi)
     plot_reliability(data, obs, outdir, dpi)
     if not no_animation:
-        make_dynamics_animation(
+        print("Born--Huang compact dynamics 영상 3개 생성")
+        make_overview_animation(
+            obs, outdir, fps, max_frames, animation_dpi, fmt
+        )
+        make_potential_animation(
+            data, obs, outdir, fps, max_frames, animation_dpi, fmt
+        )
+        make_state_ladder_animation(
             obs, outdir, fps, max_frames, animation_dpi, fmt
         )
     payload = {
