@@ -68,15 +68,21 @@ def soft_inverse(distance: np.ndarray, softening: float) -> np.ndarray:
 
 
 def build_model(args) -> Model:
-    """왼쪽 고정점-전자-양성자-무거운 핵의 1D model을 만든다.
+    """고정 중심-전자-양성자-무거운 핵의 1D model을 만든다.
 
-    왼쪽 중심은 움직이지 않으므로 파동함수 좌표축을 갖지 않는다. 전자에게는
-    potential 중심인 동시에 넘을 수 없는 왼쪽 Dirichlet 경계다. q와 R box는
-    초기 packet의 tail이 수치 경계에서 충분히 작도록 잡는다.
+    선택적인 좌/우 중심은 움직이지 않으므로 파동함수 좌표축을 갖지 않는다.
+    두 중심의 위치는 전자 Dirichlet box의 양 끝과 일치한다. q와 R box는 초기
+    packet의 tail이 수치 경계에서 충분히 작도록 잡는다.
     """
     # 전자는 왼쪽 고정점 x_L을 넘을 수 없는 Dirichlet hard-wall box에 둔다.
     # 따라서 x_L과 x_max 자체는 psi=0인 경계이고, 실제 배열에는 그 사이의
     # nx개 interior point만 저장한다. 이 배치는 DST-I kinetic과 정확히 맞는다.
+    symmetric_half_width = float(getattr(args, "symmetric_box_half_width", 0.0))
+    if symmetric_half_width < 0.0:
+        raise ValueError("--symmetric-box-half-width는 0 이상이어야 합니다.")
+    if symmetric_half_width > 0.0:
+        args.left_position = -symmetric_half_width
+        args.x_max = symmetric_half_width
     x_left = float(args.left_position)
     x_right = float(args.x_max)
     if x_right <= x_left:
@@ -85,8 +91,7 @@ def build_model(args) -> Model:
     x = x_left+dx*np.arange(1, args.nx+1)
 
     # q와 R은 density가 경계에서 충분히 작다는 전제 아래 finite box에 둔다.
-    # 배열 배치는 기존 archive와 호환되도록 endpoint=False를 유지하지만,
-    # 미분은 경계를 wrap하지 않는 5점 one-sided stencil을 사용한다.
+    # 배열 배치는 기존 archive 및 periodic 5점 stencil과 맞도록 endpoint=False다.
     if getattr(args, "full_nuclear_range", False):
         q_min = R_min = x_left
         q_max = R_max = x_right
@@ -107,12 +112,22 @@ def build_model(args) -> Model:
 
     # 저장 metadata에서도 전자 box의 왼쪽 끝이 고정점임을 명시한다.
     args.x_min = x_left
+    args.right_position = x_right
+    # Older archives do not contain the optional right-center parameters.
+    # Fill them here so post-processing can rebuild their original Hamiltonian.
+    args.right_charge = float(getattr(args, "right_charge", 0.0))
+    args.soft_e_right = float(getattr(args, "soft_e_right", 1.0))
+    args.soft_p_right = float(getattr(args, "soft_p_right", 0.8))
+    args.soft_right_heavy = float(getattr(args, "soft_right_heavy", 0.8))
+    args.soft_left_right = float(getattr(args, "soft_left_right", 0.8))
 
     xx = x[:, None, None]       # (nx,1,1)
     qq = q[None, :, None]       # (1,nq,1)
     RR = R[None, None, :]       # (1,1,nR)
 
-    # 전자(-1)는 세 양전하 중심에 끌리고, 양전하끼리는 서로 밀어낸다.
+    # 전자(-1)는 움직이는 두 핵과 선택적인 좌/우 고정 중심에 끌리고,
+    # 양전하끼리는 서로 밀어낸다. right_charge=0이면 아래 추가항이 정확히
+    # 0이므로 기존 Hamiltonian과 수학적으로 동일하다.
     # 모든 항은 broadcasting되어 최종 shape (nx,nq,nR)가 된다.
     potential = (
         -args.left_charge * soft_inverse(xx - args.left_position, args.soft_e_left)
@@ -122,6 +137,12 @@ def build_model(args) -> Model:
         +args.heavy_charge * soft_inverse(qq - RR, args.soft_p_heavy)
         +args.left_charge * args.heavy_charge
         * soft_inverse(RR - args.left_position, args.soft_left_heavy)
+        -args.right_charge * soft_inverse(xx - x_right, args.soft_e_right)
+        +args.right_charge * soft_inverse(qq - x_right, args.soft_p_right)
+        +args.right_charge * args.heavy_charge
+        * soft_inverse(RR - x_right, args.soft_right_heavy)
+        +args.left_charge * args.right_charge
+        * soft_inverse(x_right - args.left_position, args.soft_left_right)
     )
 
     return Model(
@@ -1388,6 +1409,13 @@ def add_model_arguments(parser):
         "--x-max", type=float, default=8.0,
         help="전자 hard-wall 오른쪽 끝; 왼쪽 끝은 --left-position",
     )
+    grid.add_argument(
+        "--symmetric-box-half-width", type=float, default=0.0,
+        help=(
+            "양수 L이면 전자 hard-wall box를 [-L,+L]로 설정; "
+            "0이면 --left-position/--x-max를 그대로 사용"
+        ),
+    )
     grid.add_argument("--q-min", type=float, default=-3.36)
     grid.add_argument("--q-max", type=float, default=3.6)
     grid.add_argument("--R-min", type=float, default=3.0)
@@ -1440,11 +1468,19 @@ def add_model_arguments(parser):
         "--left-charge", type=float, default=0.0,
         help="왼쪽 고정 중심의 전하 Z_L; 기본값 0이면 Coulomb 항은 꺼짐",
     )
+    potential.add_argument(
+        "--right-charge", type=float, default=0.0,
+        help="오른쪽 hard wall(x-max)의 고정 중심 전하 Z_R; 기본값 0",
+    )
     potential.add_argument("--heavy-charge", type=float, default=1.0)
     potential.add_argument("--soft-e-left", type=float, default=1.0)
+    potential.add_argument("--soft-e-right", type=float, default=1.0)
     potential.add_argument("--soft-e-proton", type=float, default=0.8)
     potential.add_argument("--soft-e-heavy", type=float, default=1.0)
     potential.add_argument("--soft-p-left", type=float, default=0.8)
+    potential.add_argument("--soft-p-right", type=float, default=0.8)
     potential.add_argument("--soft-p-heavy", type=float, default=0.8)
     potential.add_argument("--soft-left-heavy", type=float, default=0.8)
+    potential.add_argument("--soft-right-heavy", type=float, default=0.8)
+    potential.add_argument("--soft-left-right", type=float, default=0.8)
     return parser

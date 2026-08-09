@@ -171,8 +171,11 @@ def run(args):
     print(
         f"격자: dx={cpu_model.dx:.6f}, dq={cpu_model.dq:.6f}, "
         f"dR={cpu_model.dR:.6f}; hard wall "
-        f"{cpu_model.x_left:.3f}..{cpu_model.x_right:.3f}"
+        f"{cpu_model.x_left:.3f}..{cpu_model.x_right:.3f}; "
+        f"Z_L={args.left_charge:.3f}, Z_R={args.right_charge:.3f}"
     )
+    if args.symmetric_box_half_width > 0.0:
+        print(f"대칭 전자 box preset: [-{args.symmetric_box_half_width:g},+{args.symmetric_box_half_width:g}]")
     if args.full_nuclear_range:
         print(
             "핵 좌표 범위 실험: q와 R 모두 전자 hard-wall 전체 범위 "

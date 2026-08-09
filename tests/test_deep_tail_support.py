@@ -10,6 +10,7 @@ from multi_component_exact_factorization.core import (
     pnc_project,
     project_discrete_product_residual,
     reconstruct_psi,
+    soft_inverse,
 )
 from multi_component_exact_factorization.propagate import parse_args
 
@@ -83,6 +84,54 @@ class DeepTailSupportTests(unittest.TestCase):
         self.assertAlmostEqual(model.R[0], args.left_position)
         self.assertAlmostEqual(model.dq, 14.0/args.nq)
         self.assertAlmostEqual(model.dR, 14.0/args.nR)
+
+    def test_symmetric_box_preset_updates_effective_ranges(self):
+        argv = [
+            "propagate", "--symmetric-box-half-width", "10",
+            "--full-nuclear-range", "--nx", "249", "--nq", "500",
+            "--nR", "1000",
+        ]
+        with patch("sys.argv", argv):
+            args = parse_args()
+        model = build_model(args)
+        self.assertEqual((model.x_left, model.x_right), (-10.0, 10.0))
+        self.assertEqual((args.left_position, args.x_max), (-10.0, 10.0))
+        self.assertEqual((args.q_min, args.q_max), (-10.0, 10.0))
+        self.assertEqual((args.R_min, args.R_max), (-10.0, 10.0))
+        self.assertAlmostEqual(model.dx, 0.08)
+        self.assertAlmostEqual(model.dq, 0.04)
+        self.assertAlmostEqual(model.dR, 0.02)
+
+    def test_right_fixed_charge_adds_complete_soft_coulomb_terms(self):
+        argv = [
+            "propagate", "--nx", "5", "--nq", "5", "--nR", "5",
+            "--left-charge", "0.7",
+        ]
+        with patch("sys.argv", argv):
+            args_zero = parse_args()
+        model_zero = build_model(args_zero)
+        with patch("sys.argv", argv + ["--right-charge", "1.3"]):
+            args_right = parse_args()
+        model_right = build_model(args_right)
+
+        xx = model_right.x[:, None, None]
+        qq = model_right.q[None, :, None]
+        RR = model_right.R[None, None, :]
+        expected = 1.3 * (
+            -soft_inverse(xx-model_right.x_right, args_right.soft_e_right)
+            +soft_inverse(qq-model_right.x_right, args_right.soft_p_right)
+            +args_right.heavy_charge
+            * soft_inverse(RR-model_right.x_right, args_right.soft_right_heavy)
+            +args_right.left_charge
+            * soft_inverse(
+                model_right.x_right-model_right.x_left,
+                args_right.soft_left_right,
+            )
+        )
+        self.assertTrue(np.allclose(
+            model_right.potential-model_zero.potential, expected,
+            rtol=1.0e-14, atol=1.0e-14,
+        ))
 
 
 if __name__ == "__main__":

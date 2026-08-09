@@ -64,7 +64,8 @@ def initial_summary(data):
         f"R0={options['R0']:.2f} a0 &nbsp; | &nbsp; masses (me): "
         f"mp={options['proton_mass']:.0f}, MH={options['heavy_mass']:.0f} "
         f"&nbsp; | &nbsp; xL={options['left_position']:.2f}, "
-        f"ZL={options.get('left_charge', np.nan):.2f}"
+        f"ZL={options.get('left_charge', np.nan):.2f}, "
+        f"ZR={options.get('right_charge', 0.0):.2f}"
     )
 
 

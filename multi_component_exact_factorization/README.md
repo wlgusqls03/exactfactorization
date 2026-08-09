@@ -205,12 +205,21 @@ Propagation 중 작은 wavefunction 값을 임의로 0으로 자르지는 않는
 ```bash
 --left-position -6.0   # hard wall과 왼쪽 고정 중심의 위치
 --left-charge 0.0      # 왼쪽 고정 중심 전하 Z_L
+--x-max 8.0            # hard wall과 오른쪽 고정 중심의 위치
+--right-charge 0.0     # 오른쪽 고정 중심 전하 Z_R
 ```
 
 `Z_L`의 기본값은 `0`이다. 따라서 기본 계산에서 `x=-6` hard wall은 유지되지만
 왼쪽 중심이 만드는 electron attraction, proton repulsion, left-heavy repulsion
 soft-Coulomb 항은 모두 0이다. 예전처럼 `Z_L=+1` 중심을 사용하려면
 `--left-charge 1.0`을 명시한다.
+
+`--symmetric-box-half-width L`은 전자 box를 `[-L,+L]`로 설정한다. q와 R도
+같은 범위로 시험하려면 `--full-nuclear-range`를 함께 쓰되, 기존 공간 간격을
+보존하도록 `nx`, `nq`, `nR`도 늘려야 한다. `--right-charge`는 오른쪽 벽을
+흡수경계로 만드는 수치 옵션이 아니라 Hamiltonian에 실제 고정전하를 추가하는
+물리 옵션이다. 따라서 벽 반사를 막는 용도로 사용하지 말고 모델에 그 전하가
+존재할 때만 명시적으로 켠다.
 
 Heavy 핵은 질량이 크고 짧은 dynamics에서 이동이 작으므로 기존보다 R box를
 좁히고 점 수도 줄였다. 단, 더 긴 시간 전파에서는 density가 R 경계에

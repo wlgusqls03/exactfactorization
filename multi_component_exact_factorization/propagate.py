@@ -305,8 +305,10 @@ def run(args):
         "격자 간격/경계: "
         f"dx={model.dx:.6f} (hard wall {model.x_left:.3f}..{model.x_right:.3f}), "
         f"dq={model.dq:.6f}, dR={model.dR:.6f}; "
-        f"Z_L={args.left_charge:.3f}"
+        f"Z_L={args.left_charge:.3f}, Z_R={args.right_charge:.3f}"
     )
+    if args.symmetric_box_half_width > 0.0:
+        print(f"대칭 전자 box preset: [-{args.symmetric_box_half_width:g},+{args.symmetric_box_half_width:g}]")
     if args.full_nuclear_range:
         print(
             "핵 좌표 범위 실험: q와 R 모두 전자 hard-wall 전체 범위 "

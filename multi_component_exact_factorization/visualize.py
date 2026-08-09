@@ -220,7 +220,8 @@ def plot_initial_state(data, outdir, dpi=180):
             f"m_p={options['proton_mass']:.0f} m_e,  "
             f"M_H={options['heavy_mass']:.0f} m_e;  "
             f"left wall={options['left_position']:.2f} a0, "
-            f"Z_L={options.get('left_charge', np.nan):.2f}"
+            f"Z_L={options.get('left_charge', np.nan):.2f}, "
+            f"Z_R={options.get('right_charge', 0.0):.2f}"
         )
         correlation_line = (
             "independent q/R harmonic Gaussians; "

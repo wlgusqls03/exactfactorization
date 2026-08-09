@@ -229,6 +229,12 @@ q와 R box가 좁아서 생기는 boundary/vector-potential noise를 분리해 �
 맞게 늘려야 하며, direct-grid 메모리 비용이 ``nx*nq*nR``로 증가한다. 먼저
 작은 점 수와 짧은 시간으로 boundary 진단만 수행한 뒤 production에 사용한다.
 
+전자 box 자체를 대칭인 ``[-L,+L]``로 바꾸려면
+``--symmetric-box-half-width L``을 쓴다. 오른쪽 벽에 실제 고정 중심을 둘
+때만 ``--right-charge Z_R``를 함께 지정한다. 이 전하는 전자 attraction과
+proton/heavy repulsion 및 좌우 고정 중심 상호작용을 Hamiltonian에 추가하므로
+수치적인 absorbing boundary가 아니며, 기본값 0은 기존 물리를 그대로 보존한다.
+
 ```bash
 CUDA_VISIBLE_DEVICES=0 python -m \
   multi_component_exact_factorization_gpu.propagate_gpu \
