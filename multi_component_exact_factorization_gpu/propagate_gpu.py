@@ -865,6 +865,15 @@ def parse_args():
         "--bo-save-basis-states", action="store_true",
         help="큰 static BO eigenvector tensor도 archive에 저장",
     )
+    electronic.add_argument(
+        "--no-bo-save-electron-density", action="store_false",
+        dest="bo_save_electron_density", default=True,
+        help=(
+            "저장 frame의 exact electron marginal 합성을 생략. 기본값은 "
+            "BO basis 전체를 archive에 넣지 않고 R-block으로 합성한 작은 "
+            "electron_density(t,x)를 저장"
+        ),
+    )
     parser.add_argument(
         "--save-every", type=int, default=0,
         help="저장 step 간격; 0이면 약 200 frame이 되도록 자동 선택",

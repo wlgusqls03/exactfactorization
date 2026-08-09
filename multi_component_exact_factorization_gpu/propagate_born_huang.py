@@ -57,6 +57,17 @@ def run_born_huang(args):
     saved_basis_states = (
         basis_cpu.states if getattr(args, "bo_save_basis_states", False) else None
     )
+    compact_basis_states = None
+    if getattr(args, "bo_save_electron_density", True):
+        # The clamped electronic Hamiltonian and phase-aligned eigenstates are
+        # real.  Keeping only real64 cuts persistent host storage in half
+        # relative to the original complex128 basis.  Contraction below is
+        # R-blocked, so no full Phi(x,q,R) temporary is formed.
+        compact_basis_states = (
+            basis_cpu.states.real
+            if saved_basis_states is not None
+            else np.array(basis_cpu.states.real, dtype=np.float64, copy=True)
+        )
     if saved_basis_states is None:
         # The x-grid eigenvectors are not used in the time loop.  Releasing
         # them keeps the BO backend's host-memory footprint independent of nt.
@@ -81,6 +92,8 @@ def run_born_huang(args):
         times_fs=[], electronic_coefficients=[], lambda_wavefunction=[], chi=[],
         a=[], b=[], alpha=[], epsilon_1=[], epsilon_2=[], norm=[], pnc_error=[],
         pnc_projection_correction=[], bo_populations=[],
+        bo_state_density_q=[], bo_state_density_R=[],
+        electron_density=[],
     )
     diagnostic_names = (
         "max_product_residual_l2", "max_effective_product_residual_l2",
@@ -131,12 +144,36 @@ def run_born_huang(args):
         for key in ("a", "b", "alpha", "epsilon_1", "epsilon_2"):
             histories[key].append(transformed[key])
         histories["norm"].append(norm)
+        state_joint = np.abs(c_out)**2*joint[None, :, :]
         histories["bo_populations"].append(
-            np.sum(
-                np.abs(c_out)**2*joint[None, :, :], axis=(1, 2),
-                dtype=np.float64,
-            )*cpu_model.dq*cpu_model.dR
+            np.sum(state_joint, axis=(1, 2), dtype=np.float64)
+            *cpu_model.dq*cpu_model.dR
         )
+        # Paper-style BO-surface plots need |F_n|^2 resolved along the two
+        # nuclear coordinates.  Saving these reductions costs only
+        # O(nt*N_BO*(nq+nR)), unlike saving phi_n(x,q,R).
+        histories["bo_state_density_q"].append(
+            np.sum(state_joint, axis=2, dtype=np.float64)*cpu_model.dR
+        )
+        histories["bo_state_density_R"].append(
+            np.sum(state_joint, axis=1, dtype=np.float64)*cpu_model.dq
+        )
+        if compact_basis_states is not None:
+            electron_density = np.zeros(len(cpu_model.x), dtype=np.float64)
+            block = 32
+            for start_R in range(0, len(cpu_model.R), block):
+                stop_R = min(start_R+block, len(cpu_model.R))
+                phi_block = np.einsum(
+                    "nqR,nxqR->xqR",
+                    c_out[:, :, start_R:stop_R],
+                    compact_basis_states[:, :, :, start_R:stop_R],
+                    optimize=True,
+                )
+                electron_density += np.sum(
+                    np.abs(phi_block)**2*joint[None, :, start_R:stop_R],
+                    axis=(1, 2), dtype=np.float64,
+                )*cpu_model.dq*cpu_model.dR
+            histories["electron_density"].append(electron_density)
         _, _, _, error = pnc_project_coefficients(
             coefficients, lam, chi, model
         )

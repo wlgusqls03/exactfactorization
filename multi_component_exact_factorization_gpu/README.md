@@ -267,23 +267,35 @@ CUDA_VISIBLE_DEVICES=0 python -m \
 eigenvector도 archive에 저장하여 full-Psi reference 비교가 가능하지만,
 archive가 커지므로 convergence run에서만 권장한다.
 
-Born--Huang archive에는 x-grid basis가 없어도 동작하는 전용 compact report가
-있다. q/R marginal과 경계 확률, 정규화한 BO population, 핵 밀도로 평균한
-BO energy ladder와 norm/projection 진단을 만든다. 영상도 direct-grid report와
-같은 역할의 세 종류를 제공한다.
+Born--Huang archive도 direct-grid와 같은 이름과 역할의 compact report를
+만든다. 저장 frame마다 exact electron marginal을 R-block으로 합성하고,
+``|C_n Lambda chi|^2``의 q/R marginal도 저장한다. 따라서 거대한 static
+``bo_basis_states`` tensor를 archive에 넣지 않고도 electron/proton/heavy
+marginal, q-R density, momentum/current/force, exact potentials 및 논문식 BO
+surface 위 state-resolved nuclear wave packet을 그릴 수 있다. 이 추가 저장량은
+``O(nt*(nx+N_BO*(nq+nR)))``이다. 합성 시간이 필요 없는 계산만 원하면
+``--no-bo-save-electron-density``를 쓸 수 있으며, 그 archive의 electron panel은
+BO-state composition으로 대체된다.
 
-* ``born_huang_dynamics_overview``: q/R 이동, 경계 확률, BO population
-* ``born_huang_exact_potentials``: epsilon1/epsilon2 및 a/b/alpha
-* ``born_huang_state_ladder_dynamics``: BO level 사이 population transfer
+정적 출력은 direct-grid와 같은 핵심 4장에 BO 전용 1장이 추가된다.
+
+* ``01_particle_motion.png``: electron/proton/heavy motion과 marginal
+* ``02_electronic_transitions.png``: BO population 및 state-projected packet
+* ``03_exact_potentials.png``: scalar/vector potential, momentum, force
+* ``04_numerical_reliability.png``: norm/tangent/product 진단
+* ``05_born_huang_surface_dynamics.png``: q/R BO surfaces와 colored wave packets
+
+영상 이름도 ``mcef_dynamics_overview``, ``mcef_exact_potentials``,
+``mcef_physical_interpretation``으로 direct-grid report와 맞춘다.
 
 ```bash
 python -m multi_component_exact_factorization.render_all \
   results/YYYYMMDD/run_name --fast
 ```
 
-출력은 계산 폴더의 ``report/`` 아래에 저장된다. 전자 x-density 자체는
-``bo_basis_states`` 없이는 재구성할 수 없지만, 큰 basis tensor를 저장하지
-않아도 BO state 사이 population 이동은 직접 볼 수 있다.
+출력은 계산 폴더의 ``report/`` 아래에 저장된다. 이번 변경 이전 archive도
+``electronic_coefficients``를 한 번 읽어 state-resolved q/R density를 복원할 수
+있지만, 저장되지 않은 electron marginal은 BO composition panel로 표시한다.
 
 BO truncation은 같은 짧은 시간에서 ``--bo-states 4``, ``6``, ``8``을
 순서대로 실행하여 ``bo_populations``와 full-Psi fidelity가 수렴하는지
