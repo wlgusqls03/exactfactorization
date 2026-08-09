@@ -432,9 +432,11 @@ def deep_tail_gate(density, relative_threshold, model):
 
 def gated_values(values, gate):
     """Apply a gate without ever evaluating 0*Inf in the exact-zero tail."""
-    result = cp.zeros_like(values)
-    cp.multiply(values, gate, out=result, where=gate > 0.0)
-    return result
+    # CuPy 11 does not implement NumPy ufunc's ``where=`` keyword.  Select
+    # inactive entries to an exact zero first, then multiply.  This also avoids
+    # forming 0*Inf when a raw tail ratio has already become very large.
+    active_values = cp.where(gate > 0.0, values, 0.0)
+    return active_values*gate
 
 
 def suppressed_probability(density, mask, volume, model):
