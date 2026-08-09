@@ -18,6 +18,7 @@ import numpy as np
 from result_paths import dated_results_dir
 
 from . import (
+    born_huang_report,
     compact_report,
     dynamics_analysis,
     excited_state_analysis,
@@ -28,6 +29,7 @@ from . import (
 
 
 ARCHIVE_NAMES = (
+    "multi_component_born_huang_ef_gpu.npz",
     "multi_component_direct_ef_gpu.npz",
     "multi_component_direct_ef.npz",
     "multi_component_reference.npz",
@@ -120,6 +122,12 @@ def archive_state(archive: Path) -> tuple[int, str]:
     return excitation, label
 
 
+def is_born_huang_archive(archive: Path) -> bool:
+    """Identify coefficient archives without materializing large members."""
+    with np.load(archive, allow_pickle=False) as data:
+        return "electronic_coefficients" in data.files
+
+
 def run(args):
     resolved = resolve_run_input(args.run)
     archive, run_dir = find_archive(resolved)
@@ -152,6 +160,16 @@ def run(args):
             f"빠른 렌더링: animation frame={max_frames}, "
             f"dpi={animation_dpi}, 3D frame={max_3d_frames}"
         )
+
+    if is_born_huang_archive(archive):
+        print("Born--Huang coefficient archive 전용 compact report 생성")
+        born_huang_report.run(
+            archive, output_root/"report", dpi=args.dpi,
+            no_animation=args.no_animation, fps=args.fps,
+            max_frames=max_frames, animation_dpi=animation_dpi,
+            fmt=args.format,
+        )
+        return
 
     data = visualize.load_archive(
         archive, materialize=not args.low_memory

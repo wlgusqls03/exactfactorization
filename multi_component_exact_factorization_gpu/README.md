@@ -265,8 +265,20 @@ CUDA_VISIBLE_DEVICES=0 python -m \
 따라서 큰 동적 전자 배열의 원소 수는 ``nx*nq*nR``에서
 ``N_BO*nq*nR``로 줄어든다. ``--bo-save-basis-states``를 추가하면 정적 BO
 eigenvector도 archive에 저장하여 full-Psi reference 비교가 가능하지만,
-archive가 커지므로 convergence run에서만 권장한다. BO archive는 아직 direct
-grid report 형식으로 자동 렌더링하지 않는다.
+archive가 커지므로 convergence run에서만 권장한다.
+
+Born--Huang archive에는 x-grid basis가 없어도 동작하는 전용 compact report가
+있다. q/R marginal과 경계 확률, 정규화한 BO population, 핵 밀도로 평균한
+BO energy ladder, norm/projection 진단과 state-ladder dynamics 영상을 만든다.
+
+```bash
+python -m multi_component_exact_factorization.render_all \
+  results/YYYYMMDD/run_name --fast
+```
+
+출력은 계산 폴더의 ``report/`` 아래에 저장된다. 전자 x-density 자체는
+``bo_basis_states`` 없이는 재구성할 수 없지만, 큰 basis tensor를 저장하지
+않아도 BO state 사이 population 이동은 직접 볼 수 있다.
 
 BO truncation은 같은 짧은 시간에서 ``--bo-states 4``, ``6``, ``8``을
 순서대로 실행하여 ``bo_populations``와 full-Psi fidelity가 수렴하는지

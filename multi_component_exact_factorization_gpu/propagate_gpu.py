@@ -1004,16 +1004,7 @@ def parse_args():
 def _execute(args):
     """GPU 전파 배열이 해제된 뒤 선택적으로 CPU 렌더링을 실행한다."""
     path = run(args)
-    if (
-        getattr(args, "render_after", False)
-        and getattr(args, "electronic_representation", "grid") == "born_huang"
-    ):
-        print(
-            "Born--Huang archive는 전자 x-grid trajectory를 저장하지 않아 "
-            "현재 compact 자동 렌더링을 생략합니다. --bo-save-basis-states는 "
-            "full-Psi reference 비교용입니다."
-        )
-    elif getattr(args, "render_after", False):
+    if getattr(args, "render_after", False):
         from multi_component_exact_factorization.render_all import (
             render_completed_run,
         )

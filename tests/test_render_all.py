@@ -61,6 +61,17 @@ class RenderAllDiscoveryTests(unittest.TestCase):
                 (archive.resolve(), run_dir.resolve()),
             )
 
+    def test_finds_born_huang_gpu_archive(self):
+        with TemporaryDirectory() as temporary:
+            run_dir = Path(temporary)/"run"
+            run_dir.mkdir()
+            archive = run_dir/"multi_component_born_huang_ef_gpu.npz"
+            archive.touch()
+            self.assertEqual(
+                render_all.find_archive(run_dir.resolve()),
+                (archive.resolve(), run_dir.resolve()),
+            )
+
     def test_reads_excited_state_metadata(self):
         with TemporaryDirectory() as temporary:
             archive = Path(temporary)/"result.npz"
@@ -72,6 +83,25 @@ class RenderAllDiscoveryTests(unittest.TestCase):
                 render_all.archive_state(archive),
                 (2, "excited state n=2"),
             )
+
+    @patch.object(render_all.born_huang_report, "run")
+    def test_born_huang_archive_uses_coefficient_native_report(self, report_run):
+        with TemporaryDirectory() as temporary:
+            run_dir = Path(temporary)/"results"/"20260731"/"bh"
+            run_dir.mkdir(parents=True)
+            archive = run_dir/"multi_component_born_huang_ef_gpu.npz"
+            np.savez(
+                archive,
+                electronic_coefficients=np.zeros((1, 2, 2, 2)),
+                args=np.array([{"electron_excitation": 1}], dtype=object),
+            )
+            args = render_all.parse_args([
+                str(run_dir), "--no-animation", "--no-3d",
+            ])
+            render_all.run(args)
+            report_run.assert_called_once()
+            self.assertEqual(report_run.call_args.args[0], archive.resolve())
+            self.assertTrue(report_run.call_args.kwargs["no_animation"])
 
     @patch.object(render_all.compact_report, "run")
     @patch.object(render_all.visualize, "run")
