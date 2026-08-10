@@ -10,10 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import tempfile
 import time
+import uuid
 
 import numpy as np
 
@@ -34,6 +36,12 @@ class BornHuangBasis:
     D_q: np.ndarray
     d_R: np.ndarray
     D_R: np.ndarray
+    # Forward BO-overlap links <phi(g)|phi(g+s)>, s=1,2.  These define
+    # projected finite differences without invoking a discrete product rule.
+    link_q1: np.ndarray | None = None
+    link_q2: np.ndarray | None = None
+    link_R1: np.ndarray | None = None
+    link_R2: np.ndarray | None = None
 
 
 def _project_basis_derivative(states, spacing, coordinate_axis, order, dx):
@@ -66,8 +74,102 @@ def build_born_huang_basis(model, n_states):
     )
 
 
+def forward_overlap_links(states, coordinate_axis, offset, dx):
+    """Return ``<phi(g)|phi(g+offset)>`` on a periodic coordinate grid."""
+    n_states, _, nq, nR = states.shape
+    output = np.empty(
+        (n_states, n_states, nq, nR),
+        dtype=np.result_type(states.dtype, np.float64),
+    )
+    _fill_forward_links(output, states, coordinate_axis, offset, dx)
+    return output
+
+
+def _fill_forward_links(output, states, coordinate_axis, offset, dx):
+    """Fill a RAM array or open_memmap without a full shifted-state copy."""
+    _, _, nq, nR = states.shape
+    block_R = max(1, min(nR, 8))
+    q_shift = (np.arange(nq)+int(offset)) % nq
+    for start in range(0, nR, block_R):
+        stop = min(start+block_R, nR)
+        left = np.asarray(states[:, :, :, start:stop])
+        if coordinate_axis == 2:
+            right = np.take(left, q_shift, axis=2)
+        elif coordinate_axis == 3:
+            indices = (np.arange(start, stop)+int(offset)) % nR
+            right = np.take(states, indices, axis=3)
+        else:
+            raise ValueError("BO link coordinate axis must be q(2) or R(3)")
+        output[:, :, :, start:stop] = np.einsum(
+            "axqr,bxqr->abqr", np.conj(left), right, optimize=True
+        )*dx
+
+
+def _backward_links(forward, coordinate_axis, offset):
+    """Reverse a forward link using S(g,g-s)=S(g-s,g)^H."""
+    link_axis = coordinate_axis+1
+    return np.roll(
+        np.swapaxes(np.conj(forward), 0, 1), int(offset), axis=link_axis
+    )
+
+
+def projected_link_derivatives(
+    coefficients, link1, link2, spacing, coordinate_axis, vector=None,
+):
+    """Exactly adjoint-compatible projected periodic five-point D1/D2.
+
+    This is ``Phi(g)^H D[Phi C](g)`` evaluated through neighbor overlaps.
+    It does not use the continuum Leibniz rule, which a finite-difference
+    stencil does not satisfy exactly.
+    """
+    backward1 = _backward_links(link1, coordinate_axis, 1)
+    backward2 = _backward_links(link2, coordinate_axis, 2)
+    plus1 = np.einsum(
+        "abqR,bqR->aqR", link1,
+        np.roll(coefficients, -1, axis=coordinate_axis), optimize=True,
+    )
+    plus2 = np.einsum(
+        "abqR,bqR->aqR", link2,
+        np.roll(coefficients, -2, axis=coordinate_axis), optimize=True,
+    )
+    minus1 = np.einsum(
+        "abqR,bqR->aqR", backward1,
+        np.roll(coefficients, 1, axis=coordinate_axis), optimize=True,
+    )
+    minus2 = np.einsum(
+        "abqR,bqR->aqR", backward2,
+        np.roll(coefficients, 2, axis=coordinate_axis), optimize=True,
+    )
+    if vector is not None:
+        vector_axis = coordinate_axis-1
+        vector = np.asarray(vector)
+        minus_vector = np.roll(vector, 1, axis=vector_axis)
+        plus_vector = np.roll(vector, -1, axis=vector_axis)
+        plus2_vector = np.roll(vector, -2, axis=vector_axis)
+        integral1 = spacing*(
+            -minus_vector+13.0*vector+13.0*plus_vector-plus2_vector
+        )/24.0
+        phase1 = np.exp(-1j*integral1)
+        phase2 = phase1*np.roll(phase1, -1, axis=vector_axis)
+        plus1 = phase1[None, :, :]*plus1
+        plus2 = phase2[None, :, :]*plus2
+        minus1 = np.conj(np.roll(
+            phase1, 1, axis=vector_axis
+        ))[None, :, :]*minus1
+        minus2 = np.conj(np.roll(
+            phase2, 2, axis=vector_axis
+        ))[None, :, :]*minus2
+    first = (minus2-8.0*minus1+8.0*plus1-plus2)/(12.0*spacing)
+    second = (
+        -minus2+16.0*minus1-30.0*coefficients+16.0*plus1-plus2
+    )/(12.0*spacing**2)
+    return first, second
+
+
 _BO_CACHE_VERSION = 1
+_BO_LINK_VERSION = 1
 _BO_CACHE_ARRAYS = ("energies", "states", "d_q", "D_q", "d_R", "D_R")
+_BO_LINK_ARRAYS = ("link_q1", "link_q2", "link_R1", "link_R2")
 
 
 def _hash_array(digest, values):
@@ -109,7 +211,78 @@ def _load_cached_basis(path, expected_key):
         name: np.load(path/f"{name}.npy", mmap_mode="r", allow_pickle=False)
         for name in _BO_CACHE_ARRAYS
     }
+    link_version_matches = (
+        metadata.get("overlap_link_version") == _BO_LINK_VERSION
+    )
+    arrays.update({
+        name: (
+            np.load(path/f"{name}.npy", mmap_mode="r", allow_pickle=False)
+            if link_version_matches and (path/f"{name}.npy").exists()
+            else None
+        )
+        for name in _BO_LINK_ARRAYS
+    })
     return BornHuangBasis(**arrays)
+
+
+def _write_forward_link(path, states, coordinate_axis, offset, dx):
+    """Stream one large overlap-link tensor from an existing mmap basis."""
+    n_states, _, nq, nR = states.shape
+    temporary = path.with_name(
+        f".{path.name}.{uuid.uuid4().hex}.tmp.npy"
+    )
+    output = np.lib.format.open_memmap(
+        temporary, mode="w+", dtype=np.result_type(states.dtype, np.float64),
+        shape=(n_states, n_states, nq, nR),
+    )
+    try:
+        _fill_forward_links(
+            output, states, coordinate_axis, offset, dx
+        )
+        output.flush()
+        del output
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _ensure_cached_overlap_links(path, basis, dx):
+    """Lazily augment a legacy BO cache with Hermitian overlap links."""
+    metadata_path = path/"metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    version_matches = (
+        metadata.get("overlap_link_version") == _BO_LINK_VERSION
+    )
+    specifications = {
+        "link_q1": (2, 1), "link_q2": (2, 2),
+        "link_R1": (3, 1), "link_R2": (3, 2),
+    }
+    for name, (axis, offset) in specifications.items():
+        target = path/f"{name}.npy"
+        if not version_matches or not target.exists():
+            print(
+                f"BO cache overlap link 생성: {name} "
+                f"(기존 eigenstate 재사용; diagonalization 없음)"
+            )
+            _write_forward_link(target, basis.states, axis, offset, dx)
+    if not version_matches:
+        metadata["overlap_link_version"] = _BO_LINK_VERSION
+        metadata.setdefault("arrays", {})
+        for name in _BO_LINK_ARRAYS:
+            values = np.load(path/f"{name}.npy", mmap_mode="r", allow_pickle=False)
+            metadata["arrays"][name] = {
+                "shape": list(values.shape), "dtype": str(values.dtype),
+            }
+        temporary = metadata_path.with_name(
+            f".{metadata_path.name}.{uuid.uuid4().hex}.tmp"
+        )
+        temporary.write_text(
+            json.dumps(metadata, indent=2, sort_keys=True)+"\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, metadata_path)
+    return _load_cached_basis(path, metadata["key"])
 
 
 def _write_cached_basis(path, key, system_key, basis, n_states):
@@ -156,10 +329,18 @@ def _truncate_basis(basis, n_states):
         D_q=basis.D_q[:n_states, :n_states],
         d_R=basis.d_R[:n_states, :n_states],
         D_R=basis.D_R[:n_states, :n_states],
+        link_q1=(None if basis.link_q1 is None else
+                 basis.link_q1[:n_states, :n_states]),
+        link_q2=(None if basis.link_q2 is None else
+                 basis.link_q2[:n_states, :n_states]),
+        link_R1=(None if basis.link_R1 is None else
+                 basis.link_R1[:n_states, :n_states]),
+        link_R2=(None if basis.link_R2 is None else
+                 basis.link_R2[:n_states, :n_states]),
     )
 
 
-def _find_cached_superset(cache_dir, system_key, n_states):
+def _find_cached_superset(cache_dir, system_key, n_states, dx):
     """Find the smallest compatible cache containing at least ``n_states``."""
     candidates = []
     for metadata_path in Path(cache_dir).glob("*/metadata.json"):
@@ -178,6 +359,7 @@ def _find_cached_superset(cache_dir, system_key, n_states):
         return None
     stored, path, key = min(candidates, key=lambda item: item[0])
     basis = _load_cached_basis(path, key)
+    basis = _ensure_cached_overlap_links(path, basis, dx)
     return _truncate_basis(basis, n_states), stored, path, key
 
 
@@ -193,6 +375,10 @@ def load_or_build_born_huang_basis(
     started = time.perf_counter()
     if cache_dir is None:
         basis = build_born_huang_basis(model, n_states)
+        basis.link_q1 = forward_overlap_links(basis.states, 2, 1, model.dx)
+        basis.link_q2 = forward_overlap_links(basis.states, 2, 2, model.dx)
+        basis.link_R1 = forward_overlap_links(basis.states, 3, 1, model.dx)
+        basis.link_R2 = forward_overlap_links(basis.states, 3, 2, model.dx)
         return basis, {
             "hit": False, "enabled": False, "key": "", "path": "",
             "seconds": time.perf_counter()-started,
@@ -206,6 +392,7 @@ def load_or_build_born_huang_basis(
     if path.exists():
         try:
             basis = _load_cached_basis(path, key)
+            basis = _ensure_cached_overlap_links(path, basis, model.dx)
             return basis, {
                 "hit": True, "enabled": True, "key": key,
                 "path": str(path), "stored_states": n_states,
@@ -217,7 +404,9 @@ def load_or_build_born_huang_basis(
 
     system_key = born_huang_system_key(model)
     if not rebuild:
-        superset = _find_cached_superset(cache_root, system_key, n_states)
+        superset = _find_cached_superset(
+            cache_root, system_key, n_states, model.dx
+        )
         if superset is not None:
             basis, stored_states, source_path, source_key = superset
             return basis, {
@@ -231,6 +420,7 @@ def load_or_build_born_huang_basis(
     # Reload as read-only mmap arrays.  This avoids retaining a second copy
     # while the GPU transfer and optional electron-density basis are prepared.
     basis = _load_cached_basis(path, key)
+    basis = _ensure_cached_overlap_links(path, basis, model.dx)
     return basis, {
         "hit": False, "enabled": True, "key": key,
         "path": str(path), "stored_states": n_states,

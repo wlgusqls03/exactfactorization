@@ -46,7 +46,7 @@ def main(argv=None):
     print(
         "shapes: "
         f"energies={basis.energies.shape}, states={basis.states.shape}, "
-        f"NAC={basis.d_q.shape}"
+        f"NAC={basis.d_q.shape}, links={basis.link_q1.shape}"
     )
     return info["path"]
 

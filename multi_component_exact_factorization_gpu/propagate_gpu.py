@@ -941,6 +941,13 @@ def parse_args():
             "항상 검사"
         ),
     )
+    parser.add_argument(
+        "--max-norm-drift", type=float, default=1.0e-3,
+        help=(
+            "Born--Huang 전파가 finite이더라도 |norm-1|이 이 값을 넘으면 "
+            "실패로 중단; 0이면 비활성화(기본 1e-3)"
+        ),
+    )
     regularization = parser.add_argument_group("node/tail regularization")
     regularization.add_argument(
         "--ratio-floor", type=float, default=1.0e-14,

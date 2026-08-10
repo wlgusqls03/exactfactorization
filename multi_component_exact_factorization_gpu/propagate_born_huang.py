@@ -82,6 +82,10 @@ def run_born_huang(args):
         product_projection_floor_lam=args.product_projection_floor_lam,
     )
     basis = to_gpu_basis(basis_cpu, model)
+    print(
+        "BO 핵 미분: overlap-link periodic 5-point "
+        "(D1 anti-Hermitian, D2 Hermitian by construction)"
+    )
     saved_basis_states = (
         basis_cpu.states if getattr(args, "bo_save_basis_states", False) else None
     )
@@ -255,6 +259,34 @@ def run_born_huang(args):
                 failure = f"step {step}에서 non-finite C/Lambda/chi 검출"
                 print(f"전파 중단 감지: {failure}")
                 break
+            max_norm_drift = float(getattr(args, "max_norm_drift", 1.0e-3))
+            if max_norm_drift > 0.0:
+                coefficient_norm2 = cp.sum(
+                    cp.real(coefficients*cp.conj(coefficients)), axis=0,
+                    dtype=model.reduction_real_dtype,
+                )
+                xi = lam*chi[None, :]
+                current_norm = cp.sum(
+                    coefficient_norm2*cp.real(xi*cp.conj(xi)),
+                    dtype=model.reduction_real_dtype,
+                )*model.dq*model.dR
+                norm_drift = float(cp.abs(current_norm-1.0).get())
+                if norm_drift > max_norm_drift:
+                    failure = (
+                        f"step {step}에서 |norm-1|={norm_drift:.3e}가 "
+                        f"허용값 {max_norm_drift:.3e} 초과"
+                    )
+                    print(f"전파 중단 감지: {failure}")
+                    # This state is still finite.  Preserve it so a failed run
+                    # contains the first threshold-crossing checkpoint rather
+                    # than only the much earlier regular save frame.
+                    save(step, interval_correction, interval)
+                    print(
+                        "norm-drift finite check-point 추가 저장: "
+                        f"step {step} "
+                        f"(t={step*args.dt_au/AU_PER_FS:.6f} fs)"
+                    )
+                    break
         if must_save:
             save(step, interval_correction, interval)
             frame += 1
@@ -285,11 +317,9 @@ def run_born_huang(args):
             cache_info.get("stored_states", n_states)
         ),
         bo_basis_cache_seconds=np.array(cache_info["seconds"]),
+        bo_derivative_backend=np.array("overlap_link_five_point"),
+        bo_overlap_links_in_cache=np.array(True),
         bo_energies=basis_cpu.energies,
-        bo_d_q=basis_cpu.d_q,
-        bo_D_q=basis_cpu.D_q,
-        bo_d_R=basis_cpu.d_R,
-        bo_D_R=basis_cpu.D_R,
         x=cpu_model.x, q=cpu_model.q, R=cpu_model.R,
         log_derivative_backend=np.array(args.log_derivative_backend),
         product_projection_backend=np.array(args.product_projection_backend),

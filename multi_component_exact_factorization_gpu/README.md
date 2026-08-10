@@ -263,11 +263,20 @@ CUDA_VISIBLE_DEVICES=0 python -m \
   --no-render-after --outdir mcef_bh6_weak_weighted_smoke
 ```
 
-시간 loop에는 ``C_j(q,R)``, BO energy와 q/R 1·2차 NAC만 GPU에 남는다.
+시간 loop에는 ``C_j(q,R)``, BO energy와 q/R BO-overlap link만 GPU에 남는다.
 따라서 큰 동적 전자 배열의 원소 수는 ``nx*nq*nR``에서
 ``N_BO*nq*nR``로 줄어든다. ``--bo-save-basis-states``를 추가하면 정적 BO
 eigenvector도 archive에 저장하여 full-Psi reference 비교가 가능하지만,
 archive가 커지므로 convergence run에서만 권장한다.
+
+BO 계수의 q/R 미분은 더 이상 연속 Leibniz 식
+``D2 C + 2 d D1 C + D C``를 유한차분 항별로 조립하지 않는다. 대신 이웃
+격자의 overlap ``<phi(q,R)|phi(q+s,R)>``를 포함한 projected 5-point stencil로
+``Phi^H D(Phi C)``를 직접 계산한다. forward/backward link를 정확한 수반으로
+짝지으므로 이산 D1은 anti-Hermitian, D2는 Hermitian이며, vector potential이
+있는 공변미분에도 conjugate Wilson link를 쓴다. 이는 bare periodic stencil은
+정확히 Hermitian인데 BO 조립 kinetic operator만 시간이 갈수록 Hermiticity를
+잃던 문제를 제거한다.
 
 같은 전자 Hamiltonian의 BO diagonalization은 기본적으로
 ``results/bo_basis_cache``에 한 번 저장한다. cache key는 ``N_BO``뿐 아니라
@@ -282,8 +291,13 @@ archive가 커지므로 convergence run에서만 권장한다.
 정상 cache는 두 번째 실행에서 ``BO basis cache HIT: 재사용``으로 표시된다.
 현재 조건만 강제로 다시 만들 때는 ``--rebuild-bo-basis-cache``, cache 자체를
 쓰지 않을 때는 ``--no-bo-basis-cache``를 사용한다. 큰 full-box BH6 cache는
-real64 eigenstate와 NAC를 포함하므로 수 GB의 디스크 공간이 필요하지만, 매
-실행마다 수십만 개의 전자 고유값 문제를 다시 푸는 시간을 없앤다.
+real64 eigenstate, legacy NAC와 overlap link를 포함하므로 수 GB의 디스크
+공간이 필요하지만, 매 실행마다 수십만 개의 전자 고유값 문제를 다시 푸는
+시간을 없앤다.
+이전 cache에는 첫 재사용 때 네 개의 overlap-link 파일이 자동으로 추가된다.
+이 과정은 기존 eigenstate만 읽으므로 diagonalization을 다시 하지 않는다.
+BO10, ``nq=450``, ``nR=900``의 link 네 개는 약 1.21 GiB이고 생성이 한 번만
+필요하다.
 
 동역학을 시작하지 않고 static BO cache만 미리 만들 수도 있다. 예를 들어
 동일한 모델과 격자의 BO10 cache를 한 번 만들면 이후 BO1--BO10 계산은 exact
@@ -348,6 +362,9 @@ python -m multi_component_exact_factorization.compare \
 
 가장 높은 retained BO state의 population이 계속 커지면 state 수가 부족한
 것이므로 장시간 run으로 넘어가지 않는다. 짧은 기준을 통과한 뒤에만
+장시간 계산을 수행한다. BO 계산은 기본적으로 ``|norm-1|>1e-3``이면 finite
+값이어도 실패로 중단하고 해당 checkpoint를 저장한다. 임계값은
+``--max-norm-drift``로 바꿀 수 있고 0이면 이 검사만 비활성화된다.
 ``--t-final-fs``를 2, 5, 10, 20 fs 순서로 늘린다.
 
 계산이 정상 종료되어 NPZ 저장까지 성공하면 빠른 report와 동영상을 자동으로

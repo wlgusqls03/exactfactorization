@@ -8,9 +8,11 @@ import numpy as np
 
 from multi_component_exact_factorization.born_huang import (
     build_born_huang_basis,
+    forward_overlap_links,
     load_or_build_born_huang_basis,
     coefficient_vector_potential,
     projected_plain_second,
+    projected_link_derivatives,
     projected_residual_momentum,
     projected_residual_square,
     reconstruct_electronic_grid,
@@ -131,6 +133,73 @@ class BornHuangOperatorTests(unittest.TestCase):
             actual_second-projected_second
         )), 3.0e-7)
 
+        link1 = forward_overlap_links(states, 2, 1, 1.0)
+        link2 = forward_overlap_links(states, 2, 2, 1.0)
+        link_first, link_second = projected_link_derivatives(
+            c, link1, link2, dq, 1
+        )
+        direct_plain_first = derivative(phi, dq, axis=1)
+        direct_plain_second = derivative(phi, dq, axis=1, order=2)
+        expected_first = np.einsum(
+            "lxqr,xqr->lqr", np.conj(states), direct_plain_first
+        )
+        expected_second = np.einsum(
+            "lxqr,xqr->lqr", np.conj(states), direct_plain_second
+        )
+        self.assertTrue(np.allclose(
+            link_first, expected_first, atol=2.0e-13
+        ))
+        self.assertTrue(np.allclose(
+            link_second, expected_second, atol=2.0e-13
+        ))
+        link_cov_first, link_cov_second = projected_link_derivatives(
+            c, link1, link2, dq, 1, vector=vector
+        )
+        self.assertLess(np.max(np.abs(
+            -1j*link_cov_first-projected_first
+        )), 2.0e-6)
+        self.assertLess(np.max(np.abs(
+            -link_cov_second-projected_second
+        )), 2.0e-6)
+
+    def test_overlap_link_derivatives_have_exact_discrete_adjoints(self):
+        rng = np.random.default_rng(20260811)
+        states = rng.normal(
+            size=(self.ns, self.nx, self.nq, self.nR)
+        )
+        # Orthonormalize the electronic columns independently at every q/R.
+        for iq in range(self.nq):
+            for iR in range(self.nR):
+                qmat, _ = np.linalg.qr(states[:, :, iq, iR].T)
+                states[:, :, iq, iR] = qmat.T
+        link1 = forward_overlap_links(states, 2, 1, 1.0)
+        link2 = forward_overlap_links(states, 2, 2, 1.0)
+        u = rng.normal(size=self.c.shape)+1j*rng.normal(size=self.c.shape)
+        v = rng.normal(size=self.c.shape)+1j*rng.normal(size=self.c.shape)
+        d1u, d2u = projected_link_derivatives(
+            u, link1, link2, self.dq, 1
+        )
+        d1v, d2v = projected_link_derivatives(
+            v, link1, link2, self.dq, 1
+        )
+        self.assertLess(abs(np.vdot(u, d1v)+np.vdot(d1u, v)), 2.0e-11)
+        self.assertLess(abs(np.vdot(u, d2v)-np.vdot(d2u, v)), 2.0e-10)
+        vector = 0.2*np.sin(
+            np.arange(self.nq)*self.dq
+        )[:, None]*np.ones((1, self.nR))
+        cov1u, cov2u = projected_link_derivatives(
+            u, link1, link2, self.dq, 1, vector=vector
+        )
+        cov1v, cov2v = projected_link_derivatives(
+            v, link1, link2, self.dq, 1, vector=vector
+        )
+        self.assertLess(
+            abs(np.vdot(u, cov1v)+np.vdot(cov1u, v)), 2.0e-11
+        )
+        self.assertLess(
+            abs(np.vdot(u, cov2v)-np.vdot(cov2u, v)), 2.0e-10
+        )
+
     def test_local_basis_nacs_are_finite_and_normalized(self):
         with patch.object(sys, "argv", [
             "test", "--nx", "18", "--nq", "7", "--nR", "6",
@@ -164,10 +233,24 @@ class BornHuangOperatorTests(unittest.TestCase):
             self.assertFalse(first_info["hit"])
             self.assertTrue(second_info["hit"])
             self.assertEqual(first_info["key"], second_info["key"])
-            for name in ("energies", "states", "d_q", "D_q", "d_R", "D_R"):
+            for name in (
+                "energies", "states", "d_q", "D_q", "d_R", "D_R",
+                "link_q1", "link_q2", "link_R1", "link_R2",
+            ):
                 self.assertTrue(np.array_equal(
                     np.asarray(getattr(first, name)),
                     np.asarray(getattr(second, name)),
+                ))
+            for name, axis, offset in (
+                ("link_q1", 2, 1), ("link_q2", 2, 2),
+                ("link_R1", 3, 1), ("link_R2", 3, 2),
+            ):
+                expected = forward_overlap_links(
+                    np.asarray(first.states), axis, offset, model.dx
+                )
+                self.assertTrue(np.allclose(
+                    np.asarray(getattr(first, name)), expected,
+                    atol=2.0e-13,
                 ))
 
     def test_smaller_basis_reuses_cached_superset(self):

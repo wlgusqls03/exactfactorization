@@ -25,24 +25,111 @@ from .gpu_core import (
 @dataclass
 class GPUBornHuangBasis:
     energies: cp.ndarray
-    d_q: cp.ndarray
-    D_q: cp.ndarray
-    d_R: cp.ndarray
-    D_R: cp.ndarray
+    link_q1: cp.ndarray
+    link_q2: cp.ndarray
+    back_q1: cp.ndarray
+    back_q2: cp.ndarray
+    link_R1: cp.ndarray
+    link_R2: cp.ndarray
+    back_R1: cp.ndarray
+    back_R2: cp.ndarray
 
 
 def to_gpu_basis(basis, model):
+    for name in ("link_q1", "link_q2", "link_R1", "link_R2"):
+        if getattr(basis, name, None) is None:
+            raise ValueError(f"BO overlap link가 없습니다: {name}")
+
+    def links(forward, axis, offset):
+        # The present one-dimensional electronic Hamiltonian has real BO
+        # eigenvectors, but retaining this branch makes the link backend safe
+        # for future magnetic/complex bases instead of silently discarding a
+        # phase that is required by the adjoint relation.
+        dtype = (
+            model.complex_dtype if np.iscomplexobj(forward)
+            else model.real_dtype
+        )
+        forward_gpu = cp.asarray(forward, dtype=dtype)
+        backward_gpu = cp.roll(
+            cp.swapaxes(cp.conj(forward_gpu), 0, 1),
+            offset, axis=axis+1,
+        )
+        return forward_gpu, backward_gpu
+
+    link_q1, back_q1 = links(basis.link_q1, 1, 1)
+    link_q2, back_q2 = links(basis.link_q2, 1, 2)
+    link_R1, back_R1 = links(basis.link_R1, 2, 1)
+    link_R2, back_R2 = links(basis.link_R2, 2, 2)
     return GPUBornHuangBasis(
         energies=cp.asarray(basis.energies, dtype=model.real_dtype),
-        d_q=cp.asarray(basis.d_q, dtype=model.complex_dtype),
-        D_q=cp.asarray(basis.D_q, dtype=model.complex_dtype),
-        d_R=cp.asarray(basis.d_R, dtype=model.complex_dtype),
-        D_R=cp.asarray(basis.D_R, dtype=model.complex_dtype),
+        link_q1=link_q1, link_q2=link_q2,
+        back_q1=back_q1, back_q2=back_q2,
+        link_R1=link_R1, link_R2=link_R2,
+        back_R1=back_R1, back_R2=back_R2,
     )
 
 
 def connection_action(connection, coefficients):
     return cp.einsum("ljqR,jqR->lqR", connection, coefficients)
+
+
+def _axis_links(basis, axis):
+    if axis == 1:
+        return basis.link_q1, basis.link_q2, basis.back_q1, basis.back_q2
+    if axis == 2:
+        return basis.link_R1, basis.link_R2, basis.back_R1, basis.back_R2
+    raise ValueError("BO coefficient coordinate axis must be q(1) or R(2)")
+
+
+def _forward_gauge_phases(vector, spacing, vector_axis):
+    """Fourth-order symmetric link phases for (d-iA) on a uniform grid."""
+    minus1 = cp.roll(vector, 1, axis=vector_axis)
+    plus1 = cp.roll(vector, -1, axis=vector_axis)
+    plus2 = cp.roll(vector, -2, axis=vector_axis)
+    integral1 = spacing*(-minus1+13.0*vector+13.0*plus1-plus2)/24.0
+    phase1 = cp.exp(-1j*integral1)
+    # The length-two Wilson line is the product of adjacent length-one links.
+    phase2 = phase1*cp.roll(phase1, -1, axis=vector_axis)
+    return phase1, phase2
+
+
+def projected_link_derivatives(
+    coefficients, basis, spacing, axis, vector=None,
+):
+    """Projected D1/D2 with exact discrete adjoint relations.
+
+    Neighbor BO overlaps evaluate Phi(g)^H D[Phi C](g) directly.  Forward
+    and backward links are conjugate transposes, hence plain D1 is exactly
+    anti-Hermitian and plain D2 exactly Hermitian.  Optional real ``vector``
+    inserts mutually conjugate Wilson phases for the covariant derivatives.
+    """
+    link1, link2, back1, back2 = _axis_links(basis, axis)
+    plus1_values = cp.roll(coefficients, -1, axis=axis)
+    plus2_values = cp.roll(coefficients, -2, axis=axis)
+    minus1_values = cp.roll(coefficients, 1, axis=axis)
+    minus2_values = cp.roll(coefficients, 2, axis=axis)
+    plus1 = connection_action(link1, plus1_values)
+    plus2 = connection_action(link2, plus2_values)
+    minus1 = connection_action(back1, minus1_values)
+    minus2 = connection_action(back2, minus2_values)
+    if vector is not None:
+        vector_axis = axis-1
+        phase1, phase2 = _forward_gauge_phases(
+            vector, spacing, vector_axis
+        )
+        plus1 = phase1[None, :, :]*plus1
+        plus2 = phase2[None, :, :]*plus2
+        minus1 = cp.conj(cp.roll(
+            phase1, 1, axis=vector_axis
+        ))[None, :, :]*minus1
+        minus2 = cp.conj(cp.roll(
+            phase2, 2, axis=vector_axis
+        ))[None, :, :]*minus2
+    first = (minus2-8.0*minus1+8.0*plus1-plus2)/(12.0*spacing)
+    second = (
+        -minus2+16.0*minus1-30.0*coefficients+16.0*plus1-plus2
+    )/(12.0*spacing**2)
+    return first, second
 
 
 def projected_gradient(coefficients, connection, spacing, axis):
@@ -140,12 +227,12 @@ def instantaneous_functionals_bh(
 ):
     # Reuse the expensive coefficient derivatives/NAC contractions in a, b,
     # the residual momenta and their squares.
-    first_q = derivative(coefficients, model.dq, axis=1)
-    d_c_q = connection_action(basis.d_q, coefficients)
-    gradient_q = first_q+d_c_q
-    first_R = derivative(coefficients, model.dR, axis=2)
-    d_c_R = connection_action(basis.d_R, coefficients)
-    gradient_R = first_R+d_c_R
+    gradient_q, _ = projected_link_derivatives(
+        coefficients, basis, model.dq, axis=1
+    )
+    gradient_R, _ = projected_link_derivatives(
+        coefficients, basis, model.dR, axis=2
+    )
     a = (-1j*cp.sum(
         cp.conj(coefficients)*gradient_q, axis=0,
         dtype=model.reduction_complex_dtype,
@@ -236,22 +323,16 @@ def instantaneous_functionals_bh(
         xi_logamp_R = lam_logamp_R+chi_logamp_R[None, :]
         chi_logamp_used = chi_logamp_R
 
-    p_q = -1j*gradient_q-a[None, :, :]*coefficients
-    p2_q = (
-        -derivative(coefficients, model.dq, axis=1, order=2)
-        -2.0*connection_action(basis.d_q, first_q)
-        -connection_action(basis.D_q, coefficients)
-        +1j*derivative(a, model.dq, axis=0)[None, :, :]*coefficients
-        +2j*a[None, :, :]*gradient_q+a[None, :, :]**2*coefficients
+    cov_gradient_q, cov_second_q = projected_link_derivatives(
+        coefficients, basis, model.dq, axis=1, vector=a
     )
-    p_R = -1j*gradient_R-b[None, :, :]*coefficients
-    p2_R = (
-        -derivative(coefficients, model.dR, axis=2, order=2)
-        -2.0*connection_action(basis.d_R, first_R)
-        -connection_action(basis.D_R, coefficients)
-        +1j*derivative(b, model.dR, axis=1)[None, :, :]*coefficients
-        +2j*b[None, :, :]*gradient_R+b[None, :, :]**2*coefficients
+    cov_gradient_R, cov_second_R = projected_link_derivatives(
+        coefficients, basis, model.dR, axis=2, vector=b
     )
+    p_q = -1j*cov_gradient_q
+    p2_q = -cov_second_q
+    p_R = -1j*cov_gradient_R
+    p2_R = -cov_second_R
     if model.coupling_mask_backend == "flat_top":
         coefficient_q = gated_values(
             lam_phase_q+a-1j*xi_logamp_q, mask_phi
@@ -340,12 +421,12 @@ def project_product_residual_bh(
         dlam*chi[None, :]+lam*dchi[None, :]
     )[None, :, :]
     target = -1j*(
-        -0.5*projected_plain_second(
-            y, basis.d_q, basis.D_q, model.dq, 1
-        )/model.proton_mass
-        -0.5*projected_plain_second(
-            y, basis.d_R, basis.D_R, model.dR, 2
-        )/model.heavy_mass
+        -0.5*projected_link_derivatives(
+            y, basis, model.dq, axis=1
+        )[1]/model.proton_mass
+        -0.5*projected_link_derivatives(
+            y, basis, model.dR, axis=2
+        )[1]/model.heavy_mass
     )
     residual = target-product_rhs
     xi_density = cp.real(xi*cp.conj(xi))
