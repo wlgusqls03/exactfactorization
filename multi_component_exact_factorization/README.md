@@ -1,7 +1,7 @@
 # 1D Multi-Component Exact Factorization
 
 이 디렉터리는 기존 `exact_factorization/`과 완전히 분리된 교육용 구현이다.
-왼쪽 고정 양전하 중심, 전자 하나, 양성자 하나, 오른쪽의 무거운 핵 하나를
+양쪽 고정 양전하 중심, 전자 하나, 양성자 하나, 움직이는 무거운 핵 하나를
 모두 1차원 실공간에서 다룬다. 움직이는 세 입자의 full wavefunction은
 
 ```text
@@ -13,7 +13,7 @@ Psi(x,q,R,t) = Phi_{R,q}(x,t) Lambda_R(q,t) chi(R,t)
 - `x`: 전자 좌표
 - `q`: 양성자(수소 핵) 좌표
 - `R`: 오른쪽 무거운 핵 좌표
-- 왼쪽 중심: 고정되어 potential에 포함되며 전자 hard-wall의 왼쪽 끝
+- 고정 중심: `x=-10,+10`에서 potential에 포함되는 두 `+1` 전하
 
 전자 초기상태는 모든 `(q,R)`에서 local `H_BO(x;q,R)`를 풀어 얻은
 고유상태로 만든다. BO 계산은 물리적인 **초기 전자상태 구성**에만 사용하며,
@@ -179,19 +179,18 @@ box에서는 각 1차원 wavefunction을 격자 적분으로 다시 정규화한
 
 ## 기본 격자와 전자 hard wall
 
-기본 spacing은 세 좌표에서 모두 `0.08 a0`로 맞췄다.
+기본 geometry는 물리적 고정 중심과 수치적 전자 경계를 분리한다.
 
 | 좌표 | 물리적 범위 | 점 수 | spacing | 경계 |
 |---|---:|---:|---:|---|
-| electron `x` | `(-6,8)` interior | 174 | 0.08 | 양쪽 Dirichlet hard wall |
-| proton `q` | `[-3.36,3.6)` | 87 | 0.08 | periodic 5-point central finite difference |
-| heavy `R` | `[3.0,5.4)` | 30 | 0.08 | periodic 5-point central finite difference |
+| electron `x` | `(-22,22)` interior | 151 | `44/(nx+1)` = 0.2895 | 양쪽 Dirichlet hard wall |
+| proton `q` | `[-9,9)` | 151 | `18/nq` = 0.1192 | periodic 5-point central finite difference |
+| heavy `R` | `[-9,9)` | 151 | `18/nR` = 0.1192 | periodic 5-point central finite difference |
 
-전자 왼쪽 경계는 항상 `--left-position`과 같으며 기본값은 `-6 a0`이다.
-경계점 자체에서는 `Phi=0`이고 배열에는 174개 interior point만 저장한다.
+전자 수치경계는 기본 `--x-min -22 --x-max 22`이며 고정전하 위치와 독립이다.
+경계점 자체에서는 `Phi=0`이고 배열에는 151개 interior point만 저장한다.
 전자 kinetic은 FFT가 아니라 DST-I sine basis를 사용하므로 왼쪽 벽을 넘어
-오른쪽으로 wrap-around하지 않는다. `--x-min` option은 없으며 오른쪽 벽만
-`--x-max`로 바꾼다.
+오른쪽으로 wrap-around하지 않는다.
 
 `q`, `R` 미분은 모든 점에서 동일한 4차 정확도 5점 central stencil을 쓰며
 양 끝 인덱스를 주기적으로 연결한다. 이 선택은 균일 격자 내적에서 1차
@@ -200,29 +199,44 @@ density가 경계에 도달하면 wrap-around가 물리에 영향을 주므로 r
 그림의 `outer 5 points` probability가 충분히 작은지 반드시 확인해야 한다.
 Propagation 중 작은 wavefunction 값을 임의로 0으로 자르지는 않는다.
 
-왼쪽 경계 위치와 고정 중심 전하는 서로 독립적인 option이다.
+전자 경계, 고정 중심 위치와 전하는 서로 독립적인 option이다.
 
 ```bash
---left-position -6.0   # hard wall과 왼쪽 고정 중심의 위치
---left-charge 0.0      # 왼쪽 고정 중심 전하 Z_L
---x-max 8.0            # hard wall과 오른쪽 고정 중심의 위치
---right-charge 0.0     # 오른쪽 고정 중심 전하 Z_R
+--x-min -22.0          # 전자 왼쪽 Dirichlet 경계
+--x-max 22.0           # 전자 오른쪽 Dirichlet 경계
+--left-position -10.0  # 왼쪽 고정 중심의 위치
+--left-charge 1.0      # 왼쪽 고정 중심 전하 Z_L
+--right-position 10.0  # 오른쪽 고정 중심의 위치
+--right-charge 1.0     # 오른쪽 고정 중심 전하 Z_R
 ```
 
-`Z_L`의 기본값은 `0`이다. 따라서 기본 계산에서 `x=-6` hard wall은 유지되지만
-왼쪽 중심이 만드는 electron attraction, proton repulsion, left-heavy repulsion
-soft-Coulomb 항은 모두 0이다. 예전처럼 `Z_L=+1` 중심을 사용하려면
-`--left-charge 1.0`을 명시한다.
+기본 초기 중심은 `q0=0`, `R0=2`이다. `x=+-10`의 두 고정 `+1` 전하는
+electron attraction과 proton/heavy repulsion soft-Coulomb 항을 만든다. 이는
+고정 이온 두 개와 움직이는 이온 하나인 표준 Shin--Metiu에 움직이는 proton과
+heavy를 모두 둔 extended MCEF geometry이다.
+
+이 범위와 점 수는 Zaidi--Bian--Subotnik (2026)의 정적 Shin--Metiu 계산
+(`L=20`, `R in [-9,9]`, `r in [-22,22]`, 각 151점)을 기준으로 정했다. 그
+논문은 시간전파가 아니라 Davidson 고유값 계산이며 에너지 변화 `1e-12 Ha`,
+residual `1e-6 Ha`를 수렴 기준으로 사용했다. 따라서 이 geometry는 넓은 전자
+tail과 fixed-center/wall 분리를 위한 출발점이지 MCEF 장시간 안정성의 보장은
+아니다. 우리 DST-I interior/periodic endpoint 배치 때문에 실제 간격은 각각
+`44/152`, `18/151`로 문헌의 약 `44/150`, `18/150`과 1% 이내에서 대응한다.
+
+단, 151점 q/R grid는 문헌의 정적 benchmark를 재현하기 위한 가벼운 기본값이다.
+현재 초기 Gaussian 폭(`sigma_q` 약 0.16, `sigma_R` 약 0.10)을 dynamics에서
+분해하려면 Born--Huang production 계산에는 예를 들어 `nx=300`, `nq=450`,
+`nR=900`(`dx` 약 0.146, `dq` 약 0.04, `dR` 약 0.02)을 권장한다. 이 고해상도 조합은 direct-grid
+`Phi(nx,nq,nR)`에는 매우 크므로 electronic Born--Huang backend용이다.
 
 `--symmetric-box-half-width L`은 전자 box를 `[-L,+L]`로 설정한다. q와 R도
 같은 범위로 시험하려면 `--full-nuclear-range`를 함께 쓰되, 기존 공간 간격을
-보존하도록 `nx`, `nq`, `nR`도 늘려야 한다. `--right-charge`는 오른쪽 벽을
+보존하도록 `nx`, `nq`, `nR`도 늘려야 한다. `--right-charge`는 오른쪽 고정점을
 흡수경계로 만드는 수치 옵션이 아니라 Hamiltonian에 실제 고정전하를 추가하는
 물리 옵션이다. 따라서 벽 반사를 막는 용도로 사용하지 말고 모델에 그 전하가
 존재할 때만 명시적으로 켠다.
 
-Heavy 핵은 질량이 크고 짧은 dynamics에서 이동이 작으므로 기존보다 R box를
-좁히고 점 수도 줄였다. 단, 더 긴 시간 전파에서는 density가 R 경계에
+더 긴 시간 전파에서는 density가 q/R 경계에
 도달하지 않는지 확인하고 필요하면 범위를 넓혀야 한다.
 
 ## 두 gauge의 선택

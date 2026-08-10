@@ -4,7 +4,7 @@
 이 프로그램은 full Psi를 시간 전파한 뒤 분해하는 reference가 아니다.
 초기 ``Phi``는 local BO 고유상태로, ``Lambda``와 ``chi``는 q/R 방향의
 독립적인 BO 곡률로 폭을 정한 Gaussian으로 초기화한 뒤 다음 세 식을 함께
-적분한다. 전자는 왼쪽 고정점에서 0이 되는 hard-wall 경계를 사용한다.
+적분한다. 전자는 고정 전하 위치와 독립적인 Dirichlet hard-wall 경계를 사용한다.
 
     i d_t Phi    = (H_el - epsilon_1) Phi
     i d_t Lambda = (H_pr - epsilon_2) Lambda
@@ -305,7 +305,8 @@ def run(args):
         "격자 간격/경계: "
         f"dx={model.dx:.6f} (hard wall {model.x_left:.3f}..{model.x_right:.3f}), "
         f"dq={model.dq:.6f}, dR={model.dR:.6f}; "
-        f"Z_L={args.left_charge:.3f}, Z_R={args.right_charge:.3f}"
+        f"fixed centers: X_L={args.left_position:.3f}, Z_L={args.left_charge:.3f}; "
+        f"X_R={args.right_position:.3f}, Z_R={args.right_charge:.3f}"
     )
     if args.symmetric_box_half_width > 0.0:
         print(f"대칭 전자 box preset: [-{args.symmetric_box_half_width:g},+{args.symmetric_box_half_width:g}]")

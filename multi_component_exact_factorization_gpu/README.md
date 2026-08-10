@@ -224,16 +224,18 @@ log-amplitude ratio, product inverse correction과 PNC gauge transfer를 정확�
 
 q와 R box가 좁아서 생기는 boundary/vector-potential noise를 분리해 검사할
 때는 ``--full-nuclear-range``를 추가할 수 있다. 이 옵션은 q와 R 범위를
-전자 hard-wall 범위 ``[left-position,x-max)``와 같게 만들지만 점 수는 자동으로
+전자 hard-wall 범위 ``[x-min,x-max)``와 같게 만들지만 점 수는 자동으로
 늘리지 않는다. 따라서 동일한 공간 해상도를 유지하려면 점 수도 box 길이에
 맞게 늘려야 하며, direct-grid 메모리 비용이 ``nx*nq*nR``로 증가한다. 먼저
 작은 점 수와 짧은 시간으로 boundary 진단만 수행한 뒤 production에 사용한다.
 
 전자 box 자체를 대칭인 ``[-L,+L]``로 바꾸려면
-``--symmetric-box-half-width L``을 쓴다. 오른쪽 벽에 실제 고정 중심을 둘
-때만 ``--right-charge Z_R``를 함께 지정한다. 이 전하는 전자 attraction과
+``--symmetric-box-half-width L``을 쓴다. 이 option은 ``--left-position``과
+``--right-position``을 움직이지 않는다. 기본 extended Shin--Metiu geometry는
+두 고정 중심 ``X_L=-10``, ``X_R=10``과 ``Z_L=Z_R=1``을 사용한다. 이 전하는 전자 attraction과
 proton/heavy repulsion 및 좌우 고정 중심 상호작용을 Hamiltonian에 추가하므로
-수치적인 absorbing boundary가 아니며, 기본값 0은 기존 물리를 그대로 보존한다.
+수치적인 absorbing boundary가 아니다. 단일 고정 중심 모델은 명시적으로
+``--right-charge 0``을 사용한다.
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python -m \

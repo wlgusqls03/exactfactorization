@@ -16,6 +16,21 @@ from multi_component_exact_factorization.propagate import parse_args
 
 
 class DeepTailSupportTests(unittest.TestCase):
+    def test_default_geometry_separates_fixed_center_and_electron_wall(self):
+        with patch("sys.argv", ["propagate"]):
+            args = parse_args()
+        model = build_model(args)
+
+        self.assertEqual((model.x_left, model.x_right), (-22.0, 22.0))
+        self.assertEqual((args.left_position, args.left_charge), (-10.0, 1.0))
+        self.assertEqual((args.right_position, args.right_charge), (10.0, 1.0))
+        self.assertEqual((args.q_min, args.q_max, args.q0), (-9.0, 9.0, 0.0))
+        self.assertEqual((args.R_min, args.R_max, args.R0), (-9.0, 9.0, 2.0))
+        self.assertEqual((args.nx, args.nq, args.nR), (151, 151, 151))
+        self.assertAlmostEqual(model.dx, 44.0/152.0)
+        self.assertAlmostEqual(model.dq, 18.0/151.0)
+        self.assertAlmostEqual(model.dR, 18.0/151.0)
+
     def test_gate_has_exact_zero_one_and_smooth_transition(self):
         density = np.array([1.0e-14, 1.0e-13, 1.0e-12, 1.0e-11, 1.0])
         gate = deep_tail_gate(density, 1.0e-12)
@@ -76,14 +91,14 @@ class DeepTailSupportTests(unittest.TestCase):
         with patch("sys.argv", ["propagate", "--full-nuclear-range"]):
             args = parse_args()
         model = build_model(args)
-        self.assertEqual(args.q_min, args.left_position)
-        self.assertEqual(args.R_min, args.left_position)
+        self.assertEqual(args.q_min, args.x_min)
+        self.assertEqual(args.R_min, args.x_min)
         self.assertEqual(args.q_max, args.x_max)
         self.assertEqual(args.R_max, args.x_max)
-        self.assertAlmostEqual(model.q[0], args.left_position)
-        self.assertAlmostEqual(model.R[0], args.left_position)
-        self.assertAlmostEqual(model.dq, 14.0/args.nq)
-        self.assertAlmostEqual(model.dR, 14.0/args.nR)
+        self.assertAlmostEqual(model.q[0], args.x_min)
+        self.assertAlmostEqual(model.R[0], args.x_min)
+        self.assertAlmostEqual(model.dq, 44.0/args.nq)
+        self.assertAlmostEqual(model.dR, 44.0/args.nR)
 
     def test_symmetric_box_preset_updates_effective_ranges(self):
         argv = [
@@ -95,7 +110,8 @@ class DeepTailSupportTests(unittest.TestCase):
             args = parse_args()
         model = build_model(args)
         self.assertEqual((model.x_left, model.x_right), (-10.0, 10.0))
-        self.assertEqual((args.left_position, args.x_max), (-10.0, 10.0))
+        self.assertEqual((args.x_min, args.x_max), (-10.0, 10.0))
+        self.assertEqual(args.left_position, -10.0)
         self.assertEqual((args.q_min, args.q_max), (-10.0, 10.0))
         self.assertEqual((args.R_min, args.R_max), (-10.0, 10.0))
         self.assertAlmostEqual(model.dx, 0.08)
@@ -105,7 +121,7 @@ class DeepTailSupportTests(unittest.TestCase):
     def test_right_fixed_charge_adds_complete_soft_coulomb_terms(self):
         argv = [
             "propagate", "--nx", "5", "--nq", "5", "--nR", "5",
-            "--left-charge", "0.7",
+            "--left-charge", "0.7", "--right-charge", "0.0",
         ]
         with patch("sys.argv", argv):
             args_zero = parse_args()
@@ -118,13 +134,15 @@ class DeepTailSupportTests(unittest.TestCase):
         qq = model_right.q[None, :, None]
         RR = model_right.R[None, None, :]
         expected = 1.3 * (
-            -soft_inverse(xx-model_right.x_right, args_right.soft_e_right)
-            +soft_inverse(qq-model_right.x_right, args_right.soft_p_right)
+            -soft_inverse(xx-args_right.right_position, args_right.soft_e_right)
+            +soft_inverse(qq-args_right.right_position, args_right.soft_p_right)
             +args_right.heavy_charge
-            * soft_inverse(RR-model_right.x_right, args_right.soft_right_heavy)
+            * soft_inverse(
+                RR-args_right.right_position, args_right.soft_right_heavy
+            )
             +args_right.left_charge
             * soft_inverse(
-                model_right.x_right-model_right.x_left,
+                args_right.right_position-args_right.left_position,
                 args_right.soft_left_right,
             )
         )
