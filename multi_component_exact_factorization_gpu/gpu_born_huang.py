@@ -13,6 +13,7 @@ from .gpu_core import (
     derivative,
     gated_values,
     logarithmic_components,
+    flat_top_support_mask,
     occupied_support_mask,
     proton_base_operator,
     remove_local_norm_generator,
@@ -170,8 +171,18 @@ def instantaneous_functionals_bh(
     rho_R = cp.sum(
         rho_qR, axis=0, dtype=model.reduction_real_dtype
     )*model.dq
-    mask_phi = occupied_support_mask(rho_qR, mask_threshold_phi, model)
-    mask_lam = occupied_support_mask(rho_R, mask_threshold_lam, model)
+    if model.coupling_mask_backend == "flat_top":
+        mask_phi = flat_top_support_mask(
+            rho_qR, model.flat_top_on_phi,
+            model.flat_top_transition_decades, model,
+        )
+        mask_lam = flat_top_support_mask(
+            rho_R, model.flat_top_on_lam,
+            model.flat_top_transition_decades, model,
+        )
+    else:
+        mask_phi = occupied_support_mask(rho_qR, mask_threshold_phi, model)
+        mask_lam = occupied_support_mask(rho_R, mask_threshold_lam, model)
     tail_gate_phi = deep_tail_gate(
         rho_qR, model.deep_tail_zero_threshold, model
     )
@@ -241,14 +252,23 @@ def instantaneous_functionals_bh(
         +1j*derivative(b, model.dR, axis=1)[None, :, :]*coefficients
         +2j*b[None, :, :]*gradient_R+b[None, :, :]**2*coefficients
     )
-    coefficient_q = (
-        gated_values(lam_phase_q, tail_gate_phi)+a
-        -1j*mask_phi*gated_values(xi_logamp_q, tail_gate_phi)
-    )
-    coefficient_R = (
-        gated_values(lam_phase_R+chi_phase_R[None, :], tail_gate_phi)+b
-        -1j*mask_phi*gated_values(xi_logamp_R, tail_gate_phi)
-    )
+    if model.coupling_mask_backend == "flat_top":
+        coefficient_q = gated_values(
+            lam_phase_q+a-1j*xi_logamp_q, mask_phi
+        )
+        coefficient_R = gated_values(
+            lam_phase_R+chi_phase_R[None, :]+b-1j*xi_logamp_R,
+            mask_phi,
+        )
+    else:
+        coefficient_q = (
+            gated_values(lam_phase_q, tail_gate_phi)+a
+            -1j*mask_phi*gated_values(xi_logamp_q, tail_gate_phi)
+        )
+        coefficient_R = (
+            gated_values(lam_phase_R+chi_phase_R[None, :], tail_gate_phi)+b
+            -1j*mask_phi*gated_values(xi_logamp_R, tail_gate_phi)
+        )
     u_c = (
         0.5*p2_q+coefficient_q[None, :, :]*p_q
     )/model.proton_mass+(
@@ -288,8 +308,16 @@ def instantaneous_functionals_bh(
             cp.abs(lam_logamp_R)+cp.abs(chi_logamp_R)[None, :],
         ),
         effective_logamp_phi=cp.maximum(
-            cp.abs(mask_phi*gated_values(xi_logamp_q, tail_gate_phi)),
-            cp.abs(mask_phi*gated_values(xi_logamp_R, tail_gate_phi)),
+            cp.abs(mask_phi*(xi_logamp_q if model.coupling_mask_backend == "flat_top"
+                             else gated_values(xi_logamp_q, tail_gate_phi))),
+            cp.abs(mask_phi*(xi_logamp_R if model.coupling_mask_backend == "flat_top"
+                             else gated_values(xi_logamp_R, tail_gate_phi))),
+        ),
+        suppressed_probability_phi=suppressed_probability(
+            rho_qR, mask_phi, model.dq*model.dR, model
+        ),
+        suppressed_probability_lam=suppressed_probability(
+            rho_R, mask_lam, model.dR, model
         ),
         deep_tail_suppressed_probability_phi=suppressed_probability(
             rho_qR, tail_gate_phi, model.dq*model.dR, model
@@ -481,6 +509,8 @@ def coupled_rhs_bh(
         max_effective_logamp_phi=cp.max(cp.abs(
             fields["effective_logamp_phi"]
         )),
+        suppressed_probability_phi=fields["suppressed_probability_phi"],
+        suppressed_probability_lam=fields["suppressed_probability_lam"],
         deep_tail_suppressed_probability_phi=fields[
             "deep_tail_suppressed_probability_phi"
         ],

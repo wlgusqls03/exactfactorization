@@ -355,6 +355,35 @@ Non-finite가 검출되거나 ``Ctrl-C``로 중단되면 실패한 GPU state는 
 gauge-invariant 조합으로 실제 transport와 힘의 방향을 보여준다. 회색 cell은
 확률이 거의 없어 phase ratio를 물리적으로 해석하지 않는 영역이다.
 
+### Probability-budget flat-top coupling mask
+
+기존 ``rational_deep_tail`` mask는 기본값으로 유지된다. 실험적인
+``flat_top`` backend는 초기 joint/heavy physical density의 suppressed-mass
+budget으로 고정 ``r_on``을 한 번 정한다. ``r >= r_on``에서는 coupling
+coefficient가 정확히 보존되고, 지정한 log-density 폭에서 C2 smootherstep으로
+감소한 뒤 정확히 0이 된다. PNC gate와 product projection은 변경하지 않는다.
+
+```bash
+--coupling-mask-backend flat_top \
+--flat-top-budget-phi 1e-9 \
+--flat-top-budget-lam 1e-9 \
+--flat-top-transition-decades 3
+```
+
+재현 가능한 production scan은 pilot이 출력한 onset을 직접 고정할 수 있다.
+
+```bash
+--coupling-mask-backend flat_top \
+--flat-top-on-phi 2.5e-11 \
+--flat-top-on-lam 1.8e-10 \
+--flat-top-transition-decades 3
+```
+
+고정 threshold는 미래 frame의 budget을 자동 보장하지 않으므로 archive의
+``suppressed_probability_phi``와 ``suppressed_probability_lam``을 확인한다.
+Flat-top은 gauge-invariant first-order 조합 ``P+A-iL``에 적용하고,
+covariant derivative와 square의 vector potential은 그대로 유지한다.
+
 ## 5. 기존 그림 생성
 
 완료된 GPU 계산의 폴더 이름만 지정해 모든 그림·영상·상태 분석·3D HTML을

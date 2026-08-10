@@ -190,16 +190,16 @@ def _diag(data, name, length):
 
 
 def _surface_slice(data, obs, frame, coordinate):
-    """BO surfaces along q or R through the occupied nuclear-density peak."""
+    """BO surfaces along q or R through the joint-density maximum (not mean)."""
     density = obs["nuclear_joint_density"][frame]
     iq, iR = np.unravel_index(int(np.argmax(density)), density.shape)
     energies = np.asarray(data["bo_energies"], float)
     if coordinate == "R":
         return obs["R"], energies[:, iq, :], obs["state_resolved_R_density"][frame], (
-            rf"slice at $q_*={obs['q'][iq]:.3f}$"
+            rf"slice at $q_{{\rm peak}}={obs['q'][iq]:.3f}$"
         )
     return obs["q"], energies[:, :, iR], obs["state_resolved_q_density"][frame], (
-        rf"slice at $R_*={obs['R'][iR]:.3f}$"
+        rf"slice at $R_{{\rm peak}}={obs['R'][iR]:.3f}$"
     )
 
 
@@ -384,26 +384,41 @@ def _support_field(values, density, floor=1.0e-3):
     return np.where(density >= cutoff, values, np.nan)
 
 
-def plot_exact_potentials(data, obs, diagnostics, outdir, dpi, frame=-1):
-    """Same scalar/connection/momentum/force story as the grid report."""
-    q, R, times = obs["q"], obs["R"], obs["times_fs"]
+def _potential_frame_fields(data, obs, diagnostics, frame, floor=1.0e-3):
+    """Grid-report-equivalent occupied-support exact-potential fields."""
     density = obs["nuclear_joint_density"][frame]
     heavy = obs["heavy_density"][frame]
-    peak = np.unravel_index(int(np.argmax(density)), density.shape)
-    eps1 = np.asarray(data["epsilon_1"])[frame]
-    eps1 = _support_field(eps1-eps1[peak], density)
-    fields = (
-        (eps1, r"First TDPES $\epsilon^{(1)}$ (peak shifted)", "viridis", False),
-        (_support_field(np.asarray(data["a"])[frame], density),
-         r"Connection $a(q,R,t)$", "coolwarm", True),
-        (_support_field(diagnostics["momentum_q"][frame], density),
-         r"Mechanical proton momentum $K_q=\partial_qT+a$", "coolwarm", True),
-        (_support_field(diagnostics["force_q"][frame], density),
-         r"Gauge-invariant drive $-\partial_q\epsilon^{(1)}+\partial_ta$", "coolwarm", True),
+    joint_peak = np.unravel_index(int(np.argmax(density)), density.shape)
+    heavy_peak = int(np.argmax(heavy))
+    eps1_raw = np.asarray(data["epsilon_1"])[frame]
+    eps2_raw = np.asarray(data["epsilon_2"])[frame]
+    return dict(
+        density=density,
+        heavy=heavy,
+        eps1=_support_field(eps1_raw-eps1_raw[joint_peak], density, floor),
+        a=_support_field(np.asarray(data["a"])[frame], density, floor),
+        b=_support_field(np.asarray(data["b"])[frame], density, floor),
+        eps2=_support_field(eps2_raw-eps2_raw[heavy_peak], heavy, floor),
+        alpha=_support_field(np.asarray(data["alpha"])[frame], heavy, floor),
+        phase_R=_support_field(diagnostics["phase_gradient_R_chi"][frame], heavy, floor),
+        momentum_R=_support_field(diagnostics["momentum_R_outer"][frame], heavy, floor),
+        current_R=_support_field(diagnostics["heavy_current"][frame], heavy, floor),
+        force_R=_support_field(diagnostics["force_R"][frame], heavy, floor),
     )
-    fig, axes = plt.subplots(2, 2, figsize=(13.2, 9.0), constrained_layout=True)
+
+
+def plot_exact_potentials(data, obs, diagnostics, outdir, dpi, frame=-1):
+    """Same six-panel scalar/connection/transport story as the grid report."""
+    q, R, times = obs["q"], obs["R"], obs["times_fs"]
+    item = _potential_frame_fields(data, obs, diagnostics, frame)
+    fields = (
+        (item["eps1"], r"Electron level: $\epsilon^{(1)}$", "viridis", False),
+        (item["a"], r"Electron connection $a$ along $q$", "coolwarm", True),
+        (item["b"], r"Electron connection $b$ along $R$", "coolwarm", True),
+    )
+    fig, axes = plt.subplots(2, 3, figsize=(15.5, 8.4), constrained_layout=True)
     extent = [R[0], R[-1], q[0], q[-1]]
-    for ax, (values, title, cmap, symmetric) in zip(axes.flat, fields):
+    for ax, (values, title, cmap, symmetric) in zip(axes[0], fields):
         finite = values[np.isfinite(values)]
         kwargs = {}
         if symmetric:
@@ -411,14 +426,34 @@ def plot_exact_potentials(data, obs, diagnostics, outdir, dpi, frame=-1):
             kwargs.update(vmin=-bound, vmax=bound)
         image = ax.imshow(values, origin="lower", aspect="auto", extent=extent,
                           cmap=cmap, **kwargs)
-        ax.contour(R, q, density, levels=[1.0e-3*np.max(density)],
+        ax.contour(R, q, item["density"], levels=[1.0e-3*np.max(item["density"])],
                    colors="white", linewidths=1.0)
         ax.set_title(title, loc="left", fontweight="semibold")
         ax.set_xlabel(r"heavy $R$ ($a_0$)")
         ax.set_ylabel(r"proton $q$ ($a_0$)")
         fig.colorbar(image, ax=ax, pad=0.012, format=NUMBER_FORMATTER)
+    axes[1, 0].plot(R, item["eps2"], color=COLORS[0], lw=2)
+    axes[1, 0].fill_between(
+        R, 0.0, item["heavy"]/max(float(np.max(item["heavy"])), 1e-300),
+        color="0.45", alpha=0.15,
+    )
+    axes[1, 0].set_title(r"Proton-heavy level: $\epsilon^{(2)}$", loc="left", fontweight="semibold")
+    axes[1, 1].plot(R, item["alpha"], label=r"$\alpha$")
+    axes[1, 1].plot(R, item["phase_R"], ls="--", label=r"$\partial_RS_\chi$")
+    axes[1, 1].plot(R, item["momentum_R"], color="black", lw=2, label=r"$K_R^{(\chi)}$")
+    axes[1, 1].set_title(r"Heavy momentum: $K_R^{(\chi)}=\partial_RS_\chi+\alpha$", loc="left", fontweight="semibold")
+    axes[1, 1].legend(frameon=False, fontsize=8)
+    axes[1, 2].plot(R, item["current_R"], color=COLORS[0], lw=2, label=r"$j_R^{(\chi)}$")
+    force_axis = axes[1, 2].twinx()
+    force_axis.plot(R, item["force_R"], color=COLORS[3], lw=1.8, label=r"$F_R^{GI}$")
+    axes[1, 2].set_title(r"Heavy transport $j_R^{(\chi)}$ and drive $F_R^{GI}$", loc="left", fontweight="semibold")
+    axes[1, 2].legend(frameon=False, fontsize=8, loc="upper left")
+    force_axis.legend(frameon=False, fontsize=8, loc="upper right")
+    for ax in axes[1]:
+        ax.set_xlabel(r"heavy $R$ ($a_0$)")
+        ax.grid(alpha=0.18)
     fig.suptitle(
-        f"3 | Exact potentials, momentum and force | t={times[frame]:.3f} fs; gray/white boundary = occupied support",
+        f"3 | Exact potentials, momentum, transport and force | t={times[frame]:.3f} fs; gray = unoccupied support",
         fontsize=14, fontweight="bold",
     )
     path = outdir/"03_exact_potentials.png"
@@ -590,7 +625,7 @@ def _robust_animation_limit(values, frames, shift=None):
 
 
 def make_potential_animation(data, obs, outdir, fps, max_frames, dpi, fmt):
-    """Animate saved exact scalar/vector potentials on occupied coordinates."""
+    """Animate the full grid-style exact-potential/transport dashboard."""
     required = ("epsilon_1", "epsilon_2", "a", "b", "alpha")
     missing = [key for key in required if key not in data]
     if missing:
@@ -598,89 +633,78 @@ def make_potential_animation(data, obs, outdir, fps, max_frames, dpi, fmt):
         return None
     times, q, R = obs["times_fs"], obs["q"], obs["R"]
     frames = selected_frames(len(times), min(max_frames, len(times)))
-    first = int(frames[0])
-    epsilon_1 = np.asarray(data["epsilon_1"], float)
-    epsilon_2 = np.asarray(data["epsilon_2"], float)
-    vector_a = np.asarray(data["a"], float)
-    vector_b = np.asarray(data["b"], float)
-    alpha = np.asarray(data["alpha"], float)
+    diagnostics = _diagnostics(data)
+    sampled = [int(frame) for frame in frames]
+    fields = [_potential_frame_fields(data, obs, diagnostics, frame) for frame in sampled]
+    first = sampled[0]
 
-    def joint_peak_shift(frame, array):
-        peak = np.unravel_index(
-            int(np.argmax(obs["nuclear_joint_density"][frame])), array.shape
-        )
-        return float(array[peak])
+    def limits(key, symmetric=False):
+        finite = np.concatenate([
+            np.asarray(item[key])[np.isfinite(item[key])] for item in fields
+        ])
+        if symmetric:
+            bound = max(float(np.percentile(np.abs(finite), 99.0)), 1e-14)
+            return -bound, bound
+        return tuple(np.percentile(finite, [1.0, 99.0]))
 
-    def heavy_peak_shift(frame, array):
-        return float(array[int(np.argmax(obs["heavy_density"][frame]))])
-
-    limits = (
-        _robust_animation_limit(epsilon_1, frames, joint_peak_shift),
-        _robust_animation_limit(vector_a, frames),
-        _robust_animation_limit(vector_b, frames),
-    )
-    fig, axes = plt.subplots(2, 2, figsize=(14.0, 9.0), constrained_layout=True)
-    map_axes = (axes[0, 0], axes[0, 1], axes[1, 0])
-    arrays = (
-        epsilon_1[first]-joint_peak_shift(first, epsilon_1[first]),
-        vector_a[first], vector_b[first],
-    )
+    fig, axes = plt.subplots(2, 3, figsize=(15.5, 8.4), constrained_layout=True)
+    map_axes = axes[0]
+    arrays = (fields[0]["eps1"], fields[0]["a"], fields[0]["b"])
     names = (r"shifted $\epsilon_1(q,R)$", r"$a(q,R)$", r"$b(q,R)$")
+    map_limits = (limits("eps1"), limits("a", True), limits("b", True))
     images = []
-    markers = []
-    for ax, array, name, limit in zip(map_axes, arrays, names, limits):
+    for ax, array, name, bound in zip(map_axes, arrays, names, map_limits):
         image = ax.imshow(
             array.T, origin="lower", aspect="auto",
             extent=[q[0], q[-1], R[0], R[-1]], cmap="coolwarm",
-            vmin=-limit, vmax=limit,
+            vmin=bound[0], vmax=bound[1],
         )
-        peak = np.unravel_index(
-            int(np.argmax(obs["nuclear_joint_density"][first])),
-            obs["nuclear_joint_density"][first].shape,
-        )
-        marker, = ax.plot(q[peak[0]], R[peak[1]], "ko", ms=3.5)
         ax.set_xlabel("proton q")
         ax.set_ylabel("heavy R")
         ax.set_title(name, loc="left", fontweight="semibold")
         fig.colorbar(image, ax=ax, pad=0.012, format=NUMBER_FORMATTER)
         images.append(image)
-        markers.append(marker)
 
-    line_ax = axes[1, 1]
-    shifted_epsilon_2 = epsilon_2[first]-heavy_peak_shift(first, epsilon_2[first])
-    epsilon_line, = line_ax.plot(R, shifted_epsilon_2, color=COLORS[1], label=r"shifted $\epsilon_2$")
-    line_ax.set_xlabel("heavy R")
-    line_ax.set_ylabel(r"$\epsilon_2$ (a.u.)", color=COLORS[1])
-    line_ax.tick_params(axis="y", colors=COLORS[1])
-    alpha_ax = line_ax.twinx()
-    alpha_line, = alpha_ax.plot(R, alpha[first], color=COLORS[4], label=r"$\alpha$")
-    alpha_ax.set_ylabel(r"$\alpha$ (a.u.)", color=COLORS[4])
-    alpha_ax.tick_params(axis="y", colors=COLORS[4])
-    epsilon_limit = _robust_animation_limit(epsilon_2, frames, heavy_peak_shift)
-    alpha_limit = _robust_animation_limit(alpha, frames)
-    line_ax.set_ylim(-epsilon_limit, epsilon_limit)
-    alpha_ax.set_ylim(-alpha_limit, alpha_limit)
-    line_ax.set_title("Heavy scalar/vector potentials", loc="left", fontweight="semibold")
-    line_ax.grid(alpha=0.18)
+    epsilon_line, = axes[1, 0].plot(R, fields[0]["eps2"], color=COLORS[0], lw=2)
+    heavy_line, = axes[1, 0].plot(
+        R, fields[0]["heavy"]/max(float(np.max(fields[0]["heavy"])), 1e-300),
+        color="0.45", alpha=0.6,
+    )
+    axes[1, 0].set_ylim(limits("eps2"))
+    axes[1, 0].set_title(r"Proton-heavy level: $\epsilon^{(2)}$", loc="left", fontweight="semibold")
+    alpha_line, = axes[1, 1].plot(R, fields[0]["alpha"], label=r"$\alpha$")
+    phase_line, = axes[1, 1].plot(R, fields[0]["phase_R"], ls="--", label=r"$\partial_RS_\chi$")
+    momentum_line, = axes[1, 1].plot(R, fields[0]["momentum_R"], color="black", lw=2, label=r"$K_R^{(\chi)}$")
+    momentum_limits = [limits(key, True) for key in ("alpha", "phase_R", "momentum_R")]
+    axes[1, 1].set_ylim(min(x[0] for x in momentum_limits), max(x[1] for x in momentum_limits))
+    axes[1, 1].set_title(r"$K_R^{(\chi)}=\partial_RS_\chi+\alpha$", loc="left", fontweight="semibold")
+    axes[1, 1].legend(frameon=False, fontsize=8)
+    current_line, = axes[1, 2].plot(R, fields[0]["current_R"], color=COLORS[0], lw=2, label=r"$j_R^{(\chi)}$")
+    force_ax = axes[1, 2].twinx()
+    force_line, = force_ax.plot(R, fields[0]["force_R"], color=COLORS[3], lw=1.8, label=r"$F_R^{GI}$")
+    axes[1, 2].set_ylim(limits("current_R", True))
+    force_ax.set_ylim(limits("force_R", True))
+    axes[1, 2].set_title(r"Transport $j_R^{(\chi)}$ and drive $F_R^{GI}$", loc="left", fontweight="semibold")
+    for ax in axes[1]:
+        ax.set_xlabel("heavy R")
+        ax.grid(alpha=0.18)
     title = fig.suptitle(f"Born--Huang exact potentials | t={times[first]:.4f} fs")
 
     def update(number):
         frame = int(frames[number])
-        fields = (
-            epsilon_1[frame]-joint_peak_shift(frame, epsilon_1[frame]),
-            vector_a[frame], vector_b[frame],
-        )
-        density = obs["nuclear_joint_density"][frame]
-        peak = np.unravel_index(int(np.argmax(density)), density.shape)
-        for image, marker, field in zip(images, markers, fields):
-            image.set_data(field.T)
-            marker.set_data([q[peak[0]]], [R[peak[1]]])
-        epsilon_line.set_ydata(
-            epsilon_2[frame]-heavy_peak_shift(frame, epsilon_2[frame])
-        )
-        alpha_line.set_ydata(alpha[frame])
+        item = fields[number]
+        for image, key in zip(images, ("eps1", "a", "b")):
+            image.set_data(item[key].T)
+        epsilon_line.set_ydata(item["eps2"])
+        heavy_line.set_ydata(item["heavy"]/max(float(np.max(item["heavy"])), 1e-300))
+        alpha_line.set_ydata(item["alpha"])
+        phase_line.set_ydata(item["phase_R"])
+        momentum_line.set_ydata(item["momentum_R"])
+        current_line.set_ydata(item["current_R"])
+        force_line.set_ydata(item["force_R"])
         title.set_text(f"Born--Huang exact potentials | t={times[frame]:.4f} fs")
-        return *images, *markers, epsilon_line, alpha_line, title
+        return (*images, epsilon_line, heavy_line, alpha_line, phase_line,
+                momentum_line, current_line, force_line, title)
 
     animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
     return _save_animation(

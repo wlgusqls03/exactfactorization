@@ -137,6 +137,10 @@ class GPUModel:
     projection_tau_chi: float = 1.0e-10
     projection_support_epsilon: float = 1.0e-12
     deep_tail_zero_threshold: float = 1.0e-12
+    coupling_mask_backend: str = "rational_deep_tail"
+    flat_top_on_phi: float = 0.0
+    flat_top_on_lam: float = 0.0
+    flat_top_transition_decades: float = 3.0
     factor_stability_diagnostics: bool = False
     kinetic_phase_cache: dict = field(default_factory=dict)
     potential_phase_cache: dict = field(default_factory=dict)
@@ -190,6 +194,10 @@ def make_gpu_model(
         projection_tau_chi=cpu_model.projection_tau_chi,
         projection_support_epsilon=cpu_model.projection_support_epsilon,
         deep_tail_zero_threshold=cpu_model.deep_tail_zero_threshold,
+        coupling_mask_backend=cpu_model.coupling_mask_backend,
+        flat_top_on_phi=cpu_model.flat_top_on_phi,
+        flat_top_on_lam=cpu_model.flat_top_on_lam,
+        flat_top_transition_decades=cpu_model.flat_top_transition_decades,
         factor_stability_diagnostics=bool(factor_stability_diagnostics),
     )
 
@@ -430,6 +438,34 @@ def deep_tail_gate(density, relative_threshold, model):
     return gate.astype(model.real_dtype, copy=False)
 
 
+def flat_top_support_mask(density, relative_on, transition_decades, model):
+    """Exact-one/exact-zero C2 mask in relative log-density."""
+    if relative_on < 0.0:
+        raise ValueError("flat-top on threshold는 0 이상이어야 합니다.")
+    if transition_decades <= 0.0:
+        raise ValueError("flat-top transition decades는 양수여야 합니다.")
+    if relative_on == 0.0:
+        return cp.ones_like(density, dtype=model.real_dtype)
+    tiny = cp.asarray(1.0e-300, dtype=model.reduction_real_dtype)
+    peak = cp.maximum(cp.max(density), tiny)
+    relative = density/peak
+    relative_off = relative_on*10.0**(-transition_decades)
+    gate = cp.zeros_like(relative, dtype=model.real_dtype)
+    gate[relative >= relative_on] = 1.0
+    transition = (relative > relative_off) & (relative < relative_on)
+    coordinate = cp.where(
+        transition,
+        cp.log(cp.maximum(relative, tiny)/relative_off)/(
+            transition_decades*cp.log(cp.asarray(10.0, dtype=relative.dtype))
+        ),
+        0.0,
+    )
+    smooth = coordinate**3*(10.0+coordinate*(-15.0+6.0*coordinate))
+    return cp.where(transition, smooth, gate).astype(
+        model.real_dtype, copy=False
+    )
+
+
 def gated_values(values, gate):
     """Apply a gate without ever evaluating 0*Inf in the exact-zero tail."""
     # CuPy 11 does not implement NumPy ufunc's ``where=`` keyword.  Select
@@ -604,10 +640,15 @@ def proton_base_operator(
         lam, vector_R, model.dR, axis=1, sign=+1,
         momentum_field=p_R_lam,
     )
-    coefficient = (
-        gated_values(chi_phase_R, tail_gate_lam)+alpha
-        -1j*mask_lam*gated_values(chi_logamp_R, tail_gate_lam)
-    ).astype(model.complex_dtype, copy=False)
+    if model.coupling_mask_backend == "flat_top":
+        coefficient = gated_values(
+            chi_phase_R+alpha-1j*chi_logamp_R, mask_lam
+        ).astype(model.complex_dtype, copy=False)
+    else:
+        coefficient = (
+            gated_values(chi_phase_R, tail_gate_lam)+alpha
+            -1j*mask_lam*gated_values(chi_logamp_R, tail_gate_lam)
+        ).astype(model.complex_dtype, copy=False)
     coupling = (
         0.5*dplus_R2+coefficient[None, :]*dplus_R
     )/model.heavy_mass
@@ -615,8 +656,7 @@ def proton_base_operator(
     if not return_unmasked:
         return masked
     coefficient_unmasked = (
-        gated_values(chi_phase_R, tail_gate_lam)+alpha
-        -1j*gated_values(chi_logamp_R, tail_gate_lam)
+        chi_phase_R+alpha-1j*chi_logamp_R
     ).astype(model.complex_dtype, copy=False)
     unmasked = proton_kinetic+(
         0.5*dplus_R2+coefficient_unmasked[None, :]*dplus_R
@@ -653,8 +693,18 @@ def instantaneous_functionals(
     rho_R = cp.sum(
         rho_qR, axis=0, dtype=model.reduction_real_dtype
     )*model.dq
-    mask_phi = occupied_support_mask(rho_qR, mask_threshold_phi, model)
-    mask_lam = occupied_support_mask(rho_R, mask_threshold_lam, model)
+    if model.coupling_mask_backend == "flat_top":
+        mask_phi = flat_top_support_mask(
+            rho_qR, model.flat_top_on_phi,
+            model.flat_top_transition_decades, model,
+        )
+        mask_lam = flat_top_support_mask(
+            rho_R, model.flat_top_on_lam,
+            model.flat_top_transition_decades, model,
+        )
+    else:
+        mask_phi = occupied_support_mask(rho_qR, mask_threshold_phi, model)
+        mask_lam = occupied_support_mask(rho_R, mask_threshold_lam, model)
     tail_gate_phi = deep_tail_gate(
         rho_qR, model.deep_tail_zero_threshold, model
     )
@@ -716,10 +766,15 @@ def instantaneous_functionals(
         phi, a[None, :, :], model.dq, axis=1, sign=-1,
         momentum_field=p_q_phi,
     )
-    coefficient_q = (
-        gated_values(lam_phase_q, tail_gate_phi)+a
-        -1j*mask_phi*gated_values(xi_logamp_q, tail_gate_phi)
-    ).astype(model.complex_dtype, copy=False)
+    if model.coupling_mask_backend == "flat_top":
+        coefficient_q = gated_values(
+            lam_phase_q+a-1j*xi_logamp_q, mask_phi
+        ).astype(model.complex_dtype, copy=False)
+    else:
+        coefficient_q = (
+            gated_values(lam_phase_q, tail_gate_phi)+a
+            -1j*mask_phi*gated_values(xi_logamp_q, tail_gate_phi)
+        ).astype(model.complex_dtype, copy=False)
     u_q_phi = (
         0.5*dminus_q2+coefficient_q[None, :, :]*dminus_q
     )/model.proton_mass
@@ -733,10 +788,16 @@ def instantaneous_functionals(
         phi, b[None, :, :], model.dR, axis=2, sign=-1,
         momentum_field=p_R_phi,
     )
-    coefficient_R = (
-        gated_values(chi_phase_R[None, :]+lam_phase_R, tail_gate_phi)+b
-        -1j*mask_phi*gated_values(xi_logamp_R, tail_gate_phi)
-    ).astype(model.complex_dtype, copy=False)
+    if model.coupling_mask_backend == "flat_top":
+        coefficient_R = gated_values(
+            chi_phase_R[None, :]+lam_phase_R+b-1j*xi_logamp_R,
+            mask_phi,
+        ).astype(model.complex_dtype, copy=False)
+    else:
+        coefficient_R = (
+            gated_values(chi_phase_R[None, :]+lam_phase_R, tail_gate_phi)+b
+            -1j*mask_phi*gated_values(xi_logamp_R, tail_gate_phi)
+        ).astype(model.complex_dtype, copy=False)
     u_R_phi = (
         0.5*dminus_R2
         +coefficient_R[None, :, :]*dminus_R
@@ -808,23 +869,24 @@ def instantaneous_functionals(
             cp.abs(lam_logamp_R)+cp.abs(chi_logamp_R)[None, :],
         ),
         effective_logamp_phi=cp.maximum(
-            cp.abs(mask_phi*gated_values(xi_logamp_q, tail_gate_phi)),
-            cp.abs(mask_phi*gated_values(xi_logamp_R, tail_gate_phi)),
+            cp.abs(mask_phi*(xi_logamp_q if model.coupling_mask_backend == "flat_top"
+                             else gated_values(xi_logamp_q, tail_gate_phi))),
+            cp.abs(mask_phi*(xi_logamp_R if model.coupling_mask_backend == "flat_top"
+                             else gated_values(xi_logamp_R, tail_gate_phi))),
         ),
         raw_logamp_lam=cp.abs(chi_logamp_R),
         effective_logamp_lam=cp.abs(
-            mask_lam*gated_values(chi_logamp_R_used, tail_gate_lam)
+            mask_lam*(chi_logamp_R_used if model.coupling_mask_backend == "flat_top"
+                      else gated_values(chi_logamp_R_used, tail_gate_lam))
         ),
         **weak_diagnostics,
     )
     if include_unmasked:
         coefficient_q_unmasked = (
-            gated_values(lam_phase_q, tail_gate_phi)+a
-            -1j*gated_values(xi_logamp_q, tail_gate_phi)
+            lam_phase_q+a-1j*xi_logamp_q
         ).astype(model.complex_dtype, copy=False)
         coefficient_R_unmasked = (
-            gated_values(chi_phase_R[None, :]+lam_phase_R, tail_gate_phi)+b
-            -1j*gated_values(xi_logamp_R, tail_gate_phi)
+            chi_phase_R[None, :]+lam_phase_R+b-1j*xi_logamp_R
         ).astype(model.complex_dtype, copy=False)
         u_phi_unmasked_raw = (
             0.5*dminus_q2

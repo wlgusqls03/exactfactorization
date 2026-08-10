@@ -13,7 +13,9 @@ from multi_component_exact_factorization.born_huang import (
     build_born_huang_basis,
     initial_born_huang_factors,
 )
-from multi_component_exact_factorization.core import AU_PER_FS, build_model
+from multi_component_exact_factorization.core import (
+    AU_PER_FS, build_model, calibrate_flat_top_args,
+)
 from multi_component_exact_factorization.propagate import output_gauge
 
 from .gpu_born_huang import (
@@ -45,6 +47,16 @@ def run_born_huang(args):
     coefficients_cpu, lam_cpu, chi_cpu = initial_born_huang_factors(
         cpu_model, args, basis_cpu
     )
+    coefficient_norm2 = np.sum(np.abs(coefficients_cpu)**2, axis=0)
+    rho_qR_initial = coefficient_norm2*np.abs(
+        lam_cpu*chi_cpu[None, :]
+    )**2
+    rho_R_initial = np.sum(rho_qR_initial, axis=0)*cpu_model.dq
+    calibrate_flat_top_args(args, rho_qR_initial, rho_R_initial)
+    cpu_model.coupling_mask_backend = args.coupling_mask_backend
+    cpu_model.flat_top_on_phi = float(args.flat_top_on_phi or 0.0)
+    cpu_model.flat_top_on_lam = float(args.flat_top_on_lam or 0.0)
+    cpu_model.flat_top_transition_decades = args.flat_top_transition_decades
     optimization = getattr(args, "gpu_optimization", "fused")
     configure_fused_periodic_derivative(optimization == "fused")
     model = make_gpu_model(
@@ -108,6 +120,7 @@ def run_born_huang(args):
         "max_abs_gamma_phi", "max_abs_gamma_lam",
         "max_abs_support_gamma_phi", "max_abs_support_gamma_lam",
         "max_raw_logamp_phi", "max_effective_logamp_phi",
+        "suppressed_probability_phi", "suppressed_probability_lam",
         "max_weak_log_residual_q_xi", "max_weak_log_residual_R_xi",
         "max_weak_log_residual_R_chi", "max_weak_log_iterations",
         "max_weak_log_unconverged_lines",
@@ -257,6 +270,12 @@ def run_born_huang(args):
         x=cpu_model.x, q=cpu_model.q, R=cpu_model.R,
         log_derivative_backend=np.array(args.log_derivative_backend),
         product_projection_backend=np.array(args.product_projection_backend),
+        coupling_mask_backend=np.array(args.coupling_mask_backend),
+        flat_top_on_phi=np.array(args.flat_top_on_phi or 0.0),
+        flat_top_on_lam=np.array(args.flat_top_on_lam or 0.0),
+        flat_top_transition_decades=np.array(args.flat_top_transition_decades),
+        flat_top_budget_phi=np.array(args.flat_top_budget_phi),
+        flat_top_budget_lam=np.array(args.flat_top_budget_lam),
         weak_log_delta=np.array(args.weak_log_delta),
         weak_log_smoothing=np.array(args.weak_log_smoothing),
         weak_log_preconditioner=np.array(

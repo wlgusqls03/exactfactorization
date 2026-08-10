@@ -60,6 +60,10 @@ class Model:
     projection_tau_chi: float = 1.0e-10
     projection_support_epsilon: float = 1.0e-12
     deep_tail_zero_threshold: float = 1.0e-12
+    coupling_mask_backend: str = "rational_deep_tail"
+    flat_top_on_phi: float = 0.0
+    flat_top_on_lam: float = 0.0
+    flat_top_transition_decades: float = 3.0
 
 
 def soft_inverse(distance: np.ndarray, softening: float) -> np.ndarray:
@@ -170,6 +174,14 @@ def build_model(args) -> Model:
         )),
         deep_tail_zero_threshold=float(getattr(
             args, "deep_tail_zero_threshold", 1.0e-12
+        )),
+        coupling_mask_backend=getattr(
+            args, "coupling_mask_backend", "rational_deep_tail"
+        ),
+        flat_top_on_phi=float(getattr(args, "flat_top_on_phi", 0.0) or 0.0),
+        flat_top_on_lam=float(getattr(args, "flat_top_on_lam", 0.0) or 0.0),
+        flat_top_transition_decades=float(getattr(
+            args, "flat_top_transition_decades", 3.0
         )),
     )
 
@@ -650,6 +662,97 @@ def mask_threshold_for_probability_budget(
     return lo
 
 
+def flat_top_support_mask(density, relative_on, transition_decades=3.0):
+    """Gauge-invariant C2 flat-top support mask.
+
+    The mask is exactly one for ``rho/rho_max >= relative_on`` and exactly
+    zero ``transition_decades`` below it.  Between the two bounds a quintic
+    smootherstep is evaluated in log-density, avoiding a spatial hard cut.
+    """
+    if relative_on < 0.0:
+        raise ValueError("flat-top on threshold는 0 이상이어야 합니다.")
+    if transition_decades <= 0.0:
+        raise ValueError("flat-top transition decades는 양수여야 합니다.")
+    density = np.asarray(density)
+    if relative_on == 0.0:
+        return np.ones_like(density, dtype=float)
+    peak = max(float(np.max(density)), 1.0e-300)
+    relative = density/peak
+    relative_off = relative_on*10.0**(-transition_decades)
+    mask = np.zeros_like(relative, dtype=float)
+    mask[relative >= relative_on] = 1.0
+    transition = (relative > relative_off) & (relative < relative_on)
+    if np.any(transition):
+        coordinate = np.log(relative[transition]/relative_off)/(
+            transition_decades*np.log(10.0)
+        )
+        mask[transition] = coordinate**3*(
+            10.0+coordinate*(-15.0+6.0*coordinate)
+        )
+    return mask
+
+
+def flat_top_on_for_probability_budget(
+    density, budget, transition_decades=3.0, *, iterations=64,
+):
+    """Largest flat-top onset whose removed physical mass fits ``budget``."""
+    if not 0.0 <= budget < 1.0:
+        raise ValueError("probability budget은 0 이상 1 미만이어야 합니다.")
+    density = np.asarray(density, dtype=float)
+    total = float(np.sum(density))
+    peak = float(np.max(density)) if density.size else 0.0
+    if budget == 0.0 or total <= 0.0 or peak <= 0.0:
+        return 0.0
+
+    def removed(relative_on):
+        mask = flat_top_support_mask(
+            density, relative_on, transition_decades
+        )
+        return float(np.sum(density*(1.0-mask)))/total
+
+    lo, hi = 0.0, 1.0
+    for _ in range(iterations):
+        # Geometric bisection resolves thresholds spanning many decades.
+        if lo == 0.0:
+            mid = 10.0**(-0.5*(300.0-np.log10(max(hi, 1.0e-300))))
+        else:
+            mid = np.sqrt(lo*hi)
+        if removed(mid) <= budget:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def calibrate_flat_top_args(args, rho_phi, rho_lam):
+    """Resolve optional fixed flat-top onsets from the initial densities."""
+    if getattr(args, "coupling_mask_backend", "rational_deep_tail") != "flat_top":
+        return
+    decades = float(args.flat_top_transition_decades)
+    for suffix, density in (("phi", rho_phi), ("lam", rho_lam)):
+        name = f"flat_top_on_{suffix}"
+        supplied = getattr(args, name, None)
+        if supplied is None:
+            budget = float(getattr(args, f"flat_top_budget_{suffix}"))
+            supplied = flat_top_on_for_probability_budget(
+                density, budget, decades
+            )
+            source = f"initial probability budget {budget:.1e}"
+        else:
+            supplied = float(supplied)
+            source = "explicit threshold"
+        if not 0.0 <= supplied <= 1.0:
+            raise ValueError(f"--flat-top-on-{suffix}는 0과 1 사이여야 합니다.")
+        setattr(args, name, supplied)
+        mask = flat_top_support_mask(density, supplied, decades)
+        removed = suppressed_probability(density, mask)
+        print(
+            f"flat-top {suffix}: r_on={supplied:.3e}, "
+            f"r_off={supplied*10.0**(-decades):.3e}, "
+            f"initial suppressed mass={removed:.3e} ({source})"
+        )
+
+
 def remove_local_norm_generator(
     factor, action, spacing, axis=0, norm_floor=1.0e-14,
 ):
@@ -1107,10 +1210,15 @@ def proton_base_operator(
     )
     # Smooth support에서는 원식을 유지한다. Deep tail에서는 의미가 약한
     # chi phase/log ratio만 정확히 0으로 보내고 vector alpha는 보존한다.
-    chi_coefficient = (
-        gated_values(chi_phase_R, tail_gate_lam)+alpha
-        -1j*mask_lam*gated_values(chi_logamp_R, tail_gate_lam)
-    )                                                               # (nR,)
+    if model.coupling_mask_backend == "flat_top":
+        chi_coefficient = gated_values(
+            chi_phase_R+alpha-1j*chi_logamp_R, mask_lam
+        )
+    else:
+        chi_coefficient = (
+            gated_values(chi_phase_R, tail_gate_lam)+alpha
+            -1j*mask_lam*gated_values(chi_logamp_R, tail_gate_lam)
+        )                                                           # (nR,)
     proton_nuclear_coupling = (
         0.5*dplus_R2+chi_coefficient[None, :]*dplus_R
     )/model.heavy_mass
@@ -1119,10 +1227,7 @@ def proton_base_operator(
         return masked
     # 같은 derivative를 재사용하여 support mask만 끈 비교 action을 만든다.
     # numerical logarithmic-derivative floor는 그대로 유지한다.
-    chi_coefficient_unmasked = (
-        gated_values(chi_phase_R, tail_gate_lam)+alpha
-        -1j*gated_values(chi_logamp_R, tail_gate_lam)
-    )
+    chi_coefficient_unmasked = chi_phase_R+alpha-1j*chi_logamp_R
     unmasked = proton_kinetic+(
         0.5*dplus_R2+chi_coefficient_unmasked[None, :]*dplus_R
     )/model.heavy_mass
@@ -1149,8 +1254,16 @@ def instantaneous_functionals(
     phi_norm2 = np.sum(np.abs(phi)**2, axis=0)*model.dx
     rho_qR = phi_norm2*np.abs(lam*chi[None, :])**2
     rho_R = np.sum(rho_qR, axis=0)*model.dq
-    mask_phi = occupied_support_mask(rho_qR, mask_threshold_phi)
-    mask_lam = occupied_support_mask(rho_R, mask_threshold_lam)
+    if model.coupling_mask_backend == "flat_top":
+        mask_phi = flat_top_support_mask(
+            rho_qR, model.flat_top_on_phi, model.flat_top_transition_decades
+        )
+        mask_lam = flat_top_support_mask(
+            rho_R, model.flat_top_on_lam, model.flat_top_transition_decades
+        )
+    else:
+        mask_phi = occupied_support_mask(rho_qR, mask_threshold_phi)
+        mask_lam = occupied_support_mask(rho_R, mask_threshold_lam)
     tail_threshold = getattr(model, "deep_tail_zero_threshold", 0.0)
     tail_gate_phi = deep_tail_gate(rho_qR, tail_threshold)
     tail_gate_lam = deep_tail_gate(rho_R, tail_threshold)
@@ -1210,10 +1323,15 @@ def instantaneous_functionals(
     )
     # Smooth support에서는 원식을 유지한다. Deep tail에서는 ratio에서 온
     # phase/log-amplitude를 함께 0으로 보내되 vector potential a는 보존한다.
-    coefficient_q = (
-        gated_values(lam_phase_q, tail_gate_phi)+a
-        -1j*mask_phi*gated_values(xi_logamp_q, tail_gate_phi)
-    )                                                               # (nq,nR)
+    if model.coupling_mask_backend == "flat_top":
+        coefficient_q = gated_values(
+            lam_phase_q+a-1j*xi_logamp_q, mask_phi
+        )
+    else:
+        coefficient_q = (
+            gated_values(lam_phase_q, tail_gate_phi)+a
+            -1j*mask_phi*gated_values(xi_logamp_q, tail_gate_phi)
+        )                                                           # (nq,nR)
     u_q_phi = (
         0.5*dminus_q2+coefficient_q[None, :, :]*dminus_q
     )/model.proton_mass
@@ -1223,11 +1341,17 @@ def instantaneous_functionals(
     dminus_R2 = covariant_square(
         phi, b[None, :, :], model.dR, axis=2, sign=-1
     )
-    coefficient_R = (
-        gated_values(
-            chi_phase_R[None, :]+lam_phase_R, tail_gate_phi
-        )+b-1j*mask_phi*gated_values(xi_logamp_R, tail_gate_phi)
-    )                                                               # (nq,nR)
+    if model.coupling_mask_backend == "flat_top":
+        coefficient_R = gated_values(
+            chi_phase_R[None, :]+lam_phase_R+b-1j*xi_logamp_R,
+            mask_phi,
+        )
+    else:
+        coefficient_R = (
+            gated_values(
+                chi_phase_R[None, :]+lam_phase_R, tail_gate_phi
+            )+b-1j*mask_phi*gated_values(xi_logamp_R, tail_gate_phi)
+        )                                                           # (nq,nR)
     u_R_phi = (
         0.5*dminus_R2
         +coefficient_R[None, :, :]*dminus_R
@@ -1300,23 +1424,22 @@ def instantaneous_functionals(
             np.abs(lam_logamp_R)+np.abs(chi_logamp_R)[None, :],
         ),
         effective_logamp_phi=np.maximum(
-            np.abs(mask_phi*gated_values(xi_logamp_q, tail_gate_phi)),
-            np.abs(mask_phi*gated_values(xi_logamp_R, tail_gate_phi)),
+            np.abs(mask_phi*(xi_logamp_q if model.coupling_mask_backend == "flat_top"
+                             else gated_values(xi_logamp_q, tail_gate_phi))),
+            np.abs(mask_phi*(xi_logamp_R if model.coupling_mask_backend == "flat_top"
+                             else gated_values(xi_logamp_R, tail_gate_phi))),
         ),
         raw_logamp_lam=np.abs(chi_logamp_R),
         effective_logamp_lam=np.abs(
-            mask_lam*gated_values(chi_logamp_R_used, tail_gate_lam)
+            mask_lam*(chi_logamp_R_used if model.coupling_mask_backend == "flat_top"
+                      else gated_values(chi_logamp_R_used, tail_gate_lam))
         ),
         **weak_diagnostics,
     )
     if include_unmasked:
-        coefficient_q_unmasked = (
-            gated_values(lam_phase_q, tail_gate_phi)+a
-            -1j*gated_values(xi_logamp_q, tail_gate_phi)
-        )
+        coefficient_q_unmasked = lam_phase_q+a-1j*xi_logamp_q
         coefficient_R_unmasked = (
-            gated_values(chi_phase_R[None, :]+lam_phase_R, tail_gate_phi)+b
-            -1j*gated_values(xi_logamp_R, tail_gate_phi)
+            chi_phase_R[None, :]+lam_phase_R+b-1j*xi_logamp_R
         )
         u_phi_unmasked_raw = (
             0.5*dminus_q2

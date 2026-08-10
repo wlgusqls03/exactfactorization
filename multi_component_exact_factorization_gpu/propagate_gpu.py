@@ -23,6 +23,7 @@ from multi_component_exact_factorization.core import (
     AU_PER_FS,
     add_model_arguments,
     build_model,
+    calibrate_flat_top_args,
     initial_factors,
     mask_threshold_for_probability_budget,
 )
@@ -112,6 +113,20 @@ def run(args):
     args.mask_probability_budgets = getattr(
         args, "mask_probability_budgets", (1.0e-9, 1.0e-8, 1.0e-7)
     )
+    args.coupling_mask_backend = getattr(
+        args, "coupling_mask_backend", "rational_deep_tail"
+    )
+    args.flat_top_budget_phi = float(getattr(args, "flat_top_budget_phi", 1.0e-9))
+    args.flat_top_budget_lam = float(getattr(args, "flat_top_budget_lam", 1.0e-9))
+    args.flat_top_on_phi = getattr(args, "flat_top_on_phi", None)
+    args.flat_top_on_lam = getattr(args, "flat_top_on_lam", None)
+    args.flat_top_transition_decades = float(getattr(
+        args, "flat_top_transition_decades", 3.0
+    ))
+    if not 0.0 <= args.flat_top_budget_phi < 1.0 or not 0.0 <= args.flat_top_budget_lam < 1.0:
+        raise ValueError("flat-top probability budget은 0 이상 1 미만이어야 합니다")
+    if args.flat_top_transition_decades <= 0.0:
+        raise ValueError("flat-top transition decades는 양수여야 합니다")
     if args.weak_log_delta <= 0.0 or args.weak_log_smoothing < 0.0:
         raise ValueError("weak-log delta는 양수, smoothing은 0 이상이어야 합니다")
     if args.weak_log_tolerance <= 0.0 or args.weak_log_max_iterations < 1:
@@ -153,6 +168,14 @@ def run(args):
     # Local BO diagonalization은 CPU SciPy가 효율적이고 처음 한 번만 필요하다.
     cpu_model = build_model(args)
     phi_cpu, lam_cpu, chi_cpu = initial_factors(cpu_model, args)
+    phi_norm2 = np.sum(np.abs(phi_cpu)**2, axis=0)*cpu_model.dx
+    rho_qR_initial = phi_norm2*np.abs(lam_cpu*chi_cpu[None, :])**2
+    rho_R_initial = np.sum(rho_qR_initial, axis=0)*cpu_model.dq
+    calibrate_flat_top_args(args, rho_qR_initial, rho_R_initial)
+    cpu_model.coupling_mask_backend = args.coupling_mask_backend
+    cpu_model.flat_top_on_phi = float(args.flat_top_on_phi or 0.0)
+    cpu_model.flat_top_on_lam = float(args.flat_top_on_lam or 0.0)
+    cpu_model.flat_top_transition_decades = args.flat_top_transition_decades
     optimization = getattr(args, "gpu_optimization", "fused")
     configure_fused_periodic_derivative(optimization == "fused")
     gpu_model = make_gpu_model(
@@ -191,6 +214,7 @@ def run(args):
         "product-preserving gamma transfer + discrete product projection; "
         f"log_backend={cpu_model.log_derivative_backend}, "
         f"projection_backend={cpu_model.product_projection_backend}; "
+        f"coupling_mask={cpu_model.coupling_mask_backend}; "
         f"ratio_floor={args.ratio_floor:.1e}, "
         f"mask(Phi,Lambda)=({args.mask_threshold_phi:.1e},"
         f"{args.mask_threshold_lam:.1e}), "
@@ -580,8 +604,13 @@ def run(args):
         ),
         spatial_derivative=np.array("periodic_five_point_central_D1_D2"),
         ratio_regularization=np.array(
-            args.log_derivative_backend
-            +"_amplitude_mask_plus_deep_tail_phase_log_exact_zero"
+            (
+                args.log_derivative_backend
+                +"_probability_budget_flat_top_gauge_invariant_ratio"
+                if args.coupling_mask_backend == "flat_top" else
+                args.log_derivative_backend
+                +"_amplitude_mask_plus_deep_tail_phase_log_exact_zero"
+            )
         ),
         log_derivative_backend=np.array(args.log_derivative_backend),
         weak_log_delta=np.array(args.weak_log_delta),
@@ -593,6 +622,12 @@ def run(args):
             else "periodic_five_point_fourier_mean_density"
         ),
         product_projection_backend=np.array(args.product_projection_backend),
+        coupling_mask_backend=np.array(args.coupling_mask_backend),
+        flat_top_on_phi=np.array(args.flat_top_on_phi or 0.0),
+        flat_top_on_lam=np.array(args.flat_top_on_lam or 0.0),
+        flat_top_transition_decades=np.array(args.flat_top_transition_decades),
+        flat_top_budget_phi=np.array(args.flat_top_budget_phi),
+        flat_top_budget_lam=np.array(args.flat_top_budget_lam),
         projection_tau_phi=np.array(args.projection_tau_phi),
         projection_tau_lam=np.array(args.projection_tau_lam),
         projection_tau_chi=np.array(args.projection_tau_chi),
@@ -944,6 +979,32 @@ def parse_args():
     regularization.add_argument(
         "--mask-threshold-lam", type=float, default=1.0e-10,
         help="heavy density 기반 Lambda amplitude-gradient mask",
+    )
+    regularization.add_argument(
+        "--coupling-mask-backend",
+        choices=("rational_deep_tail", "flat_top"),
+        default="rational_deep_tail",
+        help="coupling ratio regularization profile; 기존 방식 또는 fixed flat-top",
+    )
+    regularization.add_argument(
+        "--flat-top-budget-phi", type=float, default=1.0e-9,
+        help="r_on 미지정 시 초기 joint density에서 허용할 suppressed mass",
+    )
+    regularization.add_argument(
+        "--flat-top-budget-lam", type=float, default=1.0e-9,
+        help="r_on 미지정 시 초기 heavy density에서 허용할 suppressed mass",
+    )
+    regularization.add_argument(
+        "--flat-top-on-phi", type=float, default=None,
+        help="고정 Phi flat-top onset rho/rho_max; 생략하면 budget으로 초기 역산",
+    )
+    regularization.add_argument(
+        "--flat-top-on-lam", type=float, default=None,
+        help="고정 Lambda flat-top onset rho/rho_max; 생략하면 budget으로 초기 역산",
+    )
+    regularization.add_argument(
+        "--flat-top-transition-decades", type=float, default=3.0,
+        help="r_on에서 exact zero까지의 log10 density 폭",
     )
     regularization.add_argument(
         "--product-projection-floor-phi", type=float, default=1.0e-10,

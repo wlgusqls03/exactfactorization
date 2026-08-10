@@ -5,6 +5,8 @@ import numpy as np
 
 from multi_component_exact_factorization.core import (
     derivative,
+    flat_top_on_for_probability_budget,
+    flat_top_support_mask,
     mask_threshold_for_probability_budget,
     occupied_support_mask,
     project_discrete_product_residual,
@@ -121,6 +123,19 @@ class DiscreteProductProjectionTests(unittest.TestCase):
             mask = occupied_support_mask(density, eta)
             measured = suppressed_probability(density, mask, 1.0)
             self.assertAlmostEqual(measured, budget, delta=budget*1.0e-6)
+
+    def test_flat_top_budget_has_exact_plateau_and_requested_mass(self):
+        density = np.exp(-np.linspace(-7.0, 7.0, 401)**2)
+        for budget in (1.0e-10, 1.0e-8, 1.0e-6):
+            onset = flat_top_on_for_probability_budget(
+                density, budget, transition_decades=3.0
+            )
+            mask = flat_top_support_mask(density, onset, 3.0)
+            measured = suppressed_probability(density, mask)
+            self.assertAlmostEqual(measured, budget, delta=budget*2.0e-6)
+            relative = density/np.max(density)
+            self.assertTrue(np.all(mask[relative >= onset] == 1.0))
+            self.assertTrue(np.all(mask[relative <= onset*1.0e-3] == 0.0))
 
     def test_weighted_projection_limits_tail_factor_correction(self):
         rng = np.random.default_rng(19)
