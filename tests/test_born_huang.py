@@ -1,11 +1,14 @@
 import unittest
 from unittest.mock import patch
 import sys
+import tempfile
+from pathlib import Path
 
 import numpy as np
 
 from multi_component_exact_factorization.born_huang import (
     build_born_huang_basis,
+    load_or_build_born_huang_basis,
     coefficient_vector_potential,
     projected_plain_second,
     projected_residual_momentum,
@@ -143,6 +146,29 @@ class BornHuangOperatorTests(unittest.TestCase):
         self.assertLess(np.max(np.abs(overlap-identity)), 2.0e-13)
         for values in (basis.energies, basis.d_q, basis.D_q, basis.d_R, basis.D_R):
             self.assertTrue(np.all(np.isfinite(values)))
+
+    def test_basis_cache_round_trip_and_fingerprint(self):
+        with patch.object(sys, "argv", [
+            "test", "--nx", "12", "--nq", "5", "--nR", "5",
+            "--electron-excitation", "1",
+        ]):
+            args = parse_args()
+        model = build_model(args)
+        with tempfile.TemporaryDirectory() as work:
+            first, first_info = load_or_build_born_huang_basis(
+                model, 2, cache_dir=Path(work)
+            )
+            second, second_info = load_or_build_born_huang_basis(
+                model, 2, cache_dir=Path(work)
+            )
+            self.assertFalse(first_info["hit"])
+            self.assertTrue(second_info["hit"])
+            self.assertEqual(first_info["key"], second_info["key"])
+            for name in ("energies", "states", "d_q", "D_q", "d_R", "D_R"):
+                self.assertTrue(np.array_equal(
+                    np.asarray(getattr(first, name)),
+                    np.asarray(getattr(second, name)),
+                ))
 
 
 if __name__ == "__main__":

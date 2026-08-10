@@ -8,6 +8,12 @@ remain on their q/R grids.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import tempfile
+import time
 
 import numpy as np
 
@@ -34,7 +40,7 @@ def _project_basis_derivative(states, spacing, coordinate_axis, order, dx):
     """Project a q/R derivative of every right BO state on every left state."""
     n_states = states.shape[0]
     shape = (n_states, n_states)+states.shape[2:]
-    result = np.empty(shape, dtype=complex)
+    result = np.empty(shape, dtype=np.result_type(states.dtype, np.float64))
     # Removing the state axis makes q/R axes 1/2 in one electronic state.
     state_axis = coordinate_axis-1
     for right in range(n_states):
@@ -58,6 +64,120 @@ def build_born_huang_basis(model, n_states):
         d_R=_project_basis_derivative(states, model.dR, 3, 1, model.dx),
         D_R=_project_basis_derivative(states, model.dR, 3, 2, model.dx),
     )
+
+
+_BO_CACHE_VERSION = 1
+_BO_CACHE_ARRAYS = ("energies", "states", "d_q", "D_q", "d_R", "D_R")
+
+
+def _hash_array(digest, values):
+    """Update a digest without constructing another full-sized byte string."""
+    array = np.ascontiguousarray(values)
+    digest.update(str(array.dtype).encode("ascii"))
+    digest.update(repr(array.shape).encode("ascii"))
+    raw = array.view(np.uint8).reshape(-1)
+    chunk = 64*1024**2
+    for start in range(0, raw.size, chunk):
+        digest.update(raw[start:start+chunk])
+
+
+def born_huang_cache_key(model, n_states):
+    """Fingerprint every quantity defining the static electronic problem."""
+    digest = hashlib.sha256()
+    digest.update(f"mcef-bo-cache-v{_BO_CACHE_VERSION};N={n_states}".encode())
+    for values in (model.x, model.q, model.R, model.potential):
+        _hash_array(digest, values)
+    return digest.hexdigest()
+
+
+def _load_cached_basis(path, expected_key):
+    metadata = json.loads((path/"metadata.json").read_text(encoding="utf-8"))
+    if metadata.get("version") != _BO_CACHE_VERSION:
+        raise ValueError("BO cache version mismatch")
+    if metadata.get("key") != expected_key:
+        raise ValueError("BO cache fingerprint mismatch")
+    arrays = {
+        name: np.load(path/f"{name}.npy", mmap_mode="r", allow_pickle=False)
+        for name in _BO_CACHE_ARRAYS
+    }
+    return BornHuangBasis(**arrays)
+
+
+def _write_cached_basis(path, key, basis, n_states):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(
+        prefix=f".{key[:16]}.tmp-", dir=path.parent,
+    ))
+    try:
+        for name in _BO_CACHE_ARRAYS:
+            np.save(temporary/f"{name}.npy", np.asarray(getattr(basis, name)),
+                    allow_pickle=False)
+        metadata = {
+            "version": _BO_CACHE_VERSION,
+            "key": key,
+            "n_states": int(n_states),
+            "arrays": {
+                name: {
+                    "shape": list(np.asarray(getattr(basis, name)).shape),
+                    "dtype": str(np.asarray(getattr(basis, name)).dtype),
+                }
+                for name in _BO_CACHE_ARRAYS
+            },
+        }
+        (temporary/"metadata.json").write_text(
+            json.dumps(metadata, indent=2, sort_keys=True)+"\n", encoding="utf-8"
+        )
+        if path.exists():
+            # A concurrent process may have completed the same immutable key.
+            shutil.rmtree(temporary)
+        else:
+            temporary.rename(path)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+
+
+def load_or_build_born_huang_basis(
+    model, n_states, *, cache_dir=None, rebuild=False,
+):
+    """Load an immutable BO/NAC cache or build and atomically store it.
+
+    The key includes the complete grids and electronic potential, so timestep,
+    propagation length and regularization options reuse the same basis while
+    any Hamiltonian change necessarily creates another cache entry.
+    """
+    started = time.perf_counter()
+    if cache_dir is None:
+        basis = build_born_huang_basis(model, n_states)
+        return basis, {
+            "hit": False, "enabled": False, "key": "", "path": "",
+            "seconds": time.perf_counter()-started,
+        }
+
+    key = born_huang_cache_key(model, n_states)
+    path = Path(cache_dir).expanduser().resolve()/key[:24]
+    if rebuild and path.exists():
+        shutil.rmtree(path)
+    if path.exists():
+        try:
+            basis = _load_cached_basis(path, key)
+            return basis, {
+                "hit": True, "enabled": True, "key": key,
+                "path": str(path), "seconds": time.perf_counter()-started,
+            }
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            # A corrupt/incomplete entry is never silently reused.
+            shutil.rmtree(path)
+
+    basis = build_born_huang_basis(model, n_states)
+    _write_cached_basis(path, key, basis, n_states)
+    # Reload as read-only mmap arrays.  This avoids retaining a second copy
+    # while the GPU transfer and optional electron-density basis are prepared.
+    basis = _load_cached_basis(path, key)
+    return basis, {
+        "hit": False, "enabled": True, "key": key,
+        "path": str(path), "seconds": time.perf_counter()-started,
+    }
 
 
 def initial_born_huang_factors(model, args, basis):

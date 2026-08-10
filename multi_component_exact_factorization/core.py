@@ -232,7 +232,10 @@ def local_electronic_basis(model: Model, n_states: int):
     kinetic_offdiagonal = np.full(nx-1, -0.5/model.dx**2)
 
     energies = np.empty((n_states, nq, nR), float)                 # (state,nq,nR)
-    states = np.empty((n_states, nx, nq, nR), complex)             # (state,nx,nq,nR)
+    # The clamped Hamiltonian is real symmetric.  Keeping its eigenvectors
+    # real halves both the persistent BO-cache size and the peak host memory.
+    # The only gauge freedom is consequently a sign, handled below.
+    states = np.empty((n_states, nx, nq, nR), float)               # (state,nx,nq,nR)
 
     # ------------------------------------------------------------------
     # 2. 모든 (q_j,R_k)에서 작은 nx x nx Hermitian 문제를 독립적으로 푼다.
@@ -247,7 +250,7 @@ def local_electronic_basis(model: Model, n_states: int):
 
             # np.linalg.eigh의 열벡터는 sum_x |v_x|^2=1이다. 연속 PNC
             # sum_x |phi_x|^2 dx=1에 맞추기 위해 sqrt(dx)로 나눈다.
-            chosen = vectors.T.astype(complex)/np.sqrt(model.dx)
+            chosen = vectors.T/np.sqrt(model.dx)
 
             # ----------------------------------------------------------
             # 3. Eigenvector가 갖는 임의의 complex phase를 매끈하게 잇는다.
@@ -263,12 +266,13 @@ def local_electronic_basis(model: Model, n_states: int):
                 else:
                     # 첫 configuration에서는 최대 성분을 양의 실수로 둔다.
                     pivot = int(np.argmax(np.abs(chosen[state])))
-                    phase = np.angle(chosen[state, pivot])
-                    chosen[state] *= np.exp(-1j*phase)
+                    if chosen[state, pivot] < 0.0:
+                        chosen[state] *= -1.0
                     continue
                 overlap = np.sum(np.conj(reference)*chosen[state])*model.dx
                 if abs(overlap) > 1.0e-12:
-                    chosen[state] *= np.exp(-1j*np.angle(overlap))
+                    if overlap < 0.0:
+                        chosen[state] *= -1.0
             energies[:, iq, iR] = values
             states[:, :, iq, iR] = chosen
     return energies, states

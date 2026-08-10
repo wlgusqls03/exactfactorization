@@ -10,8 +10,8 @@ import numpy as np
 from result_paths import dated_results_dir
 
 from multi_component_exact_factorization.born_huang import (
-    build_born_huang_basis,
     initial_born_huang_factors,
+    load_or_build_born_huang_basis,
 )
 from multi_component_exact_factorization.core import (
     AU_PER_FS, build_model, calibrate_flat_top_args,
@@ -43,7 +43,22 @@ def run_born_huang(args):
     if n_states <= int(args.electron_excitation):
         raise ValueError("--bo-states must exceed --electron-excitation")
     print(f"Born--Huang basis 생성: N_BO={n_states}")
-    basis_cpu = build_born_huang_basis(cpu_model, n_states)
+    cache_dir = (
+        args.bo_basis_cache_dir if getattr(args, "bo_basis_cache", True)
+        else None
+    )
+    basis_cpu, cache_info = load_or_build_born_huang_basis(
+        cpu_model, n_states, cache_dir=cache_dir,
+        rebuild=getattr(args, "rebuild_bo_basis_cache", False),
+    )
+    if cache_info["enabled"]:
+        state = "HIT: 재사용" if cache_info["hit"] else "MISS: 생성 후 저장"
+        print(
+            f"BO basis cache {state}; {cache_info['seconds']:.2f} s; "
+            f"key={cache_info['key'][:16]}; path={cache_info['path']}"
+        )
+    else:
+        print(f"BO basis cache 비활성; 생성 {cache_info['seconds']:.2f} s")
     coefficients_cpu, lam_cpu, chi_cpu = initial_born_huang_factors(
         cpu_model, args, basis_cpu
     )
@@ -262,6 +277,10 @@ def run_born_huang(args):
         representation=np.array("electronic_born_huang_coefficients"),
         electronic_representation=np.array("born_huang"),
         bo_states_count=np.array(n_states),
+        bo_basis_cache_hit=np.array(cache_info["hit"]),
+        bo_basis_cache_key=np.array(cache_info["key"]),
+        bo_basis_cache_path=np.array(cache_info["path"]),
+        bo_basis_cache_seconds=np.array(cache_info["seconds"]),
         bo_energies=basis_cpu.energies,
         bo_d_q=basis_cpu.d_q,
         bo_D_q=basis_cpu.D_q,

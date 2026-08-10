@@ -3,6 +3,7 @@ __pycache__/
 
 # Generated simulation and rendering output
 results/
+.mcef_cache/
 
 # LaTeX build products (keep .tex and final .pdf explicitly stageable)
 *.aux

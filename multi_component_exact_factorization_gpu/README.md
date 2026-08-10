@@ -267,6 +267,22 @@ CUDA_VISIBLE_DEVICES=0 python -m \
 eigenvector도 archive에 저장하여 full-Psi reference 비교가 가능하지만,
 archive가 커지므로 convergence run에서만 권장한다.
 
+같은 전자 Hamiltonian의 BO diagonalization은 기본적으로
+``results/bo_basis_cache``에 한 번 저장한다. cache key는 ``N_BO``뿐 아니라
+전체 x/q/R 격자와 electronic potential의 SHA-256 fingerprint를 포함하므로,
+``dt``, 최종 시간, mask만 바꾼 계산은 즉시 재사용하고 전하·softening·box·grid
+중 하나라도 달라지면 자동으로 별도 basis를 생성한다.
+
+```bash
+--bo-basis-cache-dir results/bo_basis_cache
+```
+
+정상 cache는 두 번째 실행에서 ``BO basis cache HIT: 재사용``으로 표시된다.
+현재 조건만 강제로 다시 만들 때는 ``--rebuild-bo-basis-cache``, cache 자체를
+쓰지 않을 때는 ``--no-bo-basis-cache``를 사용한다. 큰 full-box BH6 cache는
+real64 eigenstate와 NAC를 포함하므로 수 GB의 디스크 공간이 필요하지만, 매
+실행마다 수십만 개의 전자 고유값 문제를 다시 푸는 시간을 없앤다.
+
 Born--Huang archive도 direct-grid와 같은 이름과 역할의 compact report를
 만든다. 저장 frame마다 exact electron marginal을 R-block으로 합성하고,
 ``|C_n Lambda chi|^2``의 q/R marginal도 저장한다. 따라서 거대한 static

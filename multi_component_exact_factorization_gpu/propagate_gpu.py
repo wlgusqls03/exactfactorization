@@ -896,6 +896,22 @@ def parse_args():
         "--bo-states", type=int, default=6,
         help="Born--Huang backend에서 유지할 local BO state 수",
     )
+    electronic.set_defaults(bo_basis_cache=True)
+    electronic.add_argument(
+        "--bo-basis-cache-dir", default="results/bo_basis_cache",
+        help=(
+            "격자/Hamiltonian fingerprint별 static BO energy/state/NAC cache "
+            "폴더(기본 results/bo_basis_cache)"
+        ),
+    )
+    electronic.add_argument(
+        "--no-bo-basis-cache", action="store_false", dest="bo_basis_cache",
+        help="BO basis disk cache를 사용하지 않고 매번 다시 생성",
+    )
+    electronic.add_argument(
+        "--rebuild-bo-basis-cache", action="store_true",
+        help="현재 fingerprint의 BO cache를 지우고 한 번 다시 생성",
+    )
     electronic.add_argument(
         "--bo-save-basis-states", action="store_true",
         help="큰 static BO eigenvector tensor도 archive에 저장",
