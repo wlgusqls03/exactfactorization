@@ -285,6 +285,25 @@ archive가 커지므로 convergence run에서만 권장한다.
 real64 eigenstate와 NAC를 포함하므로 수 GB의 디스크 공간이 필요하지만, 매
 실행마다 수십만 개의 전자 고유값 문제를 다시 푸는 시간을 없앤다.
 
+동역학을 시작하지 않고 static BO cache만 미리 만들 수도 있다. 예를 들어
+동일한 모델과 격자의 BO10 cache를 한 번 만들면 이후 BO1--BO10 계산은 exact
+cache가 없을 때 이 cache의 선두 state/NAC block을 잘라서 재사용한다. 더 작은
+cache를 이어 붙여 BO10으로 확장하지는 않으며, BO10은 처음 한 번 완전히
+계산한다.
+
+```bash
+python -m multi_component_exact_factorization_gpu.build_bo_cache \
+  --bo-states 10 \
+  --bo-basis-cache-dir results/bo_basis_cache \
+  --nx 300 --nq 450 --nR 900
+```
+
+출력의 ``requested``는 이번 계산에 필요한 state 수, ``stored``는 실제 재사용한
+cache의 state 수다. 전하, softening, x/q/R 범위 또는 격자 수가 달라지면 같은
+폴더 안에서도 별도 cache를 생성한다. 이전 버전이 만든 cache는 같은 state 수의
+exact hit에는 계속 쓸 수 있지만, 상위 cache로 잘라 쓰려면 위 명령으로 새
+metadata를 가진 cache를 한 번 생성해야 한다.
+
 Born--Huang archive도 direct-grid와 같은 이름과 역할의 compact report를
 만든다. 저장 frame마다 exact electron marginal을 R-block으로 합성하고,
 ``|C_n Lambda chi|^2``의 q/R marginal도 저장한다. 따라서 거대한 static

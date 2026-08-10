@@ -170,6 +170,34 @@ class BornHuangOperatorTests(unittest.TestCase):
                     np.asarray(getattr(second, name)),
                 ))
 
+    def test_smaller_basis_reuses_cached_superset(self):
+        with patch.object(sys, "argv", [
+            "test", "--nx", "12", "--nq", "5", "--nR", "5",
+            "--electron-excitation", "1",
+        ]):
+            args = parse_args()
+        model = build_model(args)
+        with tempfile.TemporaryDirectory() as work:
+            large, large_info = load_or_build_born_huang_basis(
+                model, 3, cache_dir=Path(work)
+            )
+            with patch(
+                "multi_component_exact_factorization.born_huang."
+                "build_born_huang_basis",
+                side_effect=AssertionError("superset cache was not reused"),
+            ):
+                small, small_info = load_or_build_born_huang_basis(
+                    model, 2, cache_dir=Path(work)
+                )
+            self.assertFalse(large_info["hit"])
+            self.assertTrue(small_info["hit"])
+            self.assertEqual(small_info["stored_states"], 3)
+            self.assertEqual(small.energies.shape[0], 2)
+            self.assertEqual(small.d_q.shape[:2], (2, 2))
+            self.assertTrue(np.array_equal(
+                np.asarray(small.states), np.asarray(large.states[:2])
+            ))
+
 
 if __name__ == "__main__":
     unittest.main()

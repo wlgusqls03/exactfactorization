@@ -55,6 +55,7 @@ def run_born_huang(args):
         state = "HIT: 재사용" if cache_info["hit"] else "MISS: 생성 후 저장"
         print(
             f"BO basis cache {state}; {cache_info['seconds']:.2f} s; "
+            f"stored/requested={cache_info['stored_states']}/{n_states}; "
             f"key={cache_info['key'][:16]}; path={cache_info['path']}"
         )
     else:
@@ -280,6 +281,9 @@ def run_born_huang(args):
         bo_basis_cache_hit=np.array(cache_info["hit"]),
         bo_basis_cache_key=np.array(cache_info["key"]),
         bo_basis_cache_path=np.array(cache_info["path"]),
+        bo_basis_cache_stored_states=np.array(
+            cache_info.get("stored_states", n_states)
+        ),
         bo_basis_cache_seconds=np.array(cache_info["seconds"]),
         bo_energies=basis_cpu.energies,
         bo_d_q=basis_cpu.d_q,

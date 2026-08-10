@@ -90,6 +90,15 @@ def born_huang_cache_key(model, n_states):
     return digest.hexdigest()
 
 
+def born_huang_system_key(model):
+    """Fingerprint the BO Hamiltonian independently of the stored state count."""
+    digest = hashlib.sha256()
+    digest.update(f"mcef-bo-system-v{_BO_CACHE_VERSION}".encode())
+    for values in (model.x, model.q, model.R, model.potential):
+        _hash_array(digest, values)
+    return digest.hexdigest()
+
+
 def _load_cached_basis(path, expected_key):
     metadata = json.loads((path/"metadata.json").read_text(encoding="utf-8"))
     if metadata.get("version") != _BO_CACHE_VERSION:
@@ -103,7 +112,7 @@ def _load_cached_basis(path, expected_key):
     return BornHuangBasis(**arrays)
 
 
-def _write_cached_basis(path, key, basis, n_states):
+def _write_cached_basis(path, key, system_key, basis, n_states):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(
         prefix=f".{key[:16]}.tmp-", dir=path.parent,
@@ -115,6 +124,7 @@ def _write_cached_basis(path, key, basis, n_states):
         metadata = {
             "version": _BO_CACHE_VERSION,
             "key": key,
+            "system_key": system_key,
             "n_states": int(n_states),
             "arrays": {
                 name: {
@@ -137,6 +147,40 @@ def _write_cached_basis(path, key, basis, n_states):
             shutil.rmtree(temporary)
 
 
+def _truncate_basis(basis, n_states):
+    """Return mmap-backed leading BO/NAC blocks without copying them."""
+    return BornHuangBasis(
+        energies=basis.energies[:n_states],
+        states=basis.states[:n_states],
+        d_q=basis.d_q[:n_states, :n_states],
+        D_q=basis.D_q[:n_states, :n_states],
+        d_R=basis.d_R[:n_states, :n_states],
+        D_R=basis.D_R[:n_states, :n_states],
+    )
+
+
+def _find_cached_superset(cache_dir, system_key, n_states):
+    """Find the smallest compatible cache containing at least ``n_states``."""
+    candidates = []
+    for metadata_path in Path(cache_dir).glob("*/metadata.json"):
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            stored = int(metadata["n_states"])
+            if (
+                metadata.get("version") == _BO_CACHE_VERSION
+                and metadata.get("system_key") == system_key
+                and stored >= n_states
+            ):
+                candidates.append((stored, metadata_path.parent, metadata["key"]))
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            continue
+    if not candidates:
+        return None
+    stored, path, key = min(candidates, key=lambda item: item[0])
+    basis = _load_cached_basis(path, key)
+    return _truncate_basis(basis, n_states), stored, path, key
+
+
 def load_or_build_born_huang_basis(
     model, n_states, *, cache_dir=None, rebuild=False,
 ):
@@ -154,8 +198,9 @@ def load_or_build_born_huang_basis(
             "seconds": time.perf_counter()-started,
         }
 
+    cache_root = Path(cache_dir).expanduser().resolve()
     key = born_huang_cache_key(model, n_states)
-    path = Path(cache_dir).expanduser().resolve()/key[:24]
+    path = cache_root/key[:24]
     if rebuild and path.exists():
         shutil.rmtree(path)
     if path.exists():
@@ -163,20 +208,33 @@ def load_or_build_born_huang_basis(
             basis = _load_cached_basis(path, key)
             return basis, {
                 "hit": True, "enabled": True, "key": key,
-                "path": str(path), "seconds": time.perf_counter()-started,
+                "path": str(path), "stored_states": n_states,
+                "seconds": time.perf_counter()-started,
             }
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             # A corrupt/incomplete entry is never silently reused.
             shutil.rmtree(path)
 
+    system_key = born_huang_system_key(model)
+    if not rebuild:
+        superset = _find_cached_superset(cache_root, system_key, n_states)
+        if superset is not None:
+            basis, stored_states, source_path, source_key = superset
+            return basis, {
+                "hit": True, "enabled": True, "key": source_key,
+                "path": str(source_path), "stored_states": stored_states,
+                "seconds": time.perf_counter()-started,
+            }
+
     basis = build_born_huang_basis(model, n_states)
-    _write_cached_basis(path, key, basis, n_states)
+    _write_cached_basis(path, key, system_key, basis, n_states)
     # Reload as read-only mmap arrays.  This avoids retaining a second copy
     # while the GPU transfer and optional electron-density basis are prepared.
     basis = _load_cached_basis(path, key)
     return basis, {
         "hit": False, "enabled": True, "key": key,
-        "path": str(path), "seconds": time.perf_counter()-started,
+        "path": str(path), "stored_states": n_states,
+        "seconds": time.perf_counter()-started,
     }
 
 
