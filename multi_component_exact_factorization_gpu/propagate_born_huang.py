@@ -81,10 +81,12 @@ def run_born_huang(args):
         product_projection_floor_phi=args.product_projection_floor_phi,
         product_projection_floor_lam=args.product_projection_floor_lam,
     )
-    basis = to_gpu_basis(basis_cpu, model)
+    link_kernel = getattr(args, "bo_link_kernel", "reference")
+    basis = to_gpu_basis(basis_cpu, model, link_kernel)
     print(
         "BO 핵 미분: overlap-link periodic 5-point "
-        "(D1 anti-Hermitian, D2 Hermitian by construction)"
+        "(D1 anti-Hermitian, D2 Hermitian by construction); "
+        f"GPU kernel={link_kernel}"
     )
     saved_basis_states = (
         basis_cpu.states if getattr(args, "bo_save_basis_states", False) else None
@@ -318,6 +320,8 @@ def run_born_huang(args):
         ),
         bo_basis_cache_seconds=np.array(cache_info["seconds"]),
         bo_derivative_backend=np.array("overlap_link_five_point"),
+        bo_link_kernel=np.array(link_kernel),
+        bo_link_kernel_version=np.array(1),
         bo_overlap_links_in_cache=np.array(True),
         bo_energies=basis_cpu.energies,
         x=cpu_model.x, q=cpu_model.q, R=cpu_model.R,
@@ -362,6 +366,17 @@ def run_born_huang(args):
     )
     print(f"저장 완료: {path}")
     print(f"BO coefficient 전파 wall 시간: {payload['wall_seconds']:.3f} s")
+    if attempted:
+        print(
+            "BO coefficient 평균 wall 시간: "
+            f"{float(payload['wall_seconds'])/attempted:.6f} s/step"
+        )
+    pool = cp.get_default_memory_pool()
+    print(
+        "CuPy memory pool: "
+        f"used={pool.used_bytes()/1024**3:.2f} GiB, "
+        f"reserved={pool.total_bytes()/1024**3:.2f} GiB"
+    )
     print(
         "BO 핵심 진단: "
         f"max|norm-1|={np.max(np.abs(payload['norm']-1.0)):.3e}, "

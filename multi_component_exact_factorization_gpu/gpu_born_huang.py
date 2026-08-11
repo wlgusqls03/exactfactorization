@@ -27,18 +27,203 @@ class GPUBornHuangBasis:
     energies: cp.ndarray
     link_q1: cp.ndarray
     link_q2: cp.ndarray
-    back_q1: cp.ndarray
-    back_q2: cp.ndarray
     link_R1: cp.ndarray
     link_R2: cp.ndarray
-    back_R1: cp.ndarray
-    back_R2: cp.ndarray
+    back_q1: object = None
+    back_q2: object = None
+    back_R1: object = None
+    back_R2: object = None
+    link_kernel: str = "reference"
+    workspace: object = None
 
 
-def to_gpu_basis(basis, model):
+@dataclass
+class BHLinkWorkspace:
+    """Reusable fused-link temporaries for one coefficient tensor."""
+
+    transports: cp.ndarray
+    first: cp.ndarray
+    second: cp.ndarray
+
+
+_BO_LINK_KERNEL_CACHE = {}
+
+
+def _bo_link_kernels(link_dtype):
+    """Compile exact complex128 BO transport/combine kernels lazily."""
+    dtype = np.dtype(link_dtype)
+    cached = _BO_LINK_KERNEL_CACHE.get(dtype.str)
+    if cached is not None:
+        return cached
+    if dtype == np.dtype(np.float64):
+        link_type = "double"
+        forward_product = "mul_real(link_value, coefficient)"
+        backward_product = "mul_real(link_value, coefficient)"
+        forward_load = "links[(left*nstate+right)*ngrid+grid]"
+        backward_load = "links[(right*nstate+left)*ngrid+neighbor_grid]"
+    elif dtype == np.dtype(np.complex128):
+        link_type = "double2"
+        forward_product = "mul_complex(link_value, coefficient)"
+        backward_product = "mul_complex(mcef_conjugate(link_value), coefficient)"
+        forward_load = "links[(left*nstate+right)*ngrid+grid]"
+        backward_load = "links[(right*nstate+left)*ngrid+neighbor_grid]"
+    else:
+        raise TypeError(
+            "fused BO link kernel은 float64/complex128 link만 지원합니다."
+        )
+    suffix = "real" if dtype.kind == "f" else "complex"
+    transport_name = f"mcef_bh_transport_c128_{suffix}"
+    combine_name = "mcef_bh_covariant_combine_c128"
+    code = f'''\
+__device__ __forceinline__ double2 add_complex(double2 a, double2 b) {{
+    return make_double2(a.x+b.x, a.y+b.y);
+}}
+__device__ __forceinline__ double2 mul_real(double a, double2 b) {{
+    return make_double2(a*b.x, a*b.y);
+}}
+__device__ __forceinline__ double2 mul_complex(double2 a, double2 b) {{
+    return make_double2(a.x*b.x-a.y*b.y, a.x*b.y+a.y*b.x);
+}}
+__device__ __forceinline__ double2 mcef_conjugate(double2 a) {{
+    return make_double2(a.x, -a.y);
+}}
+__device__ __forceinline__ int wrapped(int value, int length) {{
+    value %= length;
+    return value < 0 ? value+length : value;
+}}
+__device__ __forceinline__ long long neighbor_index(
+    int iq, int iR, int offset, int axis, int nq, int nR
+) {{
+    if (axis == 1) iq = wrapped(iq+offset, nq);
+    else iR = wrapped(iR+offset, nR);
+    return (long long)iq*nR+iR;
+}}
+
+extern "C" __global__
+void {transport_name}(
+    const double2* coefficients,
+    const {link_type}* link1,
+    const {link_type}* link2,
+    double2* transports,
+    double2* first,
+    double2* second,
+    const long long size,
+    const int nstate,
+    const int nq,
+    const int nR,
+    const int axis,
+    const int write_transports,
+    const int write_first,
+    const int write_second,
+    const double first_scale,
+    const double second_scale
+) {{
+    const long long index = (long long)blockDim.x*blockIdx.x+threadIdx.x;
+    if (index >= size) return;
+    const long long ngrid = (long long)nq*nR;
+    const int left = (int)(index/ngrid);
+    const long long grid = index-(long long)left*ngrid;
+    const int iq = (int)(grid/nR);
+    const int iR = (int)(grid-(long long)iq*nR);
+    const long long gm2 = neighbor_index(iq, iR, -2, axis, nq, nR);
+    const long long gm1 = neighbor_index(iq, iR, -1, axis, nq, nR);
+    const long long gp1 = neighbor_index(iq, iR, 1, axis, nq, nR);
+    const long long gp2 = neighbor_index(iq, iR, 2, axis, nq, nR);
+    double2 tm2 = make_double2(0.0, 0.0);
+    double2 tm1 = make_double2(0.0, 0.0);
+    double2 tp1 = make_double2(0.0, 0.0);
+    double2 tp2 = make_double2(0.0, 0.0);
+    for (int right = 0; right < nstate; ++right) {{
+        double2 coefficient = coefficients[(long long)right*ngrid+gp1];
+        {link_type} link_value = {forward_load.replace('links', 'link1')};
+        tp1 = add_complex(tp1, {forward_product});
+        coefficient = coefficients[(long long)right*ngrid+gp2];
+        link_value = {forward_load.replace('links', 'link2')};
+        tp2 = add_complex(tp2, {forward_product});
+        coefficient = coefficients[(long long)right*ngrid+gm1];
+        const long long neighbor_grid = gm1;
+        link_value = {backward_load.replace('links', 'link1')};
+        tm1 = add_complex(tm1, {backward_product});
+        coefficient = coefficients[(long long)right*ngrid+gm2];
+        link_value = link2[(right*nstate+left)*ngrid+gm2];
+        tm2 = add_complex(tm2, {backward_product});
+    }}
+    if (write_transports) {{
+        transports[index] = tm2;
+        transports[size+index] = tm1;
+        transports[2*size+index] = tp1;
+        transports[3*size+index] = tp2;
+    }}
+    if (write_first) {{
+        first[index] = make_double2(
+            (tm2.x-8.0*tm1.x+8.0*tp1.x-tp2.x)*first_scale,
+            (tm2.y-8.0*tm1.y+8.0*tp1.y-tp2.y)*first_scale
+        );
+    }}
+    if (write_second) {{
+        const double2 center = coefficients[index];
+        second[index] = make_double2(
+            (-tm2.x+16.0*tm1.x-30.0*center.x+16.0*tp1.x-tp2.x)*second_scale,
+            (-tm2.y+16.0*tm1.y-30.0*center.y+16.0*tp1.y-tp2.y)*second_scale
+        );
+    }}
+}}
+
+extern "C" __global__
+void {combine_name}(
+    const double2* transports,
+    const double2* coefficients,
+    const double2* phase1,
+    const double2* phase2,
+    double2* first,
+    double2* second,
+    const long long size,
+    const int nq,
+    const int nR,
+    const int axis,
+    const double first_scale,
+    const double second_scale
+) {{
+    const long long index = (long long)blockDim.x*blockIdx.x+threadIdx.x;
+    if (index >= size) return;
+    const long long ngrid = (long long)nq*nR;
+    const long long grid = index%ngrid;
+    const int iq = (int)(grid/nR);
+    const int iR = (int)(grid-(long long)iq*nR);
+    const long long gm2 = neighbor_index(iq, iR, -2, axis, nq, nR);
+    const long long gm1 = neighbor_index(iq, iR, -1, axis, nq, nR);
+    double2 tm2 = mul_complex(mcef_conjugate(phase2[gm2]), transports[index]);
+    double2 tm1 = mul_complex(mcef_conjugate(phase1[gm1]), transports[size+index]);
+    double2 tp1 = mul_complex(phase1[grid], transports[2*size+index]);
+    double2 tp2 = mul_complex(phase2[grid], transports[3*size+index]);
+    first[index] = make_double2(
+        (tm2.x-8.0*tm1.x+8.0*tp1.x-tp2.x)*first_scale,
+        (tm2.y-8.0*tm1.y+8.0*tp1.y-tp2.y)*first_scale
+    );
+    const double2 center = coefficients[index];
+    second[index] = make_double2(
+        (-tm2.x+16.0*tm1.x-30.0*center.x+16.0*tp1.x-tp2.x)*second_scale,
+        (-tm2.y+16.0*tm1.y-30.0*center.y+16.0*tp1.y-tp2.y)*second_scale
+    );
+}}
+'''
+    transport = cp.RawKernel(
+        code, transport_name, options=("--std=c++11",)
+    )
+    combine = cp.RawKernel(
+        code, combine_name, options=("--std=c++11",)
+    )
+    _BO_LINK_KERNEL_CACHE[dtype.str] = (transport, combine)
+    return transport, combine
+
+
+def to_gpu_basis(basis, model, link_kernel="reference"):
     for name in ("link_q1", "link_q2", "link_R1", "link_R2"):
         if getattr(basis, name, None) is None:
             raise ValueError(f"BO overlap link가 없습니다: {name}")
+
+    if link_kernel not in ("reference", "fused"):
+        raise ValueError("BO link kernel은 reference 또는 fused여야 합니다.")
 
     def links(forward, axis, offset):
         # The present one-dimensional electronic Hamiltonian has real BO
@@ -49,23 +234,40 @@ def to_gpu_basis(basis, model):
             model.complex_dtype if np.iscomplexobj(forward)
             else model.real_dtype
         )
-        forward_gpu = cp.asarray(forward, dtype=dtype)
-        backward_gpu = cp.roll(
-            cp.swapaxes(cp.conj(forward_gpu), 0, 1),
-            offset, axis=axis+1,
-        )
+        # A leading BO block sliced from a larger superset cache can retain
+        # the parent array's wider strides.  Materialize the upload in the
+        # layout used by the explicit CUDA indexing below.  This changes no
+        # values and also gives the reference einsum the same dense layout.
+        forward_gpu = cp.ascontiguousarray(cp.asarray(forward, dtype=dtype))
+        backward_gpu = None
+        if link_kernel == "reference":
+            backward_gpu = cp.roll(
+                cp.swapaxes(cp.conj(forward_gpu), 0, 1),
+                offset, axis=axis+1,
+            )
         return forward_gpu, backward_gpu
 
     link_q1, back_q1 = links(basis.link_q1, 1, 1)
     link_q2, back_q2 = links(basis.link_q2, 1, 2)
     link_R1, back_R1 = links(basis.link_R1, 2, 1)
     link_R2, back_R2 = links(basis.link_R2, 2, 2)
+    shape = (basis.energies.shape[0],)+basis.energies.shape[1:]
+    workspace = None
+    if link_kernel == "fused":
+        if model.complex_dtype != cp.complex128:
+            raise TypeError("fused BO link kernel은 현재 complex128 전용입니다.")
+        workspace = BHLinkWorkspace(
+            transports=cp.empty((4,)+shape, dtype=model.complex_dtype),
+            first=cp.empty(shape, dtype=model.complex_dtype),
+            second=cp.empty(shape, dtype=model.complex_dtype),
+        )
     return GPUBornHuangBasis(
         energies=cp.asarray(basis.energies, dtype=model.real_dtype),
         link_q1=link_q1, link_q2=link_q2,
-        back_q1=back_q1, back_q2=back_q2,
         link_R1=link_R1, link_R2=link_R2,
+        back_q1=back_q1, back_q2=back_q2,
         back_R1=back_R1, back_R2=back_R2,
+        link_kernel=link_kernel, workspace=workspace,
     )
 
 
@@ -81,6 +283,72 @@ def _axis_links(basis, axis):
     raise ValueError("BO coefficient coordinate axis must be q(1) or R(2)")
 
 
+def _axis_forward_links(basis, axis):
+    if axis == 1:
+        return basis.link_q1, basis.link_q2
+    if axis == 2:
+        return basis.link_R1, basis.link_R2
+    raise ValueError("BO coefficient coordinate axis must be q(1) or R(2)")
+
+
+def _launch_fused_transport(
+    coefficients, basis, spacing, axis, *,
+    write_transports, write_first, write_second,
+):
+    """Apply all four BO neighbor contractions in one memory pass."""
+    if not coefficients.flags.c_contiguous:
+        raise ValueError("fused BO link kernel에는 C-contiguous coefficient가 필요합니다.")
+    link1, link2 = _axis_forward_links(basis, axis)
+    if not link1.flags.c_contiguous or not link2.flags.c_contiguous:
+        raise ValueError("fused BO link kernel에는 C-contiguous link가 필요합니다.")
+    workspace = basis.workspace
+    transport_kernel, _ = _bo_link_kernels(link1.dtype)
+    threads = 128
+    blocks = (coefficients.size+threads-1)//threads
+    transport_kernel(
+        (blocks,), (threads,),
+        (
+            coefficients, link1, link2,
+            workspace.transports, workspace.first, workspace.second,
+            np.int64(coefficients.size), np.int32(coefficients.shape[0]),
+            np.int32(coefficients.shape[1]), np.int32(coefficients.shape[2]),
+            np.int32(axis), np.int32(write_transports),
+            np.int32(write_first), np.int32(write_second),
+            np.float64(1.0/(12.0*spacing)),
+            np.float64(1.0/(12.0*spacing**2)),
+        ),
+    )
+    return workspace.first, workspace.second
+
+
+def _fused_covariant_from_transports(
+    coefficients, basis, vector, spacing, axis,
+):
+    """Apply Wilson phases to cached transports without another BO contraction."""
+    if vector.dtype != cp.float64 or not vector.flags.c_contiguous:
+        vector = cp.ascontiguousarray(vector, dtype=cp.float64)
+    phase1, phase2 = _forward_gauge_phases(vector, spacing, axis-1)
+    first = cp.empty_like(coefficients)
+    second = cp.empty_like(coefficients)
+    _, combine_kernel = _bo_link_kernels(
+        _axis_forward_links(basis, axis)[0].dtype
+    )
+    threads = 128
+    blocks = (coefficients.size+threads-1)//threads
+    combine_kernel(
+        (blocks,), (threads,),
+        (
+            basis.workspace.transports, coefficients, phase1, phase2,
+            first, second, np.int64(coefficients.size),
+            np.int32(coefficients.shape[1]), np.int32(coefficients.shape[2]),
+            np.int32(axis),
+            np.float64(1.0/(12.0*spacing)),
+            np.float64(1.0/(12.0*spacing**2)),
+        ),
+    )
+    return first, second
+
+
 def _forward_gauge_phases(vector, spacing, vector_axis):
     """Fourth-order symmetric link phases for (d-iA) on a uniform grid."""
     minus1 = cp.roll(vector, 1, axis=vector_axis)
@@ -93,7 +361,7 @@ def _forward_gauge_phases(vector, spacing, vector_axis):
     return phase1, phase2
 
 
-def projected_link_derivatives(
+def _projected_link_derivatives_reference(
     coefficients, basis, spacing, axis, vector=None,
 ):
     """Projected D1/D2 with exact discrete adjoint relations.
@@ -130,6 +398,31 @@ def projected_link_derivatives(
         -minus2+16.0*minus1-30.0*coefficients+16.0*plus1-plus2
     )/(12.0*spacing**2)
     return first, second
+
+
+def projected_link_derivatives(
+    coefficients, basis, spacing, axis, vector=None,
+):
+    """Dispatch to the allocation-heavy reference or fused link stencil."""
+    if basis.link_kernel == "reference":
+        return _projected_link_derivatives_reference(
+            coefficients, basis, spacing, axis, vector=vector
+        )
+    if vector is None:
+        first, second = _launch_fused_transport(
+            coefficients, basis, spacing, axis,
+            write_transports=False, write_first=True, write_second=True,
+        )
+        # The public helper owns its outputs.  Production paths below use the
+        # workspace views directly and avoid these copies.
+        return first.copy(), second.copy()
+    _launch_fused_transport(
+        coefficients, basis, spacing, axis,
+        write_transports=True, write_first=False, write_second=False,
+    )
+    return _fused_covariant_from_transports(
+        coefficients, basis, vector, spacing, axis
+    )
 
 
 def projected_gradient(coefficients, connection, spacing, axis):
@@ -225,22 +518,54 @@ def instantaneous_functionals_bh(
     coefficients, lam, chi, model, basis, ratio_floor,
     mask_threshold_phi, mask_threshold_lam,
 ):
-    # Reuse the expensive coefficient derivatives/NAC contractions in a, b,
-    # the residual momenta and their squares.
-    gradient_q, _ = projected_link_derivatives(
-        coefficients, basis, model.dq, axis=1
-    )
-    gradient_R, _ = projected_link_derivatives(
-        coefficients, basis, model.dR, axis=2
-    )
-    a = (-1j*cp.sum(
-        cp.conj(coefficients)*gradient_q, axis=0,
-        dtype=model.reduction_complex_dtype,
-    )).real.astype(model.real_dtype, copy=False)
-    b = (-1j*cp.sum(
-        cp.conj(coefficients)*gradient_R, axis=0,
-        dtype=model.reduction_complex_dtype,
-    )).real.astype(model.real_dtype, copy=False)
+    # Plain and covariant derivatives use the same four BO transports.  The
+    # fused path contracts them once per axis, obtains a/b from plain D1, then
+    # applies Wilson phases to the cached transports.  The reference path is
+    # intentionally retained for round-off-level validation.
+    if basis.link_kernel == "fused":
+        gradient_q, _ = _launch_fused_transport(
+            coefficients, basis, model.dq, 1,
+            write_transports=True, write_first=True, write_second=False,
+        )
+        a = (-1j*cp.sum(
+            cp.conj(coefficients)*gradient_q, axis=0,
+            dtype=model.reduction_complex_dtype,
+        )).real.astype(model.real_dtype, copy=False)
+        cov_gradient_q, cov_second_q = _fused_covariant_from_transports(
+            coefficients, basis, a, model.dq, 1
+        )
+        gradient_R, _ = _launch_fused_transport(
+            coefficients, basis, model.dR, 2,
+            write_transports=True, write_first=True, write_second=False,
+        )
+        b = (-1j*cp.sum(
+            cp.conj(coefficients)*gradient_R, axis=0,
+            dtype=model.reduction_complex_dtype,
+        )).real.astype(model.real_dtype, copy=False)
+        cov_gradient_R, cov_second_R = _fused_covariant_from_transports(
+            coefficients, basis, b, model.dR, 2
+        )
+    else:
+        gradient_q, _ = projected_link_derivatives(
+            coefficients, basis, model.dq, axis=1
+        )
+        gradient_R, _ = projected_link_derivatives(
+            coefficients, basis, model.dR, axis=2
+        )
+        a = (-1j*cp.sum(
+            cp.conj(coefficients)*gradient_q, axis=0,
+            dtype=model.reduction_complex_dtype,
+        )).real.astype(model.real_dtype, copy=False)
+        b = (-1j*cp.sum(
+            cp.conj(coefficients)*gradient_R, axis=0,
+            dtype=model.reduction_complex_dtype,
+        )).real.astype(model.real_dtype, copy=False)
+        cov_gradient_q, cov_second_q = projected_link_derivatives(
+            coefficients, basis, model.dq, axis=1, vector=a
+        )
+        cov_gradient_R, cov_second_R = projected_link_derivatives(
+            coefficients, basis, model.dR, axis=2, vector=b
+        )
     p_R_lam = -1j*derivative(lam, model.dR, axis=1)
     alpha = cp.sum(
         cp.conj(lam)*(p_R_lam+b*lam), axis=0,
@@ -323,12 +648,6 @@ def instantaneous_functionals_bh(
         xi_logamp_R = lam_logamp_R+chi_logamp_R[None, :]
         chi_logamp_used = chi_logamp_R
 
-    cov_gradient_q, cov_second_q = projected_link_derivatives(
-        coefficients, basis, model.dq, axis=1, vector=a
-    )
-    cov_gradient_R, cov_second_R = projected_link_derivatives(
-        coefficients, basis, model.dR, axis=2, vector=b
-    )
     p_q = -1j*cov_gradient_q
     p2_q = -cov_second_q
     p_R = -1j*cov_gradient_R
@@ -420,14 +739,28 @@ def project_product_residual_bh(
     product_rhs = dc*xi[None, :, :]+coefficients*(
         dlam*chi[None, :]+lam*dchi[None, :]
     )[None, :, :]
-    target = -1j*(
-        -0.5*projected_link_derivatives(
-            y, basis, model.dq, axis=1
-        )[1]/model.proton_mass
-        -0.5*projected_link_derivatives(
-            y, basis, model.dR, axis=2
-        )[1]/model.heavy_mass
-    )
+    if basis.link_kernel == "fused":
+        _, q_second = _launch_fused_transport(
+            y, basis, model.dq, 1,
+            write_transports=False, write_first=False, write_second=True,
+        )
+        # Materialize the q contribution before reusing the one D2 workspace
+        # for R.  This is algebraically identical to the expression below.
+        target = 0.5j*q_second/model.proton_mass
+        _, R_second = _launch_fused_transport(
+            y, basis, model.dR, 2,
+            write_transports=False, write_first=False, write_second=True,
+        )
+        target = target+0.5j*R_second/model.heavy_mass
+    else:
+        target = -1j*(
+            -0.5*projected_link_derivatives(
+                y, basis, model.dq, axis=1
+            )[1]/model.proton_mass
+            -0.5*projected_link_derivatives(
+                y, basis, model.dR, axis=2
+            )[1]/model.heavy_mass
+        )
     residual = target-product_rhs
     xi_density = cp.real(xi*cp.conj(xi))
     c_norm2 = cp.sum(

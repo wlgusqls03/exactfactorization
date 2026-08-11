@@ -278,6 +278,62 @@ BO 계수의 q/R 미분은 더 이상 연속 Leibniz 식
 정확히 Hermitian인데 BO 조립 kinetic operator만 시간이 갈수록 Hermiticity를
 잃던 문제를 제거한다.
 
+#### 정확도 보존형 fused BO-link kernel
+
+BO overlap-link 수학은 그대로 두고 GPU 구현만 비교할 수 있다.
+
+* ``--bo-link-kernel reference``: 검증 기준인 CuPy ``roll+einsum`` 경로
+* ``--bo-link-kernel fused``: 네 이웃 contraction을 한 CUDA kernel에서
+  계산하고 plain/covariant transport를 재사용하는 경로
+
+안전한 단계적 검증을 위해 현재 기본값은 ``reference``다. ``fused``도 BO state
+수, q/R grid, timestep, RK4, complex128, 5-point 계수, Wilson phase, mask와
+projection을 전혀 바꾸지 않는다. backward tensor도 별도로 근사하지 않고
+
+``S^(-s)(g) = S^(+s)(g-s)^H``
+
+위치를 forward link에서 직접 읽으므로 D1/D2의 수반 구조도 동일하다. BO10,
+``nq=450``, ``nR=900``에서는 backward link 네 개 약 1.21 GiB를 GPU에 올리지
+않고, 한 축씩 재사용하는 약 0.24 GiB transport workspace를 둔다. disk cache의
+forward link 네 개는 그대로 사용하므로 cache를 다시 만들 필요가 없다.
+
+먼저 작은 무작위 basis에서 reference/fused의 plain/covariant D1/D2,
+anti-Hermiticity/Hermiticity와 kernel 시간을 함께 검사한다.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m \
+  multi_component_exact_factorization_gpu.validate_bo_link_kernel \
+  --device 0 --states 6 --nq 37 --nR 41 --repeats 30
+```
+
+출력 마지막이 ``BO fused link validation: PASS``여야 한다. 현재 real BO basis뿐
+아니라 향후 complex basis의 conjugation 경로도 다음 명령으로 따로 확인할 수
+있다.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m \
+  multi_component_exact_factorization_gpu.validate_bo_link_kernel \
+  --device 0 --states 4 --nq 23 --nR 25 --repeats 20 --complex-links
+```
+
+그 다음 동일한 propagation 명령을 ``reference``와 ``fused``로 각각 0.1 fs
+실행한다. 두 계산은 outdir만 달라야 한다. fused 결과가 검증된 뒤에만 1 fs와
+5 fs로 늘린다. archive에는 ``bo_link_kernel``과 kernel version이 저장된다.
+
+두 짧은 run이 끝나면 저장 frame의 norm, BO population과 q/R/electron
+marginal을 직접 비교한다.
+
+```bash
+python -m \
+  multi_component_exact_factorization_gpu.compare_born_huang_kernels \
+  results/20260811/bo_link_reference_01fs \
+  results/20260811/bo_link_fused_01fs
+```
+
+마지막 줄이 ``end-to-end kernel comparison: PASS``여야 한다. 또한 같은
+저장/진단 간격으로 측정한 ``speedup``을 출력한다. 이 검사가 통과하기 전에는
+장시간 계산에 ``fused``를 사용하지 않는다.
+
 같은 전자 Hamiltonian의 BO diagonalization은 기본적으로
 ``results/bo_basis_cache``에 한 번 저장한다. cache key는 ``N_BO``뿐 아니라
 전체 x/q/R 격자와 electronic potential의 SHA-256 fingerprint를 포함하므로,

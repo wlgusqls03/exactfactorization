@@ -897,6 +897,15 @@ def parse_args():
         "--bo-states", type=int, default=6,
         help="Born--Huang backend에서 유지할 local BO state 수",
     )
+    electronic.add_argument(
+        "--bo-link-kernel", choices=("reference", "fused"),
+        default="reference",
+        help=(
+            "BO overlap-link 미분 구현. reference는 검증 기준 CuPy "
+            "roll/einsum, fused는 동일 stencil의 직접 CUDA kernel "
+            "및 plain/covariant transport 재사용"
+        ),
+    )
     electronic.set_defaults(bo_basis_cache=True)
     electronic.add_argument(
         "--bo-basis-cache-dir", default="results/bo_basis_cache",
