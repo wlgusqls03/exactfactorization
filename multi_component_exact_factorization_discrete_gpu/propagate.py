@@ -1,0 +1,529 @@
+#!/usr/bin/env python3
+"""Propagate the discretize-first MCEF equations on one CUDA GPU.
+
+The driver reuses the extended 1D Shin--Metiu model and immutable
+Born--Huang cache of the existing solver.  Its evolution equations are a
+separate implementation derived from the spatially discrete Hamiltonian.
+"""
+
+from __future__ import annotations
+
+import argparse
+from contextlib import redirect_stderr, redirect_stdout
+import shlex
+import sys
+import time
+import traceback
+
+import numpy as np
+
+from result_paths import dated_results_dir
+from multi_component_exact_factorization.born_huang import (
+    initial_born_huang_factors,
+    load_or_build_born_huang_basis,
+)
+from multi_component_exact_factorization.core import (
+    AU_PER_FS,
+    add_model_arguments,
+    build_model,
+    calibrate_flat_top_args,
+)
+from multi_component_exact_factorization_gpu.gpu_born_huang import (
+    to_gpu_basis,
+)
+from multi_component_exact_factorization_gpu.gpu_core import (
+    all_finite,
+    cp,
+)
+
+from .gpu_core import (
+    discrete_rhs_gpu,
+    full_step_discrete_bh,
+    make_discrete_gpu_model,
+)
+
+
+DIAGNOSTIC_NAMES = (
+    "max_raw_horizontal_phi",
+    "max_raw_horizontal_lam",
+    "max_raw_pnc_phi_error",
+    "max_raw_pnc_lam_error",
+    "suppressed_probability_phi",
+    "suppressed_probability_lam",
+    "recombination_residual_l2",
+    "predicted_mask_residual_l2",
+    "unexplained_residual_l2",
+    "relative_unexplained_residual",
+    "direct_action_l2",
+    "recombined_rhs_l2",
+    "max_abs_regularized_F_ratio",
+    "max_abs_regularized_chi_ratio",
+    "weighted_link_defect_phi_q",
+    "weighted_link_defect_phi_R",
+    "weighted_link_defect_gamma_R",
+    "epsilon_1_imaginary_defect",
+    "epsilon_2_imaginary_defect",
+    "full_norm_rate",
+    "mask_transition_fraction_phi",
+    "mask_transition_fraction_lam",
+    "rk_product_local_defect_l2",
+    "rk_product_local_defect_relative",
+    "pnc_product_change_l2",
+    "rk_product_increment_l2",
+)
+
+
+class _Tee:
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, value):
+        for stream in self.streams:
+            stream.write(value)
+            stream.flush()
+        return len(value)
+
+    def flush(self):
+        for stream in self.streams:
+            stream.flush()
+
+
+def _as_float(value):
+    return float(value.get() if hasattr(value, "get") else value)
+
+
+def _pnc_errors(coefficients, lam, model):
+    c_norm2 = cp.sum(
+        cp.real(coefficients*cp.conj(coefficients)), axis=0,
+        dtype=model.reduction_real_dtype,
+    )
+    lam_norm2 = cp.sum(
+        cp.real(lam*cp.conj(lam)), axis=0,
+        dtype=model.reduction_real_dtype,
+    )*model.dq
+    return cp.max(cp.abs(c_norm2-1.0)), cp.max(cp.abs(lam_norm2-1.0))
+
+
+def run(args):
+    outdir = dated_results_dir(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    cp.cuda.Device(args.device).use()
+    properties = cp.cuda.runtime.getDeviceProperties(args.device)
+    gpu_name = properties["name"]
+    if isinstance(gpu_name, bytes):
+        gpu_name = gpu_name.decode(errors="replace")
+    print(f"GPU {args.device}: {gpu_name}; precision=complex128/float64")
+
+    cpu_model = build_model(args)
+    n_states = int(args.bo_states)
+    if n_states <= int(args.electron_excitation):
+        raise ValueError("--bo-states must exceed --electron-excitation")
+    cache_dir = args.bo_basis_cache_dir if args.bo_basis_cache else None
+    print(f"Discrete Born--Huang basis 준비: N_BO={n_states}")
+    basis_cpu, cache_info = load_or_build_born_huang_basis(
+        cpu_model, n_states, cache_dir=cache_dir,
+        rebuild=args.rebuild_bo_basis_cache,
+    )
+    if cache_info["enabled"]:
+        state = "HIT" if cache_info["hit"] else "MISS/build"
+        print(
+            f"BO cache {state}: {cache_info['seconds']:.2f} s; "
+            f"stored/requested={cache_info['stored_states']}/{n_states}; "
+            f"path={cache_info['path']}"
+        )
+
+    c_cpu, lam_cpu, chi_cpu = initial_born_huang_factors(
+        cpu_model, args, basis_cpu
+    )
+    c_norm2 = np.sum(np.abs(c_cpu)**2, axis=0)
+    rho_qR = c_norm2*np.abs(lam_cpu*chi_cpu[None, :])**2
+    rho_R = np.sum(rho_qR, axis=0)*cpu_model.dq
+    args.coupling_mask_backend = "flat_top"
+    calibrate_flat_top_args(args, rho_qR, rho_R)
+    cpu_model.coupling_mask_backend = "flat_top"
+    cpu_model.flat_top_on_phi = float(args.flat_top_on_phi or 0.0)
+    cpu_model.flat_top_on_lam = float(args.flat_top_on_lam or 0.0)
+    cpu_model.flat_top_transition_decades = args.flat_top_transition_decades
+    pnc_upper = 10.0*args.deep_tail_zero_threshold
+    phi_off = cpu_model.flat_top_on_phi*10.0**(-args.flat_top_transition_decades)
+    lam_off = cpu_model.flat_top_on_lam*10.0**(-args.flat_top_transition_decades)
+    positive_off = [value for value in (phi_off, lam_off) if value > 0.0]
+    if positive_off and pnc_upper > min(positive_off):
+        print(
+            "주의: PNC gate가 ratio-mask active transition과 겹칩니다. "
+            "deep-tail threshold를 낮추거나 flat-top transition을 확인하세요: "
+            f"PNC upper={pnc_upper:.3e}, min ratio off={min(positive_off):.3e}"
+        )
+    else:
+        print(
+            "PNC/mask support ordering 확인: ratio가 active인 곳에서는 "
+            "support-aware PNC gate가 1입니다."
+        )
+
+    model = make_discrete_gpu_model(cpu_model)
+    basis = to_gpu_basis(basis_cpu, model, args.bo_link_kernel)
+    if args.bo_link_kernel != "fused":
+        print("주의: reference BO link kernel은 검증용이며 production보다 느립니다.")
+    compact_states = None
+    if args.bo_save_electron_density:
+        # Keep the cache-backed mmap instead of copying the potentially
+        # multi-GiB BO tensor into RAM.  Saved-frame reconstruction is
+        # R-blocked and the OS page cache provides reuse across frames.
+        compact_states = basis_cpu.states
+    saved_basis_states = basis_cpu.states if args.bo_save_basis_states else None
+    if saved_basis_states is None:
+        basis_cpu.states = np.empty((0,), dtype=float)
+
+    coefficients = cp.ascontiguousarray(cp.asarray(c_cpu, dtype=cp.complex128))
+    lam = cp.asarray(lam_cpu, dtype=cp.complex128)
+    chi = cp.asarray(chi_cpu, dtype=cp.complex128)
+    print(
+        f"동적 배열: C={coefficients.shape}, Lambda={lam.shape}, chi={chi.shape}; "
+        "discrete matrix/link coupling, no spatial product rule"
+    )
+
+    n_steps = int(round(args.t_final_fs*AU_PER_FS/args.dt_au))
+    args.save_every = args.save_every or max(1, int(np.ceil(max(n_steps, 1)/200)))
+    args.progress_every = (
+        args.progress_every or max(1, int(np.ceil(max(n_steps, 1)/20)))
+    )
+    args.check_every = (
+        args.check_every or max(1, int(np.ceil(max(n_steps, 1)/500)))
+    )
+    save_steps = list(range(0, n_steps+1, args.save_every))
+    if save_steps[-1] != n_steps:
+        save_steps.append(n_steps)
+    print(
+        f"step={n_steps}, dt={args.dt_au:g} au, target={args.t_final_fs:g} fs; "
+        f"save/check/progress={args.save_every}/{args.check_every}/"
+        f"{args.progress_every}"
+    )
+
+    histories = {
+        "times_fs": [], "electronic_coefficients": [],
+        "lambda_wavefunction": [], "chi": [],
+        "epsilon_1": [], "epsilon_2": [], "a": [], "b": [], "alpha": [],
+        "sphi_q1_magnitude": [], "sphi_R1_magnitude": [],
+        "sgamma_R1_magnitude": [],
+        "norm": [], "pnc_error": [], "pnc_projection_correction": [],
+        "outer_probability_q": [], "outer_probability_R": [],
+        "bo_populations": [], "bo_state_density_q": [],
+        "bo_state_density_R": [], "electron_density": [],
+    }
+    diagnostics = {name: [] for name in DIAGNOSTIC_NAMES}
+
+    def save(step, correction=0.0, step_diagnostics=None):
+        evaluated = discrete_rhs_gpu(
+            coefficients, lam, chi, model, basis,
+            collect_diagnostics=True,
+        )
+        c_out = cp.asnumpy(coefficients)
+        l_out = cp.asnumpy(lam)
+        h_out = cp.asnumpy(chi)
+        epsilon_1 = cp.asnumpy(evaluated.fields["epsilon_1"])
+        epsilon_2 = cp.asnumpy(evaluated.fields["epsilon_2"])
+        sphi_q1 = cp.asnumpy(evaluated.fields["sphi_q1"])
+        sphi_R1 = cp.asnumpy(evaluated.fields["sphi_R1"])
+        sgamma_R1 = cp.asnumpy(evaluated.fields["sgamma_R1"])
+        joint = np.abs(l_out)**2*np.abs(h_out[None, :])**2
+        state_joint = np.abs(c_out)**2*joint[None, :, :]
+        total_norm = (
+            np.sum(state_joint, dtype=np.float64)*cpu_model.dq*cpu_model.dR
+        )
+        pnc_c, pnc_l = _pnc_errors(coefficients, lam, model)
+        histories["times_fs"].append(step*args.dt_au/AU_PER_FS)
+        histories["electronic_coefficients"].append(c_out)
+        histories["lambda_wavefunction"].append(l_out)
+        histories["chi"].append(h_out)
+        histories["epsilon_1"].append(epsilon_1)
+        histories["epsilon_2"].append(epsilon_2)
+        histories["a"].append(np.angle(sphi_q1)/cpu_model.dq)
+        histories["b"].append(np.angle(sphi_R1)/cpu_model.dR)
+        histories["alpha"].append(np.angle(sgamma_R1)/cpu_model.dR)
+        histories["sphi_q1_magnitude"].append(np.abs(sphi_q1))
+        histories["sphi_R1_magnitude"].append(np.abs(sphi_R1))
+        histories["sgamma_R1_magnitude"].append(np.abs(sgamma_R1))
+        histories["norm"].append(total_norm)
+        histories["pnc_error"].append(max(_as_float(pnc_c), _as_float(pnc_l)))
+        histories["pnc_projection_correction"].append(_as_float(correction))
+        q_density = np.sum(state_joint, axis=(0, 2), dtype=np.float64)*cpu_model.dR
+        R_density = np.sum(state_joint, axis=(0, 1), dtype=np.float64)*cpu_model.dq
+        q_edge = min(5, len(q_density)//2)
+        R_edge = min(5, len(R_density)//2)
+        histories["outer_probability_q"].append(
+            (np.sum(q_density[:q_edge])+np.sum(q_density[-q_edge:]))
+            *cpu_model.dq/max(total_norm, 1.0e-300)
+        )
+        histories["outer_probability_R"].append(
+            (np.sum(R_density[:R_edge])+np.sum(R_density[-R_edge:]))
+            *cpu_model.dR/max(total_norm, 1.0e-300)
+        )
+        histories["bo_populations"].append(
+            np.sum(state_joint, axis=(1, 2), dtype=np.float64)
+            *cpu_model.dq*cpu_model.dR
+        )
+        histories["bo_state_density_q"].append(
+            np.sum(state_joint, axis=2, dtype=np.float64)*cpu_model.dR
+        )
+        histories["bo_state_density_R"].append(
+            np.sum(state_joint, axis=1, dtype=np.float64)*cpu_model.dq
+        )
+        if compact_states is not None:
+            electron_density = np.zeros(len(cpu_model.x), dtype=np.float64)
+            block = 24
+            for start in range(0, len(cpu_model.R), block):
+                stop = min(start+block, len(cpu_model.R))
+                phi_block = np.einsum(
+                    "nqR,nxqR->xqR", c_out[:, :, start:stop],
+                    compact_states[:, :, :, start:stop], optimize=True,
+                )
+                electron_density += np.sum(
+                    np.abs(phi_block)**2*joint[None, :, start:stop],
+                    axis=(1, 2), dtype=np.float64,
+                )*cpu_model.dq*cpu_model.dR
+            histories["electron_density"].append(electron_density)
+        for name in DIAGNOSTIC_NAMES:
+            if name in evaluated.diagnostics:
+                value = evaluated.diagnostics[name]
+            elif step_diagnostics is not None and name in step_diagnostics:
+                value = step_diagnostics[name]
+            else:
+                value = 0.0 if step == 0 else np.nan
+            diagnostics[name].append(_as_float(value))
+
+    save(0)
+    next_frame = 1
+    failure = ""
+    attempted = 0
+    correction_peak = cp.asarray(0.0)
+    started = time.perf_counter()
+    for step in range(1, n_steps+1):
+        attempted = step
+        will_save = next_frame < len(save_steps) and step == save_steps[next_frame]
+        coefficients, lam, chi, correction, step_diagnostics = full_step_discrete_bh(
+            coefficients, lam, chi, args.dt_au, model, basis,
+            collect_step_diagnostics=will_save,
+        )
+        correction_peak = cp.maximum(correction_peak, correction)
+        must_save = will_save
+        must_check = step % args.check_every == 0 or must_save or step == n_steps
+        if must_check:
+            if not all_finite(coefficients, lam, chi):
+                failure = f"step {step}: non-finite C/Lambda/chi"
+                print(f"전파 중단: {failure}")
+                break
+            c_norm2_gpu = cp.sum(
+                cp.real(coefficients*cp.conj(coefficients)), axis=0,
+                dtype=model.reduction_real_dtype,
+            )
+            F_gpu = lam*chi[None, :]
+            current_norm = cp.sum(
+                c_norm2_gpu*cp.real(F_gpu*cp.conj(F_gpu)),
+                dtype=model.reduction_real_dtype,
+            )*model.dq*model.dR
+            drift = _as_float(cp.abs(current_norm-1.0))
+            if args.max_norm_drift > 0.0 and drift > args.max_norm_drift:
+                failure = (
+                    f"step {step}: |norm-1|={drift:.3e} exceeds "
+                    f"{args.max_norm_drift:.3e}"
+                )
+                print(f"전파 중단: {failure}")
+                save(step, correction_peak, step_diagnostics)
+                break
+        if must_save:
+            save(step, correction_peak, step_diagnostics)
+            correction_peak = cp.asarray(0.0)
+            next_frame += 1
+        if step % args.progress_every == 0 or step == n_steps:
+            print(
+                f"step {step:7d}/{n_steps}  "
+                f"t={step*args.dt_au/AU_PER_FS:9.4f} fs"
+            )
+
+    cp.cuda.get_current_stream().synchronize()
+    wall_seconds = time.perf_counter()-started
+    completed = not failure
+    payload = {key: np.asarray(value) for key, value in histories.items()}
+    payload.update({key: np.asarray(value) for key, value in diagnostics.items()})
+    # Compatibility aliases are diagnostics only; no product projection is
+    # performed by this solver.
+    payload["max_abs_support_gamma_phi_dt"] = (
+        payload["max_raw_horizontal_phi"]*args.dt_au
+    )
+    payload["max_abs_support_gamma_lam_dt"] = (
+        payload["max_raw_horizontal_lam"]*args.dt_au
+    )
+    payload["max_effective_product_residual_l2"] = payload[
+        "unexplained_residual_l2"
+    ]
+    payload["max_abs_full_norm_rate_after_product_projection"] = payload[
+        "full_norm_rate"
+    ]
+    payload.update(
+        kind=np.array("discrete_born_huang_multi_component_exact_factorization"),
+        representation=np.array("discrete_electronic_born_huang_coefficients"),
+        electronic_representation=np.array("born_huang"),
+        discrete_formulation_version=np.array(1),
+        spatial_formulation=np.array("discretize_first_overlap_link"),
+        time_integrator=np.array("classical_rk4_product_preserving_pnc_retraction"),
+        product_projection_backend=np.array("none_by_construction"),
+        ratio_regularization=np.array("probability_budget_flat_top_mass_inverse"),
+        horizontal_correction=np.array("product_preserving_parallel_transport"),
+        pnc_projection_backend=np.array("support_aware_product_preserving"),
+        bo_states_count=np.array(n_states),
+        bo_energies=np.asarray(basis_cpu.energies),
+        bo_basis_cache_hit=np.array(cache_info["hit"]),
+        bo_basis_cache_key=np.array(cache_info["key"]),
+        bo_basis_cache_path=np.array(cache_info["path"]),
+        bo_basis_cache_seconds=np.array(cache_info["seconds"]),
+        bo_link_kernel=np.array(args.bo_link_kernel),
+        flat_top_on_phi=np.array(cpu_model.flat_top_on_phi),
+        flat_top_on_lam=np.array(cpu_model.flat_top_on_lam),
+        flat_top_transition_decades=np.array(args.flat_top_transition_decades),
+        flat_top_budget_phi=np.array(args.flat_top_budget_phi),
+        flat_top_budget_lam=np.array(args.flat_top_budget_lam),
+        deep_tail_zero_threshold=np.array(args.deep_tail_zero_threshold),
+        x=cpu_model.x, q=cpu_model.q, R=cpu_model.R,
+        propagation_completed=np.array(completed),
+        requested_final_time_fs=np.array(args.t_final_fs),
+        requested_steps=np.array(n_steps), attempted_steps=np.array(attempted),
+        failure_reason=np.array(failure), wall_seconds=np.array(wall_seconds),
+        args=np.array([vars(args)], dtype=object),
+    )
+    if saved_basis_states is not None:
+        payload["bo_basis_states"] = saved_basis_states
+    archive = outdir/"multi_component_born_huang_ef_gpu.npz"
+    np.savez_compressed(archive, **payload)
+    status = outdir/"propagation_status.log"
+    status.write_text(
+        f"status={'completed' if completed else 'failed'}\n"
+        f"archive={archive}\n"
+        f"last_saved_time_fs={payload['times_fs'][-1]:.12g}\n"
+        f"failure_reason={failure or 'none'}\n",
+        encoding="utf-8",
+    )
+    pool = cp.get_default_memory_pool()
+    print(f"{'저장 완료' if completed else '부분 저장 완료'}: {archive}")
+    print(
+        f"wall={wall_seconds:.3f} s; "
+        f"{wall_seconds/max(attempted, 1):.6f} s/step; "
+        f"GPU pool used/reserved={pool.used_bytes()/1024**3:.2f}/"
+        f"{pool.total_bytes()/1024**3:.2f} GiB"
+    )
+    print("Discrete MCEF 핵심 진단:")
+    print(f"  max |norm-1|: {np.max(np.abs(payload['norm']-1.0)):.3e}")
+    print(f"  max saved PNC error: {np.max(payload['pnc_error']):.3e}")
+    print(
+        "  max outer probability (q,R): "
+        f"({np.max(payload['outer_probability_q']):.3e}, "
+        f"{np.max(payload['outer_probability_R']):.3e})"
+    )
+    print(
+        "  max PNC retraction load: "
+        f"{np.max(payload['pnc_projection_correction']):.3e}"
+    )
+    for name in (
+        "relative_unexplained_residual", "recombination_residual_l2",
+        "predicted_mask_residual_l2", "suppressed_probability_phi",
+        "suppressed_probability_lam", "max_raw_horizontal_phi",
+        "max_raw_horizontal_lam", "full_norm_rate",
+        "rk_product_local_defect_relative", "pnc_product_change_l2",
+    ):
+        print(f"  max {name}: {np.max(np.abs(payload[name])):.3e}")
+    print(
+        "  max highest-state population: "
+        f"{np.max(payload['bo_populations'][:, -1]):.3e}"
+    )
+    args.propagation_failed = not completed
+    return archive
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--outdir", default="results/discrete_mcef_gpu",
+        help="results/YYYYMMDD 아래의 run folder",
+    )
+    parser.add_argument("--device", type=int, default=0)
+    parser.add_argument("--dt-au", type=float, default=0.025)
+    parser.add_argument("--t-final-fs", type=float, default=0.1)
+    parser.add_argument("--save-every", type=int, default=0)
+    parser.add_argument("--progress-every", type=int, default=0)
+    parser.add_argument("--check-every", type=int, default=0)
+    parser.add_argument("--max-norm-drift", type=float, default=1.0e-4)
+    parser.add_argument("--bo-states", type=int, default=10)
+    parser.add_argument(
+        "--bo-link-kernel", choices=("reference", "fused"), default="fused"
+    )
+    parser.set_defaults(bo_basis_cache=True)
+    parser.add_argument(
+        "--bo-basis-cache-dir", default="results/bo_basis_cache"
+    )
+    parser.add_argument(
+        "--no-bo-basis-cache", action="store_false", dest="bo_basis_cache"
+    )
+    parser.add_argument("--rebuild-bo-basis-cache", action="store_true")
+    parser.add_argument("--bo-save-basis-states", action="store_true")
+    parser.set_defaults(bo_save_electron_density=True)
+    parser.add_argument(
+        "--no-bo-save-electron-density", action="store_false",
+        dest="bo_save_electron_density",
+    )
+    mask = parser.add_argument_group("flat-top mass inverse")
+    mask.add_argument("--flat-top-budget-phi", type=float, default=1.0e-10)
+    mask.add_argument("--flat-top-budget-lam", type=float, default=1.0e-10)
+    mask.add_argument("--flat-top-on-phi", type=float, default=None)
+    mask.add_argument("--flat-top-on-lam", type=float, default=None)
+    mask.add_argument("--flat-top-transition-decades", type=float, default=3.0)
+    parser.set_defaults(render_after=False)
+    parser.add_argument("--render-after", action="store_true")
+    parser.add_argument("--no-render-after", action="store_false", dest="render_after")
+    parser.add_argument("--render-fast", action="store_true")
+    parser.add_argument("--verbose-diagnostics", action="store_true")
+    add_model_arguments(parser)
+    args = parser.parse_args(argv)
+    if args.dt_au <= 0.0 or args.t_final_fs < 0.0:
+        parser.error("dt must be positive and final time nonnegative")
+    if not 0.0 <= args.flat_top_budget_phi < 1.0:
+        parser.error("flat-top phi budget must be in [0,1)")
+    if not 0.0 <= args.flat_top_budget_lam < 1.0:
+        parser.error("flat-top lambda budget must be in [0,1)")
+    return args
+
+
+def _execute(args):
+    archive = run(args)
+    if args.render_after:
+        from multi_component_exact_factorization.render_all import (
+            render_completed_run,
+        )
+        render_completed_run(archive, fast=args.render_fast)
+    if getattr(args, "propagation_failed", False):
+        raise SystemExit(2)
+    return archive
+
+
+def main(args=None):
+    if args is not None:
+        return _execute(args)
+    args = parse_args()
+    outdir = dated_results_dir(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    log_path = outdir/"propagation.log"
+    with log_path.open("w", encoding="utf-8", buffering=1) as log:
+        with redirect_stdout(_Tee(sys.stdout, log)), redirect_stderr(
+            _Tee(sys.stderr, log)
+        ):
+            print(f"명령: {shlex.join(sys.argv)}")
+            print(f"전체 실행 로그: {log_path}")
+            try:
+                return _execute(args)
+            except SystemExit:
+                raise
+            except BaseException:
+                traceback.print_exc()
+                raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

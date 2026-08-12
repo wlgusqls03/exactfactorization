@@ -169,6 +169,17 @@ def run(args):
             max_frames=max_frames, animation_dpi=animation_dpi,
             fmt=args.format,
         )
+        with np.load(archive, allow_pickle=False) as stored:
+            kind = str(np.asarray(stored.get("kind", "")).item())
+        if kind.startswith("discrete_born_huang"):
+            print("Discrete MCEF native link/consistency report 추가 생성")
+            from multi_component_exact_factorization_discrete import report
+            report.run(
+                archive, output_root/"report", dpi=args.dpi,
+                no_animation=args.no_animation, fps=args.fps,
+                max_frames=max_frames, animation_dpi=animation_dpi,
+                fmt=args.format,
+            )
         return
 
     data = visualize.load_archive(

@@ -137,3 +137,15 @@ standalone interactive 3D configuration-density HTML provides rotation and a
 time slider. See
 `multi_component_exact_factorization/README.md` for Korean documentation and
 run commands.
+
+## Discretize-first MCEF
+
+The continuum-derived implementation is preserved unchanged.  A separate
+research solver in `multi_component_exact_factorization_discrete/` and
+`multi_component_exact_factorization_discrete_gpu/` derives the nested factor
+equations from the already discretized Shin--Metiu Hamiltonian.  It propagates
+the factors directly, uses no spatial product rule, reuses the Born--Huang
+cache and fused overlap-link CUDA kernel, and records both spatial
+recombination and RK4 temporal-consistency residuals.  See
+`multi_component_exact_factorization_discrete_gpu/README.md` for validation,
+smoke-run and rendering commands.

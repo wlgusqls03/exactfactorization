@@ -425,6 +425,37 @@ def projected_link_derivatives(
     )
 
 
+def neighbor_transports(coefficients, basis, axis):
+    """Return BO-overlap transports at offsets ``(-2,-1,+1,+2)``.
+
+    The returned tensor has shape ``(4,N_BO,nq,nR)`` and evaluates
+
+        S_BO(g,g+s) C(g+s)
+
+    at every current nuclear configuration ``g``.  The fused backend returns
+    a reusable workspace view which remains valid only until the next call to
+    this function for the same ``basis``.  This low-level primitive is shared
+    with the discretize-first MCEF solver; exposing it here avoids duplicating
+    the already validated CUDA overlap-link contraction.
+    """
+    if axis not in (1, 2):
+        raise ValueError("BO transport axis must be q(1) or R(2)")
+    if basis.link_kernel == "fused":
+        _launch_fused_transport(
+            coefficients, basis, 1.0, axis,
+            write_transports=True, write_first=False, write_second=False,
+        )
+        return basis.workspace.transports
+
+    link1, link2, back1, back2 = _axis_links(basis, axis)
+    return cp.stack((
+        connection_action(back2, cp.roll(coefficients, 2, axis=axis)),
+        connection_action(back1, cp.roll(coefficients, 1, axis=axis)),
+        connection_action(link1, cp.roll(coefficients, -1, axis=axis)),
+        connection_action(link2, cp.roll(coefficients, -2, axis=axis)),
+    ))
+
+
 def projected_gradient(coefficients, connection, spacing, axis):
     return (
         derivative(coefficients, spacing, axis=axis)
