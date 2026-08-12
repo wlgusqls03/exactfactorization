@@ -198,6 +198,11 @@ def run(args):
         f"save/check/progress={args.save_every}/{args.check_every}/"
         f"{args.progress_every}"
     )
+    if args.step_sleep_ms > 0.0:
+        print(
+            "GPU thermal throttle: 각 완료 step 뒤 stream synchronize + "
+            f"sleep {args.step_sleep_ms:g} ms"
+        )
 
     histories = {
         "times_fs": [], "electronic_coefficients": [],
@@ -296,6 +301,8 @@ def run(args):
     failure = ""
     attempted = 0
     correction_peak = cp.asarray(0.0)
+    throttle_sleep_seconds = 0.0
+    throttled_steps = 0
     started = time.perf_counter()
     for step in range(1, n_steps+1):
         attempted = step
@@ -339,6 +346,15 @@ def run(args):
                 f"step {step:7d}/{n_steps}  "
                 f"t={step*args.dt_au/AU_PER_FS:9.4f} fs"
             )
+        if args.step_sleep_ms > 0.0:
+            # CuPy launches asynchronously.  Synchronizing is required before
+            # sleeping; otherwise the GPU could continue executing queued
+            # kernels while the host thread sleeps.
+            cp.cuda.get_current_stream().synchronize()
+            sleep_started = time.perf_counter()
+            time.sleep(args.step_sleep_ms/1000.0)
+            throttle_sleep_seconds += time.perf_counter()-sleep_started
+            throttled_steps += 1
 
     cp.cuda.get_current_stream().synchronize()
     wall_seconds = time.perf_counter()-started
@@ -387,6 +403,9 @@ def run(args):
         propagation_completed=np.array(completed),
         requested_final_time_fs=np.array(args.t_final_fs),
         requested_steps=np.array(n_steps), attempted_steps=np.array(attempted),
+        step_sleep_ms=np.array(args.step_sleep_ms),
+        throttle_sleep_seconds=np.array(throttle_sleep_seconds),
+        throttled_steps=np.array(throttled_steps),
         failure_reason=np.array(failure), wall_seconds=np.array(wall_seconds),
         args=np.array([vars(args)], dtype=object),
     )
@@ -410,6 +429,14 @@ def run(args):
         f"GPU pool used/reserved={pool.used_bytes()/1024**3:.2f}/"
         f"{pool.total_bytes()/1024**3:.2f} GiB"
     )
+    if throttled_steps:
+        active_wall = max(0.0, wall_seconds-throttle_sleep_seconds)
+        print(
+            "의도적 GPU 휴식: "
+            f"{throttle_sleep_seconds:.3f} s/{throttled_steps} steps; "
+            f"sleep 제외 wall={active_wall:.3f} s; "
+            f"관측 active fraction={active_wall/max(wall_seconds, 1.0e-300):.3f}"
+        )
     print("Discrete MCEF 핵심 진단:")
     print(f"  max |norm-1|: {np.max(np.abs(payload['norm']-1.0)):.3e}")
     print(f"  max saved PNC error: {np.max(payload['pnc_error']):.3e}")
@@ -450,6 +477,13 @@ def parse_args(argv=None):
     parser.add_argument("--save-every", type=int, default=0)
     parser.add_argument("--progress-every", type=int, default=0)
     parser.add_argument("--check-every", type=int, default=0)
+    parser.add_argument(
+        "--step-sleep-ms", type=float, default=0.0,
+        help=(
+            "각 완료 step의 모든 GPU 작업을 동기화한 뒤 쉬는 시간(ms); "
+            "0이면 기존 비동기 실행 경로 유지"
+        ),
+    )
     parser.add_argument("--max-norm-drift", type=float, default=1.0e-4)
     parser.add_argument("--bo-states", type=int, default=10)
     parser.add_argument(
@@ -484,6 +518,8 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if args.dt_au <= 0.0 or args.t_final_fs < 0.0:
         parser.error("dt must be positive and final time nonnegative")
+    if not np.isfinite(args.step_sleep_ms) or args.step_sleep_ms < 0.0:
+        parser.error("--step-sleep-ms must be a finite nonnegative number")
     if not 0.0 <= args.flat_top_budget_phi < 1.0:
         parser.error("flat-top phi budget must be in [0,1)")
     if not 0.0 <= args.flat_top_budget_lam < 1.0:

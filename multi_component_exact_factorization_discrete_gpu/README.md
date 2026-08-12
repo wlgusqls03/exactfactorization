@@ -55,6 +55,7 @@ CUDA_VISIBLE_DEVICES=0 python -m \
   --save-every 20 \
   --progress-every 50 \
   --check-every 5 \
+  --step-sleep-ms 0 \
   --verbose-diagnostics \
   --no-render-after \
   --outdir results/discrete_mcef_bh10_01fs
@@ -63,6 +64,15 @@ CUDA_VISIBLE_DEVICES=0 python -m \
 Defaults are `x in (-22,22)` with electronic Dirichlet endpoints, periodic
 q/R grids `[-9,9)`, fixed charges at `-10,+10`, and initial `q0=0,R0=2`.
 Thus omitting explicit box/charge options still matches the current model.
+
+For a thermally constrained GPU, add (for example)
+`--step-sleep-ms 20`.  A positive value synchronizes the active CUDA stream
+after every completed step and then sleeps for the requested duration, so the
+pause is real GPU idle time rather than merely a delay in host-side kernel
+submission.  It changes neither the equations nor `dt`; it only increases
+wall time.  The default is zero and preserves the original asynchronous fast
+path.  The archive records `step_sleep_ms`, `throttle_sleep_seconds`, and
+`throttled_steps`.
 
 ## Saved diagnostics
 
