@@ -91,10 +91,13 @@ def discrete_tdse_action_gpu(coefficient_wavefunction, model, basis):
     q_weights = kinetic_weights(model.dq, model.proton_mass)
     R_weights = kinetic_weights(model.dR, model.heavy_mass)
     action = (basis.energies+q_weights[0]+R_weights[0])*y
+    # The fused backend returns a view of one reusable transport workspace.
+    # Consume q completely before the R launch overwrites that workspace.
     q_transports = neighbor_transports(y, basis, 1)
-    R_transports = neighbor_transports(y, basis, 2)
     for index, offset in enumerate(OFFSETS):
         action += q_weights[offset]*q_transports[index]
+    R_transports = neighbor_transports(y, basis, 2)
+    for index, offset in enumerate(OFFSETS):
         action += R_weights[offset]*R_transports[index]
     return action
 
