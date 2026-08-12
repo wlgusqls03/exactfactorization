@@ -89,6 +89,11 @@ Every saved frame contains:
 - native link phases, link magnitudes, weighted link defects, discrete
   scalars, BO populations and all three marginals.
 
+The archive keeps `a`, `b`, and `alpha` as principal-branch `arg(S)/h`
+diagnostics.  Native discrete figures unwrap those phases along their bond
+coordinate before applying the occupied-support display mask.  This is
+plotting-only; propagation always uses the full complex overlap links.
+
 The factor equations use no weighted product projection.  Therefore a small
 `relative_unexplained_residual` directly tests the discretize-first spatial
 algebra rather than whether a later projection hid its defect.

@@ -69,6 +69,17 @@ def _support(values, density, floor=1.0e-3, shift_peak=False):
     return np.where(density >= floor*np.max(density), values, np.nan)
 
 
+def _unwrap_connection(values, spacing, axis):
+    """Unwrap a saved principal link phase along its bond coordinate.
+
+    Propagation and archives retain the full complex link and its principal
+    ``arg(S)/h`` diagnostic.  Unwrapping is deliberately a plotting-only
+    operation, so it cannot alter the discrete dynamics.
+    """
+    phase = np.asarray(values, float)*float(spacing)
+    return np.unwrap(phase, axis=axis)/float(spacing)
+
+
 def plot_consistency(data, outdir, dpi=180):
     """Plot spatial algebra, temporal integration and constraint diagnostics."""
     t = np.asarray(data["times_fs"], float)
@@ -155,12 +166,20 @@ def plot_consistency(data, outdir, dpi=180):
 def _native_frame(data, joint, frame, floor=1.0e-3):
     density = joint[frame]
     heavy = np.sum(density, axis=0)*float(data["q"][1]-data["q"][0])
+    dq = float(data["q"][1]-data["q"][0])
+    dR = float(data["R"][1]-data["R"][0])
     return {
         "density": density,
         "heavy": heavy,
         "epsilon_1": _support(data["epsilon_1"][frame], density, floor, True),
-        "a": _support(data["a"][frame], density, floor),
-        "b": _support(data["b"][frame], density, floor),
+        "a": _support(
+            _unwrap_connection(data["a"][frame], dq, axis=0),
+            density, floor,
+        ),
+        "b": _support(
+            _unwrap_connection(data["b"][frame], dR, axis=1),
+            density, floor,
+        ),
         "link_q": _support(np.maximum(
             0.0, 1.0-data["sphi_q1_magnitude"][frame]
         ), density, floor),
@@ -168,7 +187,10 @@ def _native_frame(data, joint, frame, floor=1.0e-3):
             0.0, 1.0-data["sphi_R1_magnitude"][frame]
         ), density, floor),
         "epsilon_2": _support(data["epsilon_2"][frame], heavy, floor, True),
-        "alpha": _support(data["alpha"][frame], heavy, floor),
+        "alpha": _support(
+            _unwrap_connection(data["alpha"][frame], dR, axis=0),
+            heavy, floor,
+        ),
         "gamma_link": _support(np.maximum(
             0.0, 1.0-data["sgamma_R1_magnitude"][frame]
         ), heavy, floor),
@@ -184,8 +206,8 @@ def plot_native_geometry(data, outdir, dpi=180, frame=-1):
     maps = (
         (item["density"], "Nuclear joint density", "magma", False),
         (item["epsilon_1"], r"shifted $\mathcal{E}^{(1)}$", "coolwarm", True),
-        (item["a"], r"$\arg S_q^\Phi/\Delta q$", "coolwarm", True),
-        (item["b"], r"$\arg S_R^\Phi/\Delta R$", "coolwarm", True),
+        (item["a"], r"unwrapped $\arg S_q^\Phi/\Delta q$", "coolwarm", True),
+        (item["b"], r"unwrapped $\arg S_R^\Phi/\Delta R$", "coolwarm", True),
         (item["link_q"], r"$1-|S_q^\Phi|$", "cividis", False),
         (item["link_R"], r"$1-|S_R^\Phi|$", "cividis", False),
     )
@@ -204,7 +226,9 @@ def plot_native_geometry(data, outdir, dpi=180, frame=-1):
     axes[1, 2].plot(R, item["heavy"]/max(np.max(item["heavy"]), 1e-300), color="0.5", label="heavy density (scaled)")
     axes[1, 2].set_title("Outer discrete scalar and support", loc="left", fontweight="semibold")
     axes[1, 2].legend(frameon=False, fontsize=8)
-    axes[1, 3].plot(R, item["alpha"], label=r"$\arg S_R^\Gamma/\Delta R$")
+    axes[1, 3].plot(
+        R, item["alpha"], label=r"unwrapped $\arg S_R^\Gamma/\Delta R$"
+    )
     axes[1, 3].plot(R, item["gamma_link"], label=r"$1-|S_R^\Gamma|$")
     axes[1, 3].set_title("Second-level link geometry", loc="left", fontweight="semibold")
     axes[1, 3].legend(frameon=False, fontsize=8)

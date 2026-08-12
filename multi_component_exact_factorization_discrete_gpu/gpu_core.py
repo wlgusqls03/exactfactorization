@@ -120,6 +120,11 @@ def discrete_rhs_gpu(
         chi, rho_R, model.flat_top_on_lam,
         model.flat_top_transition_decades, model,
     )
+    # Match the residual prediction to the generalized inverse actually used
+    # by the RHS.  At nonzero sites these equal mask_phi/mask_lam; at an exact
+    # node they are zero even in the explicitly unmasked limit.
+    effective_mask_phi = F*inverse_F
+    effective_mask_lam = chi*inverse_chi
 
     eps1_complex = cp.sum(
         cp.conj(c)*basis.energies*c, axis=0,
@@ -249,8 +254,8 @@ def discrete_rhs_gpu(
         )[None, :, :]
         residual = 1j*dY-direct_action
         predicted = (
-            (mask_phi-1.0)[None, :, :]*coupling_c
-            +c*(mask_lam-1.0)[None, :]*coupling_lam[None, :, :]
+            (effective_mask_phi-1.0)[None, :, :]*coupling_c
+            +c*(effective_mask_lam-1.0)[None, :]*coupling_lam[None, :, :]
         )
         unexplained = residual-predicted
         target_l2 = cp.maximum(_l2(direct_action, model), tiny)

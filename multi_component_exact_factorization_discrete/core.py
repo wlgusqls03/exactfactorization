@@ -175,6 +175,11 @@ def discrete_born_huang_rhs(
     inverse_chi, mask_lam = _safe_flat_top_inverse(
         chi, rho_R, flat_top_on_lam, transition_decades
     )
+    # These are the weights actually used by the generalized inverses.  They
+    # equal the requested masks on nonzero support, but are exactly zero at an
+    # exact marginal node even when the user requested an unmasked run.
+    effective_mask_phi = F*inverse_F
+    effective_mask_lam = chi*inverse_chi
 
     eps1_complex = np.sum(
         np.conj(c)*basis.energies*c, axis=0
@@ -262,8 +267,8 @@ def discrete_born_huang_rhs(
     )[None, :, :]
     recombination_residual = 1j*dY-direct_action
     predicted_mask_residual = (
-        (mask_phi-1.0)[None, :, :]*coupling_c
-        +c*(mask_lam-1.0)[None, :]*coupling_lam[None, :, :]
+        (effective_mask_phi-1.0)[None, :, :]*coupling_c
+        +c*(effective_mask_lam-1.0)[None, :]*coupling_lam[None, :, :]
     )
     unexplained = recombination_residual-predicted_mask_residual
     target_l2 = max(float(_l2(direct_action, model.dq, model.dR)), 1.0e-300)

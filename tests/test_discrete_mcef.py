@@ -128,6 +128,10 @@ class DiscreteMCEFTests(unittest.TestCase):
             self.assertTrue(np.all(np.isfinite(result.dc)))
             self.assertTrue(np.all(np.isfinite(result.dlam)))
             self.assertTrue(np.all(np.isfinite(result.dchi)))
+            self.assertLess(
+                float(result.diagnostics["relative_unexplained_residual"]),
+                4.0e-13,
+            )
 
     def test_pnc_retraction_preserves_full_product(self):
         model, _, c, lam, chi = _problem(13)
