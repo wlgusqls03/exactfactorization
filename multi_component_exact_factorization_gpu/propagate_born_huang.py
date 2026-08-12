@@ -15,6 +15,7 @@ from multi_component_exact_factorization.born_huang import (
 )
 from multi_component_exact_factorization.core import (
     AU_PER_FS, build_model, calibrate_flat_top_args,
+    fixed_center_crossing_probabilities,
 )
 from multi_component_exact_factorization.propagate import output_gauge
 
@@ -128,6 +129,10 @@ def run_born_huang(args):
         pnc_projection_correction=[], bo_populations=[],
         bo_state_density_q=[], bo_state_density_R=[],
         electron_density=[],
+        outer_probability_q=[], outer_probability_R=[],
+        fixed_center_crossing_q_left=[], fixed_center_crossing_q_right=[],
+        fixed_center_crossing_q=[], fixed_center_crossing_R_left=[],
+        fixed_center_crossing_R_right=[], fixed_center_crossing_R=[],
     )
     diagnostic_names = (
         "max_product_residual_l2", "max_effective_product_residual_l2",
@@ -180,6 +185,32 @@ def run_born_huang(args):
             histories[key].append(transformed[key])
         histories["norm"].append(norm)
         state_joint = np.abs(c_out)**2*joint[None, :, :]
+        q_density = np.sum(state_joint, axis=(0, 2), dtype=np.float64)*cpu_model.dR
+        R_density = np.sum(state_joint, axis=(0, 1), dtype=np.float64)*cpu_model.dq
+        q_edge = min(5, len(q_density)//2)
+        R_edge = min(5, len(R_density)//2)
+        histories["outer_probability_q"].append(
+            (np.sum(q_density[:q_edge])+np.sum(q_density[-q_edge:]))
+            *cpu_model.dq/max(norm, 1.0e-300)
+        )
+        histories["outer_probability_R"].append(
+            (np.sum(R_density[:R_edge])+np.sum(R_density[-R_edge:]))
+            *cpu_model.dR/max(norm, 1.0e-300)
+        )
+        q_cross = fixed_center_crossing_probabilities(
+            q_density, cpu_model.q, cpu_model.dq,
+            args.left_position, args.right_position, norm,
+        )
+        R_cross = fixed_center_crossing_probabilities(
+            R_density, cpu_model.R, cpu_model.dR,
+            args.left_position, args.right_position, norm,
+        )
+        for suffix, value in zip(("left", "right", ""), q_cross):
+            key = "fixed_center_crossing_q" + (f"_{suffix}" if suffix else "")
+            histories[key].append(value)
+        for suffix, value in zip(("left", "right", ""), R_cross):
+            key = "fixed_center_crossing_R" + (f"_{suffix}" if suffix else "")
+            histories[key].append(value)
         histories["bo_populations"].append(
             np.sum(state_joint, axis=(1, 2), dtype=np.float64)
             *cpu_model.dq*cpu_model.dR
@@ -387,6 +418,14 @@ def run_born_huang(args):
         f"{np.max(payload['max_effective_product_residual_l2']):.3e}, "
         "max highest-state population="
         f"{np.max(payload['bo_populations'][:, -1]):.3e}"
+    )
+    print(
+        "BO 경계 진단: max outer probability (q,R)="
+        f"({np.max(payload['outer_probability_q']):.3e}, "
+        f"{np.max(payload['outer_probability_R']):.3e}); "
+        "max beyond fixed centers (q,R)="
+        f"({np.max(payload['fixed_center_crossing_q']):.3e}, "
+        f"{np.max(payload['fixed_center_crossing_R']):.3e})"
     )
     args.propagation_failed = not completed
     return path

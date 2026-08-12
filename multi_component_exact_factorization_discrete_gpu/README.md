@@ -158,6 +158,9 @@ Every saved frame contains:
   `F'/F`, `chi'/chi` ratios;
 - native link phases, link magnitudes, weighted link defects, discrete
   scalars, BO populations and all three marginals.
+- separate left/right probabilities beyond the physical fixed centers and
+  probabilities in the outer five numerical-grid cells.  The former detects
+  passage beyond the ions; the latter detects approach to the periodic seam.
 
 The archive keeps `a`, `b`, and `alpha` as principal-branch `arg(S)/h`
 diagnostics.  Native discrete figures unwrap those phases along their bond
@@ -173,6 +176,16 @@ After a run, print a max/final audit (including q/R edge probability) with:
 ```bash
 python -m multi_component_exact_factorization_discrete_gpu.diagnose \
   results/$(date +%Y%m%d)/discrete_mcef_bh10_01fs
+```
+
+The same boundary audit works for TDSE, discrete-MCEF, and continuum-MCEF
+archives and reports first threshold-crossing times:
+
+```bash
+python -m multi_component_exact_factorization_discrete_gpu.diagnose_boundaries \
+  results/$(date +%Y%m%d)/expanded_tdse_bh10_50fs \
+  results/$(date +%Y%m%d)/expanded_discrete_mcef_bh10_50fs \
+  results/$(date +%Y%m%d)/expanded_continuum_mcef_bh10_50fs
 ```
 
 ## Figures and movies

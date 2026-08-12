@@ -21,6 +21,7 @@ from multi_component_exact_factorization.core import (
     AU_PER_FS,
     add_model_arguments,
     build_model,
+    fixed_center_crossing_probabilities,
 )
 from multi_component_exact_factorization_gpu.gpu_born_huang import to_gpu_basis
 from multi_component_exact_factorization_gpu.gpu_core import cp
@@ -122,6 +123,12 @@ def run(args):
         "bo_populations": [], "joint_density": [],
         "proton_density": [], "heavy_density": [],
         "outer_probability_q": [], "outer_probability_R": [],
+        "fixed_center_crossing_q_left": [],
+        "fixed_center_crossing_q_right": [],
+        "fixed_center_crossing_q": [],
+        "fixed_center_crossing_R_left": [],
+        "fixed_center_crossing_R_right": [],
+        "fixed_center_crossing_R": [],
     }
 
     def save(step):
@@ -167,6 +174,22 @@ def run(args):
         histories["outer_probability_R"].append(_scalar(
             (cp.sum(R_density[:R_edge])+cp.sum(R_density[-R_edge:]))*model.dR
         ))
+        q_density_cpu = cp.asnumpy(q_density)
+        R_density_cpu = cp.asnumpy(R_density)
+        q_cross = fixed_center_crossing_probabilities(
+            q_density_cpu, cpu_model.q, cpu_model.dq,
+            args.left_position, args.right_position,
+        )
+        R_cross = fixed_center_crossing_probabilities(
+            R_density_cpu, cpu_model.R, cpu_model.dR,
+            args.left_position, args.right_position,
+        )
+        for suffix, value in zip(("left", "right", ""), q_cross):
+            key = "fixed_center_crossing_q" + (f"_{suffix}" if suffix else "")
+            histories[key].append(value)
+        for suffix, value in zip(("left", "right", ""), R_cross):
+            key = "fixed_center_crossing_R" + (f"_{suffix}" if suffix else "")
+            histories[key].append(value)
 
     save(0)
     next_frame = 1
@@ -277,6 +300,11 @@ def run(args):
         "  max outer probability (q,R): "
         f"({np.max(payload['outer_probability_q']):.3e}, "
         f"{np.max(payload['outer_probability_R']):.3e})"
+    )
+    print(
+        "  max probability beyond fixed centers (q,R): "
+        f"({np.max(payload['fixed_center_crossing_q']):.3e}, "
+        f"{np.max(payload['fixed_center_crossing_R']):.3e})"
     )
     print(
         "  max highest-state population: "

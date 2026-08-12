@@ -70,6 +70,18 @@ def run(path):
         )
         outer_q = _show(archive, "outer_probability_q", "q outer probability")
         outer_R = _show(archive, "outer_probability_R", "R outer probability")
+        _show(
+            archive, "fixed_center_crossing_q",
+            "q probability beyond fixed centers",
+        )
+        _show(
+            archive, "fixed_center_crossing_R",
+            "R probability beyond fixed centers",
+        )
+        _show(archive, "fixed_center_crossing_q_left", "q crossing left center")
+        _show(archive, "fixed_center_crossing_q_right", "q crossing right center")
+        _show(archive, "fixed_center_crossing_R_left", "R crossing left center")
+        _show(archive, "fixed_center_crossing_R_right", "R crossing right center")
 
         print("\n[spatial discrete identity]")
         spatial = _show(

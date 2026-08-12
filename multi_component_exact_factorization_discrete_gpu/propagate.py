@@ -27,6 +27,7 @@ from multi_component_exact_factorization.core import (
     add_model_arguments,
     build_model,
     calibrate_flat_top_args,
+    fixed_center_crossing_probabilities,
 )
 from multi_component_exact_factorization_gpu.gpu_born_huang import (
     to_gpu_basis,
@@ -212,6 +213,12 @@ def run(args):
         "sgamma_R1_magnitude": [],
         "norm": [], "pnc_error": [], "pnc_projection_correction": [],
         "outer_probability_q": [], "outer_probability_R": [],
+        "fixed_center_crossing_q_left": [],
+        "fixed_center_crossing_q_right": [],
+        "fixed_center_crossing_q": [],
+        "fixed_center_crossing_R_left": [],
+        "fixed_center_crossing_R_right": [],
+        "fixed_center_crossing_R": [],
         "bo_populations": [], "bo_state_density_q": [],
         "bo_state_density_R": [], "electron_density": [],
     }
@@ -263,6 +270,20 @@ def run(args):
             (np.sum(R_density[:R_edge])+np.sum(R_density[-R_edge:]))
             *cpu_model.dR/max(total_norm, 1.0e-300)
         )
+        q_cross = fixed_center_crossing_probabilities(
+            q_density, cpu_model.q, cpu_model.dq,
+            args.left_position, args.right_position, total_norm,
+        )
+        R_cross = fixed_center_crossing_probabilities(
+            R_density, cpu_model.R, cpu_model.dR,
+            args.left_position, args.right_position, total_norm,
+        )
+        for suffix, value in zip(("left", "right", ""), q_cross):
+            key = "fixed_center_crossing_q" + (f"_{suffix}" if suffix else "")
+            histories[key].append(value)
+        for suffix, value in zip(("left", "right", ""), R_cross):
+            key = "fixed_center_crossing_R" + (f"_{suffix}" if suffix else "")
+            histories[key].append(value)
         histories["bo_populations"].append(
             np.sum(state_joint, axis=(1, 2), dtype=np.float64)
             *cpu_model.dq*cpu_model.dR
@@ -444,6 +465,11 @@ def run(args):
         "  max outer probability (q,R): "
         f"({np.max(payload['outer_probability_q']):.3e}, "
         f"{np.max(payload['outer_probability_R']):.3e})"
+    )
+    print(
+        "  max probability beyond fixed centers (q,R): "
+        f"({np.max(payload['fixed_center_crossing_q']):.3e}, "
+        f"{np.max(payload['fixed_center_crossing_R']):.3e})"
     )
     print(
         "  max PNC retraction load: "

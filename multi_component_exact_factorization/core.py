@@ -1530,6 +1530,32 @@ def reduced_densities(phi, lam, chi, model: Model):
     )
 
 
+def fixed_center_crossing_probabilities(
+    density, grid, spacing, left_position, right_position, normalization=1.0,
+):
+    """Return probability lying beyond the two fixed charge centers.
+
+    ``density`` is a one-dimensional marginal density (probability per unit
+    coordinate), not a cell probability.  Crossing a fixed center is a model
+    diagnostic and is intentionally distinct from the outer-grid/PBC seam
+    diagnostic.
+    """
+    density = np.asarray(density, dtype=np.float64)
+    grid = np.asarray(grid, dtype=np.float64)
+    if density.shape != grid.shape:
+        raise ValueError("density and grid must have identical 1D shapes")
+    norm = max(float(normalization), np.finfo(np.float64).tiny)
+    left = float(
+        np.sum(density[grid < float(left_position)], dtype=np.float64)
+        *float(spacing)/norm
+    )
+    right = float(
+        np.sum(density[grid > float(right_position)], dtype=np.float64)
+        *float(spacing)/norm
+    )
+    return left, right, left+right
+
+
 def add_model_arguments(parser):
     """direct/reference 명령행에서 공유하는 model option을 등록한다."""
     grid = parser.add_argument_group("실공간 격자")
