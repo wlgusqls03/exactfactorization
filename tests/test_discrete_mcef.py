@@ -6,6 +6,8 @@ import numpy as np
 
 from multi_component_exact_factorization_discrete.core import (
     discrete_born_huang_rhs,
+    discrete_tdse_action,
+    full_step_discrete_tdse,
     pnc_retract,
     reconstruct_coefficient_wavefunction,
 )
@@ -46,6 +48,19 @@ def _problem(seed=7):
 
 
 class DiscreteMCEFTests(unittest.TestCase):
+    def test_direct_tdse_action_is_hermitian_and_rk4_is_finite(self):
+        model, basis, c, lam, chi = _problem(5)
+        y = reconstruct_coefficient_wavefunction(c, lam, chi)
+        rng = np.random.default_rng(6)
+        z = rng.normal(size=y.shape)+1j*rng.normal(size=y.shape)
+        hy = discrete_tdse_action(y, model, basis)
+        hz = discrete_tdse_action(z, model, basis)
+        left = np.vdot(z, hy)*model.dq*model.dR
+        right = np.vdot(hz, y)*model.dq*model.dR
+        self.assertLess(abs(left-right), 2.0e-12)
+        stepped = full_step_discrete_tdse(y, 1.0e-3, model, basis)
+        self.assertTrue(np.all(np.isfinite(stepped)))
+
     def test_real_shin_metiu_overlap_links_recombine(self):
         parser = argparse.ArgumentParser()
         add_model_arguments(parser)
@@ -75,6 +90,15 @@ class DiscreteMCEFTests(unittest.TestCase):
     def test_unmasked_factor_rhs_recombines_to_discrete_tdse(self):
         model, basis, c, lam, chi = _problem()
         result = discrete_born_huang_rhs(c, lam, chi, model, basis)
+        F = lam*chi[None, :]
+        y = reconstruct_coefficient_wavefunction(c, lam, chi)
+        dy = result.dc*F[None]+c*(
+            result.dlam*chi[None, :]+lam*result.dchi[None, :]
+        )[None]
+        self.assertLess(
+            np.max(np.abs(1j*dy-discrete_tdse_action(y, model, basis))),
+            2.0e-12,
+        )
         self.assertLess(
             float(result.diagnostics["relative_unexplained_residual"]),
             2.0e-13,

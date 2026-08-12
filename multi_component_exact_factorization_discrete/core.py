@@ -110,6 +110,46 @@ def reconstruct_coefficient_wavefunction(
     return coefficients*(lam*chi[None, :])[None, :, :]
 
 
+def discrete_tdse_action(
+    coefficient_wavefunction: np.ndarray, model, basis,
+) -> np.ndarray:
+    """Apply the same spatially discrete BO Hamiltonian directly to ``Y``.
+
+    ``Y_j(q,R)`` is the full molecular wavefunction in the local BO basis.
+    This action is the product-rule-free TDSE oracle recombined by the
+    discrete MCEF equations when their generalized inverses are unmodified.
+    """
+    y = np.asarray(coefficient_wavefunction)
+    if y.ndim != 3 or y.shape != basis.energies.shape:
+        raise ValueError("expected Y(NBO,nq,nR) matching BO energies")
+    q_weights = kinetic_weights(model.dq, model.proton_mass)
+    R_weights = kinetic_weights(model.dR, model.heavy_mass)
+    action = (basis.energies+q_weights[0]+R_weights[0])*y
+    q_transports = neighbor_transports(y, basis, 1)
+    R_transports = neighbor_transports(y, basis, 2)
+    for offset in OFFSETS:
+        action = action+q_weights[offset]*q_transports[offset]
+        action = action+R_weights[offset]*R_transports[offset]
+    return action
+
+
+def full_step_discrete_tdse(
+    coefficient_wavefunction: np.ndarray, dt: float, model, basis,
+) -> np.ndarray:
+    """One classical RK4 step for ``i dY/dt = H_h Y``."""
+    if dt <= 0.0:
+        raise ValueError("dt must be positive")
+
+    def rhs(values):
+        return -1j*discrete_tdse_action(values, model, basis)
+
+    k1 = rhs(coefficient_wavefunction)
+    k2 = rhs(coefficient_wavefunction+0.5*dt*k1)
+    k3 = rhs(coefficient_wavefunction+0.5*dt*k2)
+    k4 = rhs(coefficient_wavefunction+dt*k3)
+    return coefficient_wavefunction+dt*(k1+2.0*k2+2.0*k3+k4)/6.0
+
+
 def pnc_retract(
     coefficients: np.ndarray, lam: np.ndarray, chi: np.ndarray,
     dq: float,

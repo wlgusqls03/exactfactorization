@@ -17,6 +17,9 @@ from multi_component_exact_factorization.core import (
 )
 from multi_component_exact_factorization_discrete.core import (
     discrete_born_huang_rhs,
+    discrete_tdse_action,
+    full_step_discrete_tdse,
+    reconstruct_coefficient_wavefunction,
 )
 from multi_component_exact_factorization_gpu.gpu_born_huang import (
     to_gpu_basis,
@@ -25,7 +28,9 @@ from multi_component_exact_factorization_gpu.gpu_core import cp
 
 from .gpu_core import (
     discrete_rhs_gpu,
+    discrete_tdse_action_gpu,
     full_step_discrete_bh,
+    full_step_discrete_tdse_gpu,
     make_discrete_gpu_model,
 )
 
@@ -87,6 +92,12 @@ def run(args):
     chi_gpu = cp.asarray(chi, dtype=cp.complex128)
     worst = 0.0
     gpu_bases = {}
+    y = reconstruct_coefficient_wavefunction(coefficients, lam, chi)
+    tdse_action_reference = discrete_tdse_action(y, model, basis)
+    tdse_step_reference = full_step_discrete_tdse(
+        y, args.step_dt, model, basis
+    )
+    y_gpu = cp.ascontiguousarray(cp.asarray(y, dtype=cp.complex128))
     for backend in ("reference", "fused"):
         gpu_basis = to_gpu_basis(basis, gpu_model, backend)
         gpu_bases[backend] = gpu_basis
@@ -116,6 +127,26 @@ def run(args):
         )
         worst = max(worst, unexplained)
         print(f"  recombination unexplained relative={unexplained:.6e}")
+        tdse_action = cp.asnumpy(discrete_tdse_action_gpu(
+            y_gpu, gpu_model, gpu_basis
+        ))
+        absolute, relative = _relative_error(
+            tdse_action_reference, tdse_action
+        )
+        worst = max(worst, relative)
+        print(
+            f"  TDSE H_hY : max_abs={absolute:.6e}, "
+            f"max_relative={relative:.6e}"
+        )
+        tdse_step = cp.asnumpy(full_step_discrete_tdse_gpu(
+            y_gpu, args.step_dt, gpu_model, gpu_basis
+        ))
+        absolute, relative = _relative_error(tdse_step_reference, tdse_step)
+        worst = max(worst, relative)
+        print(
+            f"  TDSE RK4  : max_abs={absolute:.6e}, "
+            f"max_relative={relative:.6e}"
+        )
     stepped = {}
     print("[one RK4 step + support-aware PNC]")
     for backend, gpu_basis in gpu_bases.items():

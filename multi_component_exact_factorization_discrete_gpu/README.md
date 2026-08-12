@@ -74,6 +74,76 @@ wall time.  The default is zero and preserves the original asynchronous fast
 path.  The archive records `step_sleep_ms`, `throttle_sleep_seconds`, and
 `throttled_steps`.
 
+## Direct TDSE reference in the identical BO space
+
+`propagate_tdse` evolves the unfactorized coefficient wavefunction
+`Y_j(q,R)` with the same BO cache, overlap-link Hamiltonian, complex128
+precision, nuclear grids, time step and classical RK4 method as the discrete
+MCEF solver.  It contains no mask, PNC projection or factor retraction.  The
+validation command above checks both `H_h Y` and one TDSE RK4 step against the
+NumPy oracle for the reference and fused link kernels.
+
+Run a short smoke test first:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 python -m \
+  multi_component_exact_factorization_discrete_gpu.propagate_tdse \
+  --device 0 \
+  --bo-states 10 \
+  --bo-link-kernel fused \
+  --bo-basis-cache-dir results/bo_basis_cache \
+  --electron-excitation 1 \
+  --nx 300 --nq 450 --nR 900 \
+  --dt-au 0.025 \
+  --t-final-fs 0.1 \
+  --save-every 20 \
+  --progress-every 50 \
+  --check-every 5 \
+  --outdir results/discrete_tdse_bh10_01fs
+```
+
+After validation, a thermally constrained 50 fs run can use:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 python -m \
+  multi_component_exact_factorization_discrete_gpu.propagate_tdse \
+  --device 0 \
+  --bo-states 10 \
+  --bo-link-kernel fused \
+  --bo-basis-cache-dir results/bo_basis_cache \
+  --electron-excitation 1 \
+  --nx 300 --nq 450 --nR 900 \
+  --dt-au 0.025 \
+  --t-final-fs 50.0 \
+  --save-every 1000 \
+  --progress-every 2000 \
+  --check-every 20 \
+  --step-sleep-ms 20 \
+  --outdir results/discrete_tdse_bh10_50fs
+```
+
+One saved BO10 `(450,900)` complex128 coefficient frame is about 61.8 MiB.
+`--save-every 1000` stores about 84 coefficient frames (roughly 5.1 GiB
+before compression) over 50 fs.  Choose a TDSE save interval that is an
+integer multiple of the MCEF save interval so every TDSE frame has an exact
+MCEF counterpart.
+
+Compare the trajectories without reconstructing the electronic x grid:
+
+```bash
+python -m multi_component_exact_factorization_discrete_gpu.compare_tdse \
+  results/$(date +%Y%m%d)/discrete_tdse_bh10_50fs \
+  results/$(date +%Y%m%d)/discrete_mcef_bh10_50fs \
+  --tempdir results/tdse_compare_tmp \
+  --progress-every 5
+```
+
+The comparison saves `tdse_mcef_comparison.npz` beside the MCEF archive and
+reports coefficient-space fidelity, joint/proton/heavy density L1 errors,
+BO-population differences and both norms.  Temporary extracted arrays are
+removed automatically, but `--tempdir` must have enough free space for the
+required uncompressed archive members.
+
 ## Saved diagnostics
 
 Every saved frame contains:

@@ -85,6 +85,33 @@ def _shift(values, offset, axis):
     return cp.roll(values, -int(offset), axis=axis)
 
 
+def discrete_tdse_action_gpu(coefficient_wavefunction, model, basis):
+    """Apply the direct BO-coefficient TDSE Hamiltonian on the GPU."""
+    y = coefficient_wavefunction
+    q_weights = kinetic_weights(model.dq, model.proton_mass)
+    R_weights = kinetic_weights(model.dR, model.heavy_mass)
+    action = (basis.energies+q_weights[0]+R_weights[0])*y
+    q_transports = neighbor_transports(y, basis, 1)
+    R_transports = neighbor_transports(y, basis, 2)
+    for index, offset in enumerate(OFFSETS):
+        action += q_weights[offset]*q_transports[index]
+        action += R_weights[offset]*R_transports[index]
+    return action
+
+
+def full_step_discrete_tdse_gpu(coefficient_wavefunction, dt, model, basis):
+    """One classical RK4 step for the direct discrete TDSE reference."""
+    def rhs(values):
+        return -1j*discrete_tdse_action_gpu(values, model, basis)
+
+    y = coefficient_wavefunction
+    k1 = rhs(y)
+    k2 = rhs(y+0.5*dt*k1)
+    k3 = rhs(y+0.5*dt*k2)
+    k4 = rhs(y+dt*k3)
+    return y+dt*(k1+2.0*k2+2.0*k3+k4)/6.0
+
+
 def discrete_rhs_gpu(
     coefficients, lam, chi, model, basis, *, collect_diagnostics=False,
 ):
