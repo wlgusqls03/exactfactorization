@@ -5,12 +5,17 @@ from pathlib import Path
 import numpy as np
 
 from multi_component_exact_factorization_discrete_gpu.compare_tdse import (
+    _resolve,
     compare,
     compare_streaming,
 )
 
 
 class StreamingTDSEComparisonTests(unittest.TestCase):
+    def test_empty_shell_variable_path_fails_before_archive_search(self):
+        with self.assertRaisesRegex(ValueError, "입력 경로가 비어"):
+            _resolve("", "multi_component_discrete_tdse_gpu.npz")
+
     def test_streaming_matches_extracted_comparison_exactly(self):
         rng = np.random.default_rng(173)
         nt, nbo, nq, nR = 5, 3, 7, 8

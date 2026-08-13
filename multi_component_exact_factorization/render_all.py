@@ -23,12 +23,14 @@ from . import (
     dynamics_analysis,
     excited_state_analysis,
     potential_analysis,
+    tdse_report,
     visualize,
     visualize_3d,
 )
 
 
 ARCHIVE_NAMES = (
+    "multi_component_discrete_tdse_gpu.npz",
     "multi_component_born_huang_ef_gpu.npz",
     "multi_component_direct_ef_gpu.npz",
     "multi_component_direct_ef.npz",
@@ -128,6 +130,16 @@ def is_born_huang_archive(archive: Path) -> bool:
         return "electronic_coefficients" in data.files
 
 
+def is_tdse_archive(archive: Path) -> bool:
+    """Identify direct BO-coefficient TDSE archives without loading Y."""
+    with np.load(archive, allow_pickle=False) as data:
+        kind = str(np.asarray(data.get("kind", "")).item())
+        return (
+            kind.startswith("direct_discrete_born_huang_tdse")
+            or "tdse_coefficients" in data.files
+        )
+
+
 def run(args):
     resolved = resolve_run_input(args.run)
     archive, run_dir = find_archive(resolved)
@@ -160,6 +172,16 @@ def run(args):
             f"빠른 렌더링: animation frame={max_frames}, "
             f"dpi={animation_dpi}, 3D frame={max_3d_frames}"
         )
+
+    if is_tdse_archive(archive):
+        print("Direct TDSE archive 전용 standalone report 생성")
+        tdse_report.run(
+            archive, output_root/"report", dpi=args.dpi,
+            no_animation=args.no_animation, fps=args.fps,
+            max_frames=max_frames, animation_dpi=animation_dpi,
+            fmt=args.format, snapshot_count=snapshots,
+        )
+        return
 
     if is_born_huang_archive(archive):
         print("Born--Huang coefficient archive 전용 compact report 생성")

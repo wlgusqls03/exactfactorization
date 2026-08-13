@@ -72,6 +72,17 @@ class RenderAllDiscoveryTests(unittest.TestCase):
                 (archive.resolve(), run_dir.resolve()),
             )
 
+    def test_finds_discrete_tdse_archive(self):
+        with TemporaryDirectory() as temporary:
+            run_dir = Path(temporary)/"run"
+            run_dir.mkdir()
+            archive = run_dir/"multi_component_discrete_tdse_gpu.npz"
+            archive.touch()
+            self.assertEqual(
+                render_all.find_archive(run_dir.resolve()),
+                (archive.resolve(), run_dir.resolve()),
+            )
+
     def test_reads_excited_state_metadata(self):
         with TemporaryDirectory() as temporary:
             archive = Path(temporary)/"result.npz"
@@ -93,6 +104,26 @@ class RenderAllDiscoveryTests(unittest.TestCase):
             np.savez(
                 archive,
                 electronic_coefficients=np.zeros((1, 2, 2, 2)),
+                args=np.array([{"electron_excitation": 1}], dtype=object),
+            )
+            args = render_all.parse_args([
+                str(run_dir), "--no-animation", "--no-3d",
+            ])
+            render_all.run(args)
+            report_run.assert_called_once()
+            self.assertEqual(report_run.call_args.args[0], archive.resolve())
+            self.assertTrue(report_run.call_args.kwargs["no_animation"])
+
+    @patch.object(render_all.tdse_report, "run")
+    def test_tdse_archive_uses_standalone_tdse_report(self, report_run):
+        with TemporaryDirectory() as temporary:
+            run_dir = Path(temporary)/"results"/"20260731"/"tdse"
+            run_dir.mkdir(parents=True)
+            archive = run_dir/"multi_component_discrete_tdse_gpu.npz"
+            np.savez(
+                archive,
+                kind=np.array("direct_discrete_born_huang_tdse_gpu"),
+                tdse_coefficients=np.empty((1, 2, 2, 2)),
                 args=np.array([{"electron_excitation": 1}], dtype=object),
             )
             args = render_all.parse_args([

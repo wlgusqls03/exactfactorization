@@ -113,6 +113,11 @@ def _stream_arrays(path, keys):
 
 
 def _resolve(value, filename):
+    if not str(value).strip():
+        raise ValueError(
+            f"{filename} 입력 경로가 비어 있습니다. shell 변수가 설정됐는지 "
+            "확인하세요."
+        )
     path = Path(value).expanduser().resolve()
     if path.is_file():
         return path
@@ -125,6 +130,27 @@ def _resolve(value, filename):
     if not matches:
         raise FileNotFoundError(f"{filename}을 찾지 못했습니다: {path}")
     raise RuntimeError(f"비교 archive가 여러 개입니다: {matches}")
+
+
+def _validate_output_path(output, mcef):
+    """Resolve and test the tiny result destination before a long comparison."""
+    path = (
+        Path(output).expanduser().resolve()
+        if output is not None else mcef.parent/"tdse_mcef_comparison.npz"
+    )
+    parent = path.parent
+    if not parent.is_dir():
+        raise FileNotFoundError(f"comparison output 폴더가 없습니다: {parent}")
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix=".tdse-comparison-write-test-", dir=parent
+        ):
+            pass
+    except OSError as error:
+        raise PermissionError(
+            f"comparison output 폴더에 쓸 수 없습니다: {parent}"
+        ) from error
+    return path
 
 
 @contextmanager
@@ -248,6 +274,7 @@ def compare(reference, mcef, *, tolerance_fs=1.0e-8, tempdir=None,
             output=None, progress_every=10):
     reference = _resolve(reference, "multi_component_discrete_tdse_gpu.npz")
     mcef = _resolve(mcef, "multi_component_born_huang_ef_gpu.npz")
+    output = _validate_output_path(output, mcef)
     temp_root = Path(tempdir).resolve() if tempdir else Path(tempfile.gettempdir())
     temp_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="discrete-tdse-compare-", dir=temp_root) as work:
@@ -290,6 +317,7 @@ def compare_streaming(reference, mcef, *, tolerance_fs=1.0e-8, output=None,
     """Compare full dynamics with O(one frame) RAM and no extracted arrays."""
     reference = _resolve(reference, "multi_component_discrete_tdse_gpu.npz")
     mcef = _resolve(mcef, "multi_component_born_huang_ef_gpu.npz")
+    output = _validate_output_path(output, mcef)
     with np.load(reference, allow_pickle=False) as archive:
         reference_times = np.asarray(archive["times_fs"], dtype=np.float64)
         q_reference = np.asarray(archive["q"], dtype=np.float64)

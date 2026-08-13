@@ -207,6 +207,64 @@ BO-population differences and both norms.  Temporary extracted arrays are
 removed automatically, but `--tempdir` must have enough free space for the
 required uncompressed archive members.
 
+## Standalone TDSE figures, movies and reconstructed exact fields
+
+The TDSE archive has its own report; it is not overlaid with an MCEF run.
+The standard renderer deliberately skips the very large
+`tdse_coefficients` member and reads only the saved reduced densities,
+populations, energy and reliability diagnostics:
+
+```bash
+python -m multi_component_exact_factorization.render_all \
+  results/YYYYMMDD/expanded_tdse_bh10_50fs \
+  --format mp4 \
+  --fps 12 \
+  --max-frames 240 \
+  --dpi 180 \
+  --animation-dpi 110 \
+  --no-3d
+```
+
+This creates raw proton/heavy marginal figures, fixed-scale q-R joint-density
+snapshots, BO populations and sampled BO energies, numerical reliability and
+`tdse_dynamics_overview.mp4`.  Densities and populations are neither smoothed
+nor peak-normalized; animation axes and the joint-density color maximum are
+fixed over the complete trajectory.
+
+The two nested TDPES and vector potentials are not primary TDSE variables.
+Reconstruct them once from the saved full coefficient trajectory on a GPU:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m \
+  multi_component_exact_factorization_discrete_gpu.postprocess_tdse_ef \
+  results/YYYYMMDD/expanded_tdse_bh10_50fs \
+  --device 0 \
+  --bo-link-kernel fused \
+  --progress-every 5
+```
+
+The postprocessor sequentially decompresses one `Y_j(q,R)` frame, applies the
+same discrete TDSE Hamiltonian, and factorizes it in the positive-density
+gauge.  The instantaneous action `dY/dt=-i*H_h*Y` supplies the temporal terms
+of both scalar potentials, avoiding a finite difference across saved frames.
+It saves `tdse_exact_factorization_fields.npz` beside the TDSE archive with
+
+- the two scalar/TDPES fields `epsilon_1(q,R)` and `epsilon_2(R)`;
+- the first vector potential's q/R components `a(q,R)` and `b(q,R)`;
+- the second vector potential `alpha(R)`;
+- exact factorization and imaginary-scalar residual audits.
+
+Run the standard renderer again.  It automatically finds this field cache
+and additionally creates
+`05_tdse_exact_factorization_fields.png`,
+`06_tdse_transport_and_drive.png`,
+`tdse_exact_factorization_fields.mp4`, and
+`tdse_transport_and_drive.mp4`.  The latter fields include mechanical
+momenta, currents, and gauge-invariant drives.  Spatial derivatives and the
+saved-frame connection time derivative use the same periodic five-point and
+centered-time diagnostic convention as the existing MCEF report; they do not
+feed back into TDSE propagation.
+
 ## Saved diagnostics
 
 Every saved frame contains:
