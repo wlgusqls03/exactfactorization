@@ -256,6 +256,9 @@ def run_born_huang(args):
 
     save(0)
     frame = 1
+    saved_frame_count = 1
+    last_saved_step = 0
+    last_completed_step = 0
     interval = {}
     interval_correction = cp.asarray(0.0)
     failure = ""
@@ -265,69 +268,94 @@ def run_born_huang(args):
     throttle_every = max(1, int(getattr(args, "gpu_throttle_every", 20)))
     throttle_chunk_start = None
     throttle_sleep_seconds = 0.0
-    for step in range(1, n_steps+1):
-        attempted = step
-        if throttle_limit < 100.0 and throttle_chunk_start is None:
-            throttle_chunk_start = time.perf_counter()
-        coefficients, lam, chi, correction, step_diag = full_step_bh(
-            coefficients, lam, chi, args.dt_au, model, basis,
-            args.ratio_floor, args.mask_threshold_phi, args.mask_threshold_lam,
-        )
-        interval_correction = cp.maximum(interval_correction, correction)
-        for name, value in step_diag.items():
-            interval[name] = cp.maximum(interval.get(name, 0.0), value)
-        if throttle_limit < 100.0 and (
-            step % throttle_every == 0 or step == n_steps
-        ):
-            cp.cuda.get_current_stream().synchronize()
-            active = time.perf_counter()-throttle_chunk_start
-            delay = throttle_delay(active, throttle_limit)
-            if delay > 0.0:
-                time.sleep(delay)
-                throttle_sleep_seconds += delay
-            throttle_chunk_start = None
-        must_save = frame < len(save_steps) and step == save_steps[frame]
-        if step % args.check_every == 0 or must_save or step == n_steps:
-            if not all_finite(coefficients, lam, chi):
-                failure = f"step {step}에서 non-finite C/Lambda/chi 검출"
-                print(f"전파 중단 감지: {failure}")
-                break
-            max_norm_drift = float(getattr(args, "max_norm_drift", 1.0e-3))
-            if max_norm_drift > 0.0:
-                coefficient_norm2 = cp.sum(
-                    cp.real(coefficients*cp.conj(coefficients)), axis=0,
-                    dtype=model.reduction_real_dtype,
-                )
-                xi = lam*chi[None, :]
-                current_norm = cp.sum(
-                    coefficient_norm2*cp.real(xi*cp.conj(xi)),
-                    dtype=model.reduction_real_dtype,
-                )*model.dq*model.dR
-                norm_drift = float(cp.abs(current_norm-1.0).get())
-                if norm_drift > max_norm_drift:
-                    failure = (
-                        f"step {step}에서 |norm-1|={norm_drift:.3e}가 "
-                        f"허용값 {max_norm_drift:.3e} 초과"
-                    )
+    try:
+        for step in range(1, n_steps+1):
+            attempted = step
+            if throttle_limit < 100.0 and throttle_chunk_start is None:
+                throttle_chunk_start = time.perf_counter()
+            coefficients, lam, chi, correction, step_diag = full_step_bh(
+                coefficients, lam, chi, args.dt_au, model, basis,
+                args.ratio_floor, args.mask_threshold_phi, args.mask_threshold_lam,
+            )
+            interval_correction = cp.maximum(interval_correction, correction)
+            for name, value in step_diag.items():
+                interval[name] = cp.maximum(interval.get(name, 0.0), value)
+            last_completed_step = step
+            if throttle_limit < 100.0 and (
+                step % throttle_every == 0 or step == n_steps
+            ):
+                cp.cuda.get_current_stream().synchronize()
+                active = time.perf_counter()-throttle_chunk_start
+                delay = throttle_delay(active, throttle_limit)
+                if delay > 0.0:
+                    time.sleep(delay)
+                    throttle_sleep_seconds += delay
+                throttle_chunk_start = None
+            must_save = frame < len(save_steps) and step == save_steps[frame]
+            if step % args.check_every == 0 or must_save or step == n_steps:
+                if not all_finite(coefficients, lam, chi):
+                    failure = f"step {step}에서 non-finite C/Lambda/chi 검출"
                     print(f"전파 중단 감지: {failure}")
-                    # This state is still finite.  Preserve it so a failed run
-                    # contains the first threshold-crossing checkpoint rather
-                    # than only the much earlier regular save frame.
-                    save(step, interval_correction, interval)
-                    print(
-                        "norm-drift finite check-point 추가 저장: "
-                        f"step {step} "
-                        f"(t={step*args.dt_au/AU_PER_FS:.6f} fs)"
-                    )
                     break
-        if must_save:
-            save(step, interval_correction, interval)
-            frame += 1
-            interval, interval_correction = {}, cp.asarray(0.0)
-        if step % args.progress_every == 0 or step == n_steps:
-            print(f"step {step:7d}/{n_steps}  t={step*args.dt_au/AU_PER_FS:9.4f} fs")
+                max_norm_drift = float(getattr(args, "max_norm_drift", 1.0e-3))
+                if max_norm_drift > 0.0:
+                    coefficient_norm2 = cp.sum(
+                        cp.real(coefficients*cp.conj(coefficients)), axis=0,
+                        dtype=model.reduction_real_dtype,
+                    )
+                    xi = lam*chi[None, :]
+                    current_norm = cp.sum(
+                        coefficient_norm2*cp.real(xi*cp.conj(xi)),
+                        dtype=model.reduction_real_dtype,
+                    )*model.dq*model.dR
+                    norm_drift = float(cp.abs(current_norm-1.0).get())
+                    if norm_drift > max_norm_drift:
+                        failure = (
+                            f"step {step}에서 |norm-1|={norm_drift:.3e}가 "
+                            f"허용값 {max_norm_drift:.3e} 초과"
+                        )
+                        print(f"전파 중단 감지: {failure}")
+                        save(step, interval_correction, interval)
+                        saved_frame_count += 1
+                        last_saved_step = step
+                        print(
+                            "norm-drift finite check-point 추가 저장: "
+                            f"step {step} "
+                            f"(t={step*args.dt_au/AU_PER_FS:.6f} fs)"
+                        )
+                        break
+            if must_save:
+                save(step, interval_correction, interval)
+                saved_frame_count += 1
+                last_saved_step = step
+                frame += 1
+                interval, interval_correction = {}, cp.asarray(0.0)
+            if step % args.progress_every == 0 or step == n_steps:
+                print(f"step {step:7d}/{n_steps}  t={step*args.dt_au/AU_PER_FS:9.4f} fs")
+    except KeyboardInterrupt:
+        failure = f"사용자가 step {attempted}에서 계산을 중단함"
+        print(f"전파 중단 감지: {failure}")
+        # A signal during a scheduled save may have appended only part of a
+        # frame.  Roll every history back to the last fully completed frame.
+        for values in histories.values():
+            del values[saved_frame_count:]
+        for values in diagnostics.values():
+            del values[saved_frame_count:]
+        if (
+            last_completed_step > last_saved_step
+            and all_finite(coefficients, lam, chi)
+        ):
+            save(last_completed_step, interval_correction, interval)
+            saved_frame_count += 1
+            last_saved_step = last_completed_step
+            print(
+                "마지막 완료 step 추가 저장: "
+                f"step {last_completed_step} "
+                f"(t={last_completed_step*args.dt_au/AU_PER_FS:.6f} fs)"
+            )
 
     completed = not failure
+    interrupted = failure.startswith("사용자가 step ")
     payload = {
         key: np.asarray(value) for key, value in histories.items()
     }
@@ -376,6 +404,7 @@ def run_born_huang(args):
         deep_tail_zero_threshold=np.array(args.deep_tail_zero_threshold),
         full_nuclear_range=np.array(args.full_nuclear_range),
         propagation_completed=np.array(completed),
+        propagation_interrupted=np.array(interrupted),
         requested_final_time_fs=np.array(args.t_final_fs),
         requested_steps=np.array(n_steps), attempted_steps=np.array(attempted),
         failure_reason=np.array(failure),
@@ -389,13 +418,14 @@ def run_born_huang(args):
     path = outdir/"multi_component_born_huang_ef_gpu.npz"
     np.savez_compressed(path, **payload)
     status = outdir/"propagation_status.log"
+    status_name = "completed" if completed else ("interrupted" if interrupted else "failed")
     status.write_text(
-        f"status={'completed' if completed else 'failed'}\n"
+        f"status={status_name}\n"
         f"archive={path}\nlast_saved_time_fs={payload['times_fs'][-1]:.12g}\n"
         f"failure_reason={failure or 'none'}\n",
         encoding="utf-8",
     )
-    print(f"저장 완료: {path}")
+    print(f"{'저장 완료' if completed else '부분 저장 완료'}: {path}")
     print(f"BO coefficient 전파 wall 시간: {payload['wall_seconds']:.3f} s")
     if attempted:
         print(

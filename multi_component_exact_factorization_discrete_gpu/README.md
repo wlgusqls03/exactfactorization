@@ -188,6 +188,13 @@ python -m multi_component_exact_factorization_discrete_gpu.diagnose_boundaries \
   results/$(date +%Y%m%d)/expanded_continuum_mcef_bh10_50fs
 ```
 
+All three Born--Huang propagation drivers handle a single `Ctrl+C`
+gracefully.  They finish or discard the in-flight RK4 step, append the last
+fully completed finite step when it was not already saved, write a partial
+NPZ archive, and mark `propagation_status.log` as `interrupted`.  Wait for the
+`부분 저장 완료` message after pressing `Ctrl+C`; pressing it again can abort
+the archive write itself.
+
 ## Figures and movies
 
 ```bash

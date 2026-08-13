@@ -319,67 +319,95 @@ def run(args):
 
     save(0)
     next_frame = 1
+    saved_frame_count = 1
+    last_saved_step = 0
+    last_completed_step = 0
     failure = ""
     attempted = 0
     correction_peak = cp.asarray(0.0)
     throttle_sleep_seconds = 0.0
     throttled_steps = 0
     started = time.perf_counter()
-    for step in range(1, n_steps+1):
-        attempted = step
-        will_save = next_frame < len(save_steps) and step == save_steps[next_frame]
-        coefficients, lam, chi, correction, step_diagnostics = full_step_discrete_bh(
-            coefficients, lam, chi, args.dt_au, model, basis,
-            collect_step_diagnostics=will_save,
-        )
-        correction_peak = cp.maximum(correction_peak, correction)
-        must_save = will_save
-        must_check = step % args.check_every == 0 or must_save or step == n_steps
-        if must_check:
-            if not all_finite(coefficients, lam, chi):
-                failure = f"step {step}: non-finite C/Lambda/chi"
-                print(f"전파 중단: {failure}")
-                break
-            c_norm2_gpu = cp.sum(
-                cp.real(coefficients*cp.conj(coefficients)), axis=0,
-                dtype=model.reduction_real_dtype,
+    last_step_diagnostics = None
+    try:
+        for step in range(1, n_steps+1):
+            attempted = step
+            will_save = next_frame < len(save_steps) and step == save_steps[next_frame]
+            coefficients, lam, chi, correction, step_diagnostics = full_step_discrete_bh(
+                coefficients, lam, chi, args.dt_au, model, basis,
+                collect_step_diagnostics=will_save,
             )
-            F_gpu = lam*chi[None, :]
-            current_norm = cp.sum(
-                c_norm2_gpu*cp.real(F_gpu*cp.conj(F_gpu)),
-                dtype=model.reduction_real_dtype,
-            )*model.dq*model.dR
-            drift = _as_float(cp.abs(current_norm-1.0))
-            if args.max_norm_drift > 0.0 and drift > args.max_norm_drift:
-                failure = (
-                    f"step {step}: |norm-1|={drift:.3e} exceeds "
-                    f"{args.max_norm_drift:.3e}"
+            correction_peak = cp.maximum(correction_peak, correction)
+            last_step_diagnostics = step_diagnostics
+            last_completed_step = step
+            must_save = will_save
+            must_check = step % args.check_every == 0 or must_save or step == n_steps
+            if must_check:
+                if not all_finite(coefficients, lam, chi):
+                    failure = f"step {step}: non-finite C/Lambda/chi"
+                    print(f"전파 중단: {failure}")
+                    break
+                c_norm2_gpu = cp.sum(
+                    cp.real(coefficients*cp.conj(coefficients)), axis=0,
+                    dtype=model.reduction_real_dtype,
                 )
-                print(f"전파 중단: {failure}")
+                F_gpu = lam*chi[None, :]
+                current_norm = cp.sum(
+                    c_norm2_gpu*cp.real(F_gpu*cp.conj(F_gpu)),
+                    dtype=model.reduction_real_dtype,
+                )*model.dq*model.dR
+                drift = _as_float(cp.abs(current_norm-1.0))
+                if args.max_norm_drift > 0.0 and drift > args.max_norm_drift:
+                    failure = (
+                        f"step {step}: |norm-1|={drift:.3e} exceeds "
+                        f"{args.max_norm_drift:.3e}"
+                    )
+                    print(f"전파 중단: {failure}")
+                    save(step, correction_peak, step_diagnostics)
+                    saved_frame_count += 1
+                    last_saved_step = step
+                    break
+            if must_save:
                 save(step, correction_peak, step_diagnostics)
-                break
-        if must_save:
-            save(step, correction_peak, step_diagnostics)
-            correction_peak = cp.asarray(0.0)
-            next_frame += 1
-        if step % args.progress_every == 0 or step == n_steps:
+                saved_frame_count += 1
+                last_saved_step = step
+                correction_peak = cp.asarray(0.0)
+                next_frame += 1
+            if step % args.progress_every == 0 or step == n_steps:
+                print(
+                    f"step {step:7d}/{n_steps}  "
+                    f"t={step*args.dt_au/AU_PER_FS:9.4f} fs"
+                )
+            if args.step_sleep_ms > 0.0:
+                cp.cuda.get_current_stream().synchronize()
+                sleep_started = time.perf_counter()
+                time.sleep(args.step_sleep_ms/1000.0)
+                throttle_sleep_seconds += time.perf_counter()-sleep_started
+                throttled_steps += 1
+    except KeyboardInterrupt:
+        failure = f"사용자가 step {attempted}에서 계산을 중단함"
+        print(f"전파 중단: {failure}")
+        for values in histories.values():
+            del values[saved_frame_count:]
+        for values in diagnostics.values():
+            del values[saved_frame_count:]
+        if (
+            last_completed_step > last_saved_step
+            and all_finite(coefficients, lam, chi)
+        ):
+            save(last_completed_step, correction_peak, last_step_diagnostics)
+            saved_frame_count += 1
+            last_saved_step = last_completed_step
             print(
-                f"step {step:7d}/{n_steps}  "
-                f"t={step*args.dt_au/AU_PER_FS:9.4f} fs"
+                "마지막 완료 step 추가 저장: "
+                f"step {last_completed_step} "
+                f"(t={last_completed_step*args.dt_au/AU_PER_FS:.6f} fs)"
             )
-        if args.step_sleep_ms > 0.0:
-            # CuPy launches asynchronously.  Synchronizing is required before
-            # sleeping; otherwise the GPU could continue executing queued
-            # kernels while the host thread sleeps.
-            cp.cuda.get_current_stream().synchronize()
-            sleep_started = time.perf_counter()
-            time.sleep(args.step_sleep_ms/1000.0)
-            throttle_sleep_seconds += time.perf_counter()-sleep_started
-            throttled_steps += 1
 
     cp.cuda.get_current_stream().synchronize()
     wall_seconds = time.perf_counter()-started
     completed = not failure
+    interrupted = failure.startswith("사용자가 step ")
     payload = {key: np.asarray(value) for key, value in histories.items()}
     payload.update({key: np.asarray(value) for key, value in diagnostics.items()})
     # Compatibility aliases are diagnostics only; no product projection is
@@ -422,6 +450,7 @@ def run(args):
         deep_tail_zero_threshold=np.array(args.deep_tail_zero_threshold),
         x=cpu_model.x, q=cpu_model.q, R=cpu_model.R,
         propagation_completed=np.array(completed),
+        propagation_interrupted=np.array(interrupted),
         requested_final_time_fs=np.array(args.t_final_fs),
         requested_steps=np.array(n_steps), attempted_steps=np.array(attempted),
         step_sleep_ms=np.array(args.step_sleep_ms),
@@ -435,8 +464,9 @@ def run(args):
     archive = outdir/"multi_component_born_huang_ef_gpu.npz"
     np.savez_compressed(archive, **payload)
     status = outdir/"propagation_status.log"
+    status_name = "completed" if completed else ("interrupted" if interrupted else "failed")
     status.write_text(
-        f"status={'completed' if completed else 'failed'}\n"
+        f"status={status_name}\n"
         f"archive={archive}\n"
         f"last_saved_time_fs={payload['times_fs'][-1]:.12g}\n"
         f"failure_reason={failure or 'none'}\n",

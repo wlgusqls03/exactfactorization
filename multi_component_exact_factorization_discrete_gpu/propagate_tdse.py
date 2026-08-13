@@ -193,53 +193,80 @@ def run(args):
 
     save(0)
     next_frame = 1
+    saved_frame_count = 1
+    last_saved_step = 0
+    last_completed_step = 0
     failure = ""
     attempted = 0
     throttle_sleep_seconds = 0.0
     throttled_steps = 0
     started = time.perf_counter()
-    for step in range(1, n_steps+1):
-        attempted = step
-        y = full_step_discrete_tdse_gpu(y, args.dt_au, model, basis)
-        will_save = next_frame < len(save_steps) and step == save_steps[next_frame]
-        must_check = (
-            step % args.check_every == 0 or will_save or step == n_steps
-        )
-        if must_check:
-            if not bool(cp.all(cp.isfinite(y)).get()):
-                failure = f"step {step}: non-finite TDSE coefficients"
-                print(f"전파 중단: {failure}")
-                break
-            norm = cp.sum(
-                cp.real(y*cp.conj(y)), dtype=model.reduction_real_dtype
-            )*model.dq*model.dR
-            drift = _scalar(cp.abs(norm-1.0))
-            if args.max_norm_drift > 0.0 and drift > args.max_norm_drift:
-                failure = (
-                    f"step {step}: |norm-1|={drift:.3e} exceeds "
-                    f"{args.max_norm_drift:.3e}"
-                )
-                print(f"전파 중단: {failure}")
-                save(step)
-                break
-        if will_save:
-            save(step)
-            next_frame += 1
-        if step % args.progress_every == 0 or step == n_steps:
-            print(
-                f"TDSE step {step:7d}/{n_steps}  "
-                f"t={step*args.dt_au/AU_PER_FS:9.4f} fs"
+    try:
+        for step in range(1, n_steps+1):
+            attempted = step
+            y = full_step_discrete_tdse_gpu(y, args.dt_au, model, basis)
+            last_completed_step = step
+            will_save = next_frame < len(save_steps) and step == save_steps[next_frame]
+            must_check = (
+                step % args.check_every == 0 or will_save or step == n_steps
             )
-        if args.step_sleep_ms > 0.0:
-            cp.cuda.get_current_stream().synchronize()
-            sleep_started = time.perf_counter()
-            time.sleep(args.step_sleep_ms/1000.0)
-            throttle_sleep_seconds += time.perf_counter()-sleep_started
-            throttled_steps += 1
+            if must_check:
+                if not bool(cp.all(cp.isfinite(y)).get()):
+                    failure = f"step {step}: non-finite TDSE coefficients"
+                    print(f"전파 중단: {failure}")
+                    break
+                norm = cp.sum(
+                    cp.real(y*cp.conj(y)), dtype=model.reduction_real_dtype
+                )*model.dq*model.dR
+                drift = _scalar(cp.abs(norm-1.0))
+                if args.max_norm_drift > 0.0 and drift > args.max_norm_drift:
+                    failure = (
+                        f"step {step}: |norm-1|={drift:.3e} exceeds "
+                        f"{args.max_norm_drift:.3e}"
+                    )
+                    print(f"전파 중단: {failure}")
+                    save(step)
+                    saved_frame_count += 1
+                    last_saved_step = step
+                    break
+            if will_save:
+                save(step)
+                saved_frame_count += 1
+                last_saved_step = step
+                next_frame += 1
+            if step % args.progress_every == 0 or step == n_steps:
+                print(
+                    f"TDSE step {step:7d}/{n_steps}  "
+                    f"t={step*args.dt_au/AU_PER_FS:9.4f} fs"
+                )
+            if args.step_sleep_ms > 0.0:
+                cp.cuda.get_current_stream().synchronize()
+                sleep_started = time.perf_counter()
+                time.sleep(args.step_sleep_ms/1000.0)
+                throttle_sleep_seconds += time.perf_counter()-sleep_started
+                throttled_steps += 1
+    except KeyboardInterrupt:
+        failure = f"사용자가 step {attempted}에서 계산을 중단함"
+        print(f"전파 중단: {failure}")
+        for values in histories.values():
+            del values[saved_frame_count:]
+        if (
+            last_completed_step > last_saved_step
+            and bool(cp.all(cp.isfinite(y)).get())
+        ):
+            save(last_completed_step)
+            saved_frame_count += 1
+            last_saved_step = last_completed_step
+            print(
+                "마지막 완료 step 추가 저장: "
+                f"step {last_completed_step} "
+                f"(t={last_completed_step*args.dt_au/AU_PER_FS:.6f} fs)"
+            )
 
     cp.cuda.get_current_stream().synchronize()
     wall_seconds = time.perf_counter()-started
     completed = not failure
+    interrupted = failure.startswith("사용자가 step ")
     payload = {key: np.asarray(value) for key, value in histories.items()}
     payload.update(
         kind=np.array("direct_discrete_born_huang_tdse_gpu"),
@@ -255,6 +282,7 @@ def run(args):
         bo_link_kernel=np.array(args.bo_link_kernel),
         x=cpu_model.x, q=cpu_model.q, R=cpu_model.R,
         propagation_completed=np.array(completed),
+        propagation_interrupted=np.array(interrupted),
         requested_final_time_fs=np.array(args.t_final_fs),
         requested_steps=np.array(n_steps), attempted_steps=np.array(attempted),
         step_sleep_ms=np.array(args.step_sleep_ms),
@@ -265,8 +293,9 @@ def run(args):
     )
     archive = outdir/"multi_component_discrete_tdse_gpu.npz"
     np.savez_compressed(archive, **payload)
+    status_name = "completed" if completed else ("interrupted" if interrupted else "failed")
     (outdir/"propagation_status.log").write_text(
-        f"status={'completed' if completed else 'failed'}\n"
+        f"status={status_name}\n"
         f"archive={archive}\n"
         f"last_saved_time_fs={payload['times_fs'][-1]:.12g}\n"
         f"failure_reason={failure or 'none'}\n",
