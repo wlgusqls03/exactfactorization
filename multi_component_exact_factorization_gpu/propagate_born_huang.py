@@ -23,6 +23,7 @@ from .gpu_born_huang import (
     full_step_bh,
     instantaneous_functionals_bh,
     pnc_project_coefficients,
+    PNC_NORM_DIAGNOSTIC_NAMES,
     to_gpu_basis,
 )
 from .gpu_core import (
@@ -155,6 +156,10 @@ def run_born_huang(args):
         "deep_tail_suppressed_probability_lam",
         "deep_tail_zero_fraction_phi", "deep_tail_zero_fraction_lam",
     )
+    if getattr(args, "verbose_diagnostics", False):
+        diagnostic_names += (
+            "max_raw_pnc_phi_error", "max_raw_pnc_lam_error",
+        )+PNC_NORM_DIAGNOSTIC_NAMES
     diagnostics = {name: [] for name in diagnostic_names}
 
     def save(step, correction=0.0, interval=None):
@@ -271,11 +276,17 @@ def run_born_huang(args):
     try:
         for step in range(1, n_steps+1):
             attempted = step
+            scheduled_save = frame < len(save_steps) and step == save_steps[frame]
+            collect_pnc_norm_diagnostics = bool(
+                getattr(args, "verbose_diagnostics", False)
+                and (step % args.check_every == 0 or scheduled_save or step == n_steps)
+            )
             if throttle_limit < 100.0 and throttle_chunk_start is None:
                 throttle_chunk_start = time.perf_counter()
             coefficients, lam, chi, correction, step_diag = full_step_bh(
                 coefficients, lam, chi, args.dt_au, model, basis,
                 args.ratio_floor, args.mask_threshold_phi, args.mask_threshold_lam,
+                collect_pnc_norm_diagnostics=collect_pnc_norm_diagnostics,
             )
             interval_correction = cp.maximum(interval_correction, correction)
             for name, value in step_diag.items():
@@ -291,7 +302,7 @@ def run_born_huang(args):
                     time.sleep(delay)
                     throttle_sleep_seconds += delay
                 throttle_chunk_start = None
-            must_save = frame < len(save_steps) and step == save_steps[frame]
+            must_save = scheduled_save
             if step % args.check_every == 0 or must_save or step == n_steps:
                 if not all_finite(coefficients, lam, chi):
                     failure = f"step {step}에서 non-finite C/Lambda/chi 검출"

@@ -195,6 +195,20 @@ NPZ archive, and mark `propagation_status.log` as `interrupted`.  Wait for the
 `부분 저장 완료` message after pressing `Ctrl+C`; pressing it again can abort
 the archive write itself.
 
+Audit conditional-factor norms separately in the PNC-off tail, transition,
+and occupied support without loading the large trajectory into RAM:
+
+```bash
+python -m multi_component_exact_factorization_discrete_gpu.diagnose_factor_norms \
+  results/$(date +%Y%m%d)/expanded_discrete_mcef_bh10_50fs \
+  --tempdir results/factor_norm_tmp
+```
+
+The same command accepts a continuum Born--Huang MCEF run.  Existing archives
+provide post-retraction factor norms; runs produced with the newer verbose
+diagnostics additionally report exact pre-retraction min/max values and the
+number/fraction below `1e-4,1e-2,1e-1` or above `10,100,1e4`.
+
 ## Figures and movies
 
 ```bash

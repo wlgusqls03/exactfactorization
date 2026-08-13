@@ -22,6 +22,31 @@ from .gpu_core import (
 )
 
 
+PNC_NORM_DIAGNOSTIC_NAMES = tuple(
+    name
+    for factor in ("c", "lam")
+    for name in (
+        f"max_pre_pnc_{factor}_norm",
+        f"max_inverse_pre_pnc_{factor}_norm",
+        f"max_pre_pnc_tail_{factor}_norm",
+        f"max_inverse_pre_pnc_tail_{factor}_norm",
+        f"max_pre_pnc_support_{factor}_norm",
+        f"max_inverse_pre_pnc_support_{factor}_norm",
+        *(
+            item
+            for threshold in (
+                "lt_1e_4", "lt_1e_2", "lt_1e_1",
+                "gt_1e1", "gt_1e2", "gt_1e4",
+            )
+            for item in (
+                f"count_pre_pnc_{factor}_norm_{threshold}",
+                f"fraction_pre_pnc_{factor}_norm_{threshold}",
+            )
+        ),
+    )
+)
+
+
 @dataclass
 class GPUBornHuangBasis:
     energies: cp.ndarray
@@ -507,7 +532,43 @@ def coefficient_vector_potential(coefficients, connection, spacing, axis, model)
     return value.real.astype(model.real_dtype, copy=False)
 
 
-def pnc_project_coefficients(coefficients, lam, chi, model):
+def _pnc_norm_statistics(norm, gate, prefix, model):
+    """Diagnostics immediately before a support-aware PNC rescaling."""
+    tiny = cp.asarray(1.0e-300, dtype=model.reduction_real_dtype)
+    inverse = 1.0/cp.maximum(norm, tiny)
+    tail = gate == 0.0
+    support = gate == 1.0
+    statistics = {
+        f"max_pre_pnc_{prefix}_norm": cp.max(norm),
+        f"max_inverse_pre_pnc_{prefix}_norm": cp.max(inverse),
+        f"max_pre_pnc_tail_{prefix}_norm": cp.max(cp.where(tail, norm, 0.0)),
+        f"max_inverse_pre_pnc_tail_{prefix}_norm": cp.max(
+            cp.where(tail, inverse, 0.0)
+        ),
+        f"max_pre_pnc_support_{prefix}_norm": cp.max(
+            cp.where(support, norm, 0.0)
+        ),
+        f"max_inverse_pre_pnc_support_{prefix}_norm": cp.max(
+            cp.where(support, inverse, 0.0)
+        ),
+    }
+    for label, condition in (
+        ("lt_1e_4", norm < 1.0e-4),
+        ("lt_1e_2", norm < 1.0e-2),
+        ("lt_1e_1", norm < 1.0e-1),
+        ("gt_1e1", norm > 1.0e1),
+        ("gt_1e2", norm > 1.0e2),
+        ("gt_1e4", norm > 1.0e4),
+    ):
+        count = cp.count_nonzero(condition)
+        statistics[f"count_pre_pnc_{prefix}_norm_{label}"] = count
+        statistics[f"fraction_pre_pnc_{prefix}_norm_{label}"] = count/norm.size
+    return statistics
+
+
+def pnc_project_coefficients(
+    coefficients, lam, chi, model, *, return_diagnostics=False,
+):
     c_norm2 = cp.sum(
         cp.real(coefficients*cp.conj(coefficients)), axis=0,
         dtype=model.reduction_real_dtype,
@@ -542,7 +603,19 @@ def pnc_project_coefficients(coefficients, lam, chi, model):
     lam_applied_error = cp.max(cp.abs(scale_lam**2-1.0))
     lam = lam/scale_lam[None, :]
     chi = chi*scale_lam
-    return coefficients, lam, chi, cp.maximum(c_applied_error, lam_applied_error)
+    result = (
+        coefficients, lam, chi,
+        cp.maximum(c_applied_error, lam_applied_error),
+    )
+    if not return_diagnostics:
+        return result
+    diagnostics = {
+        "max_raw_pnc_phi_error": c_error,
+        "max_raw_pnc_lam_error": lam_error,
+    }
+    diagnostics.update(_pnc_norm_statistics(c_norm, gate_c, "c", model))
+    diagnostics.update(_pnc_norm_statistics(lam_norm, gate_lam, "lam", model))
+    return result+ (diagnostics,)
 
 
 def instantaneous_functionals_bh(
@@ -977,7 +1050,8 @@ def coupled_rhs_bh(
 
 def full_step_bh(
     coefficients, lam, chi, dt, model, basis, ratio_floor,
-    mask_threshold_phi, mask_threshold_lam,
+    mask_threshold_phi, mask_threshold_lam, *,
+    collect_pnc_norm_diagnostics=False,
 ):
     phase = cp.exp(-0.5j*dt*basis.energies).astype(
         model.complex_dtype, copy=False
@@ -1004,12 +1078,15 @@ def full_step_bh(
     coefficients = coefficients+dt*(k1[0]+2*k2[0]+2*k3[0]+k4[0])/6.0
     lam = lam+dt*(k1[1]+2*k2[1]+2*k3[1]+k4[1])/6.0
     chi = chi+dt*(k1[2]+2*k2[2]+2*k3[2]+k4[2])/6.0
-    coefficients, lam, chi, correction = pnc_project_coefficients(
-        coefficients, lam, chi, model
+    projected = pnc_project_coefficients(
+        coefficients, lam, chi, model,
+        return_diagnostics=collect_pnc_norm_diagnostics,
     )
+    coefficients, lam, chi, correction = projected[:4]
+    pnc_diag1 = projected[4] if collect_pnc_norm_diagnostics else {}
     coefficients = coefficients*phase
     coefficients, lam, chi, correction2 = pnc_project_coefficients(
-        coefficients, lam, chi, model
+        coefficients, lam, chi, model,
     )
     merged = {}
     for key in stages[0]:
@@ -1017,4 +1094,5 @@ def full_step_bh(
         for stage in stages:
             value = cp.maximum(value, stage.get(key, 0.0))
         merged[key] = value
+    merged.update(pnc_diag1)
     return coefficients, lam, chi, cp.maximum(correction, correction2), merged

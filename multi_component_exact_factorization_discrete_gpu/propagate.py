@@ -30,6 +30,7 @@ from multi_component_exact_factorization.core import (
     fixed_center_crossing_probabilities,
 )
 from multi_component_exact_factorization_gpu.gpu_born_huang import (
+    PNC_NORM_DIAGNOSTIC_NAMES,
     to_gpu_basis,
 )
 from multi_component_exact_factorization_gpu.gpu_core import (
@@ -71,7 +72,7 @@ DIAGNOSTIC_NAMES = (
     "rk_product_local_defect_relative",
     "pnc_product_change_l2",
     "rk_product_increment_l2",
-)
+)+PNC_NORM_DIAGNOSTIC_NAMES
 
 
 class _Tee:

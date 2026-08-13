@@ -347,23 +347,10 @@ def discrete_rhs_gpu(
 
 def pnc_retract_gpu(coefficients, lam, chi, model):
     """Apply the existing support-aware, product-preserving PNC retraction."""
-    c_norm2 = cp.sum(
-        cp.real(coefficients*cp.conj(coefficients)), axis=0,
-        dtype=model.reduction_real_dtype,
+    coefficients, lam, chi, correction, diagnostics = pnc_project_coefficients(
+        coefficients, lam, chi, model, return_diagnostics=True,
     )
-    raw_c = cp.max(cp.abs(c_norm2-1.0))
-    lam_norm2 = cp.sum(
-        cp.real(lam*cp.conj(lam)), axis=0,
-        dtype=model.reduction_real_dtype,
-    )*model.dq
-    raw_lam = cp.max(cp.abs(lam_norm2-1.0))
-    coefficients, lam, chi, correction = pnc_project_coefficients(
-        coefficients, lam, chi, model
-    )
-    return coefficients, lam, chi, correction, {
-        "max_raw_pnc_phi_error": raw_c,
-        "max_raw_pnc_lam_error": raw_lam,
-    }
+    return coefficients, lam, chi, correction, diagnostics
 
 
 def _product_tangent(coefficients, lam, chi, derivatives):
@@ -417,9 +404,15 @@ def full_step_discrete_bh(
     pre_pnc_product = None
     if collect_step_diagnostics:
         pre_pnc_product = coefficients*(lam*chi[None, :])[None, :, :]
-    coefficients, lam, chi, correction, diagnostics = pnc_retract_gpu(
-        coefficients, lam, chi, model
-    )
+    if collect_step_diagnostics:
+        coefficients, lam, chi, correction, diagnostics = pnc_retract_gpu(
+            coefficients, lam, chi, model
+        )
+    else:
+        coefficients, lam, chi, correction = pnc_project_coefficients(
+            coefficients, lam, chi, model
+        )
+        diagnostics = {}
     if collect_step_diagnostics:
         final_product = coefficients*(lam*chi[None, :])[None, :, :]
         actual_increment = final_product-initial_product
