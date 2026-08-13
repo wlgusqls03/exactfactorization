@@ -10,13 +10,24 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FFMpegWriter, FuncAnimation, PillowWriter
 import numpy as np
 
+from multi_component_exact_factorization.report_plot_style import (
+    COLORS,
+    HEAVY_DENSITY_COLOR,
+    JOINT_CMAP,
+    LINK_CMAP,
+    MASK_COLOR,
+    SCALAR_CMAP,
+    SIGNED_CMAP,
+    color_y_axis,
+    density_display_alpha,
+    density_weighted_shift,
+    joint_density_limit,
+    masked_cmap,
+)
 from multi_component_exact_factorization.visualize import (
     NUMBER_FORMATTER,
     selected_frames,
 )
-
-
-COLORS = ("#2878B5", "#E07A2D", "#3A9654", "#B05279", "#7B61A8")
 
 
 def _load(path):
@@ -78,6 +89,83 @@ def _unwrap_connection(values, spacing, axis):
     """
     phase = np.asarray(values, float)*float(spacing)
     return np.unwrap(phase, axis=axis)/float(spacing)
+
+
+def _scaled_density_line(axis, coordinate, density):
+    scaled = np.asarray(density, float)/max(
+        float(np.max(density)), 1.0e-300
+    )
+    line, = axis.plot(
+        coordinate, scaled, transform=axis.get_xaxis_transform(),
+        color=HEAVY_DENSITY_COLOR, lw=1.1, alpha=0.42,
+        label=r"$\rho_R$ (scaled)", zorder=0,
+    )
+    return line
+
+
+def _support_tail_lines(
+    axis, coordinate, occupied, full, support, *, color, label,
+    linewidth=1.8,
+):
+    tail = np.where(
+        ~np.asarray(support, bool) & np.isfinite(full), full, np.nan
+    )
+    tail_line, = axis.plot(
+        coordinate, tail, color=color, lw=0.8, ls=":", alpha=0.55,
+    )
+    support_line, = axis.plot(
+        coordinate, occupied, color=color, lw=linewidth, label=label,
+    )
+    return support_line, tail_line
+
+
+def _native_limits(items, joint):
+    """Stream trajectory-wide plotting scales without retaining field copies."""
+    symmetric = {"connection", "alpha"}
+    sources = {
+        "epsilon_1": ("epsilon_1",),
+        "connection": ("a", "b"),
+        "link": ("link_q", "link_R"),
+        "epsilon_2": ("epsilon_2",),
+        "alpha": ("alpha",),
+        "gamma_link": ("gamma_link",),
+    }
+    bounds = {key: [] for key in sources}
+    for item in items:
+        for target, keys in sources.items():
+            for key in keys:
+                finite = np.asarray(item[key])[np.isfinite(item[key])]
+                if not finite.size:
+                    continue
+                if target in symmetric:
+                    bounds[target].append(
+                        float(np.max(np.abs(finite)))
+                    )
+                else:
+                    bounds[target].append(
+                        (float(np.min(finite)), float(np.max(finite)))
+                    )
+
+    limits = {"density": (0.0, joint_density_limit(joint))}
+    for key, values in bounds.items():
+        if not values:
+            limits[key] = (-1.0, 1.0)
+        elif key in symmetric:
+            bound = max(max(values), 1.0e-12)
+            limits[key] = (-bound, bound)
+        else:
+            low = min(value[0] for value in values)
+            high = max(value[1] for value in values)
+            if high <= low:
+                padding = max(abs(low)*1.0e-6, 1.0e-12)
+                low, high = low-padding, high+padding
+            limits[key] = (low, high)
+    limits["a"] = limits["connection"]
+    limits["b"] = limits["connection"]
+    limits["link_q"] = limits["link"]
+    limits["link_R"] = limits["link"]
+    del limits["connection"], limits["link"]
+    return limits
 
 
 def plot_consistency(data, outdir, dpi=180):
@@ -166,34 +254,48 @@ def plot_consistency(data, outdir, dpi=180):
 def _native_frame(data, joint, frame, floor=1.0e-3):
     density = joint[frame]
     heavy = np.sum(density, axis=0)*float(data["q"][1]-data["q"][0])
+    heavy_support = heavy >= floor*max(float(np.max(heavy)), 1.0e-300)
     dq = float(data["q"][1]-data["q"][0])
     dR = float(data["R"][1]-data["R"][0])
+    epsilon_2_full = density_weighted_shift(
+        data["epsilon_2"][frame], heavy, floor
+    )
+    alpha_full = _unwrap_connection(data["alpha"][frame], dR, axis=0)
+    gamma_link_full = np.maximum(
+        0.0, 1.0-data["sgamma_R1_magnitude"][frame]
+    )
+    epsilon_1_full = density_weighted_shift(
+        data["epsilon_1"][frame], density, floor
+    )
+    a_full = _unwrap_connection(data["a"][frame], dq, axis=0)
+    b_full = _unwrap_connection(data["b"][frame], dR, axis=1)
+    link_q_full = np.maximum(
+        0.0, 1.0-data["sphi_q1_magnitude"][frame]
+    )
+    link_R_full = np.maximum(
+        0.0, 1.0-data["sphi_R1_magnitude"][frame]
+    )
     return {
         "density": density,
+        "density_alpha": density_display_alpha(density, floor),
         "heavy": heavy,
-        "epsilon_1": _support(data["epsilon_1"][frame], density, floor, True),
-        "a": _support(
-            _unwrap_connection(data["a"][frame], dq, axis=0),
-            density, floor,
-        ),
-        "b": _support(
-            _unwrap_connection(data["b"][frame], dR, axis=1),
-            density, floor,
-        ),
-        "link_q": _support(np.maximum(
-            0.0, 1.0-data["sphi_q1_magnitude"][frame]
-        ), density, floor),
-        "link_R": _support(np.maximum(
-            0.0, 1.0-data["sphi_R1_magnitude"][frame]
-        ), density, floor),
-        "epsilon_2": _support(data["epsilon_2"][frame], heavy, floor, True),
-        "alpha": _support(
-            _unwrap_connection(data["alpha"][frame], dR, axis=0),
-            heavy, floor,
-        ),
-        "gamma_link": _support(np.maximum(
-            0.0, 1.0-data["sgamma_R1_magnitude"][frame]
-        ), heavy, floor),
+        "heavy_support": heavy_support,
+        "epsilon_1": _support(epsilon_1_full, density, floor),
+        "epsilon_1_full": epsilon_1_full,
+        "a": _support(a_full, density, floor),
+        "a_full": a_full,
+        "b": _support(b_full, density, floor),
+        "b_full": b_full,
+        "link_q": _support(link_q_full, density, floor),
+        "link_q_full": link_q_full,
+        "link_R": _support(link_R_full, density, floor),
+        "link_R_full": link_R_full,
+        "epsilon_2": np.where(heavy_support, epsilon_2_full, np.nan),
+        "alpha": np.where(heavy_support, alpha_full, np.nan),
+        "gamma_link": np.where(heavy_support, gamma_link_full, np.nan),
+        "epsilon_2_full": epsilon_2_full,
+        "alpha_full": alpha_full,
+        "gamma_link_full": gamma_link_full,
     }
 
 
@@ -201,42 +303,70 @@ def plot_native_geometry(data, outdir, dpi=180, frame=-1):
     q, R = np.asarray(data["q"]), np.asarray(data["R"])
     joint = _joint(data)
     item = _native_frame(data, joint, frame)
+    scale_frames = selected_frames(len(joint), min(180, len(joint)))
+    limits = _native_limits(
+        (_native_frame(data, joint, int(index)) for index in scale_frames),
+        joint,
+    )
     extent = [q[0], q[-1], R[0], R[-1]]
     fig, axes = plt.subplots(2, 4, figsize=(19.0, 8.5), constrained_layout=True)
     maps = (
-        (item["density"], "Nuclear joint density", "magma", False),
-        (item["epsilon_1"], r"shifted $\mathcal{E}^{(1)}$", "coolwarm", True),
-        (item["a"], r"unwrapped $\arg S_q^\Phi/\Delta q$", "coolwarm", True),
-        (item["b"], r"unwrapped $\arg S_R^\Phi/\Delta R$", "coolwarm", True),
-        (item["link_q"], r"$1-|S_q^\Phi|$", "cividis", False),
-        (item["link_R"], r"$1-|S_R^\Phi|$", "cividis", False),
+        ("density", "Nuclear joint density", JOINT_CMAP),
+        ("epsilon_1", r"shifted $\mathcal{E}^{(1)}$", SCALAR_CMAP),
+        ("a", r"unwrapped $\arg S_q^\Phi/\Delta q$", SIGNED_CMAP),
+        ("b", r"unwrapped $\arg S_R^\Phi/\Delta R$", SIGNED_CMAP),
+        ("link_q", r"$1-|S_q^\Phi|$", LINK_CMAP),
+        ("link_R", r"$1-|S_R^\Phi|$", LINK_CMAP),
     )
-    for ax, (values, title, cmap, symmetric) in zip(axes.flat[:6], maps):
-        finite = values[np.isfinite(values)]
-        kwargs = {}
-        if symmetric:
-            limit = max(float(np.percentile(np.abs(finite), 99.0)), 1.0e-14)
-            kwargs.update(vmin=-limit, vmax=limit)
-        image = ax.imshow(values.T, origin="lower", aspect="auto", extent=extent,
-                          cmap=cmap, **kwargs)
+    for ax, (key, title, cmap) in zip(axes.flat[:6], maps):
+        values = item[key] if key == "density" else item[f"{key}_full"]
+        alpha = None if key == "density" else item["density_alpha"].T
+        ax.set_facecolor(MASK_COLOR)
+        image = ax.imshow(
+            values.T, origin="lower", aspect="auto", extent=extent,
+            cmap=masked_cmap(cmap),
+            vmin=limits[key][0], vmax=limits[key][1], alpha=alpha,
+        )
         ax.set(xlabel="proton q", ylabel="heavy R")
         ax.set_title(title, loc="left", fontweight="semibold")
         fig.colorbar(image, ax=ax, pad=0.01, format=NUMBER_FORMATTER)
-    axes[1, 2].plot(R, item["epsilon_2"], color=COLORS[0], lw=2, label=r"$\mathcal{E}^{(2)}$")
-    axes[1, 2].plot(R, item["heavy"]/max(np.max(item["heavy"]), 1e-300), color="0.5", label="heavy density (scaled)")
+    epsilon_line, _epsilon_tail = _support_tail_lines(
+        axes[1, 2], R, item["epsilon_2"], item["epsilon_2_full"],
+        item["heavy_support"], color=COLORS[0],
+        label=r"$\mathcal{E}^{(2)}$", linewidth=2.0,
+    )
+    _scaled_density_line(axes[1, 2], R, item["heavy"])
+    axes[1, 2].set_ylim(limits["epsilon_2"])
+    color_y_axis(axes[1, 2], COLORS[0], "shifted energy (Hartree)")
     axes[1, 2].set_title("Outer discrete scalar and support", loc="left", fontweight="semibold")
     axes[1, 2].legend(frameon=False, fontsize=8)
-    axes[1, 3].plot(
-        R, item["alpha"], label=r"unwrapped $\arg S_R^\Gamma/\Delta R$"
+    alpha_line, _alpha_tail = _support_tail_lines(
+        axes[1, 3], R, item["alpha"], item["alpha_full"],
+        item["heavy_support"], color=COLORS[3],
+        label=r"unwrapped $\arg S_R^\Gamma/\Delta R$",
     )
-    axes[1, 3].plot(R, item["gamma_link"], label=r"$1-|S_R^\Gamma|$")
+    axes[1, 3].set_ylim(limits["alpha"])
+    color_y_axis(axes[1, 3], COLORS[3], r"connection ($a_0^{-1}$)")
+    gamma_axis = axes[1, 3].twinx()
+    gamma_line, _gamma_tail = _support_tail_lines(
+        gamma_axis, R, item["gamma_link"], item["gamma_link_full"],
+        item["heavy_support"], color=COLORS[2],
+        label=r"$1-|S_R^\Gamma|$",
+    )
+    gamma_axis.set_ylim(limits["gamma_link"])
+    color_y_axis(gamma_axis, COLORS[2], "link magnitude defect")
     axes[1, 3].set_title("Second-level link geometry", loc="left", fontweight="semibold")
-    axes[1, 3].legend(frameon=False, fontsize=8)
+    axes[1, 3].legend(
+        handles=[alpha_line, gamma_line], frameon=False, fontsize=8,
+    )
     for ax in axes[1, 2:]:
         ax.set_xlabel("heavy R")
+        ax.set_xlim(float(R[0]), float(R[-1]))
         ax.grid(alpha=0.2)
     fig.suptitle(
-        f"7 | Native discrete fields | t={float(data['times_fs'][frame]):.4f} fs; gray = empty support",
+        f"7 | Native discrete fields | t={float(data['times_fs'][frame]):.4f} fs\n"
+        r"2D gray below $10^{-4}\rho_{\max}$, fully colored above $10^{-3}\rho_{\max}$; "
+        "1D solid = occupied, thin dotted = low-density continuation",
         fontsize=14, fontweight="bold",
     )
     path = Path(outdir)/"07_discrete_link_geometry.png"
@@ -261,28 +391,45 @@ def make_native_animation(data, outdir, fps=12, max_frames=180, dpi=110, fmt="mp
     times, q, R = np.asarray(data["times_fs"]), np.asarray(data["q"]), np.asarray(data["R"])
     joint = _joint(data)
     frames = selected_frames(len(times), min(max_frames, len(times)))
-    items = [_native_frame(data, joint, int(frame)) for frame in frames]
+    limits = _native_limits(
+        (_native_frame(data, joint, int(frame)) for frame in frames), joint
+    )
+    first_frame = int(frames[0])
+    first_item = _native_frame(data, joint, first_frame)
     extent = [q[0], q[-1], R[0], R[-1]]
     fig, axes = plt.subplots(2, 3, figsize=(16.0, 8.8), constrained_layout=True)
     specifications = (
-        ("density", "Nuclear joint density", "magma", False),
-        ("epsilon_1", r"shifted $\mathcal{E}^{(1)}$", "coolwarm", True),
-        ("link_q", r"$1-|S_q^\Phi|$", "cividis", False),
-        ("link_R", r"$1-|S_R^\Phi|$", "cividis", False),
+        ("density", "Nuclear joint density", JOINT_CMAP),
+        ("epsilon_1", r"shifted $\mathcal{E}^{(1)}$", SCALAR_CMAP),
+        ("link_q", r"$1-|S_q^\Phi|$", LINK_CMAP),
+        ("link_R", r"$1-|S_R^\Phi|$", LINK_CMAP),
     )
     images = []
-    for ax, (key, title, cmap, symmetric) in zip(axes.flat[:4], specifications):
-        finite = np.concatenate([np.abs(item[key][np.isfinite(item[key])]) for item in items])
-        high = max(float(np.percentile(finite, 99.5)), 1.0e-14)
-        low = -high if symmetric else 0.0
-        image = ax.imshow(items[0][key].T, origin="lower", aspect="auto", extent=extent,
-                          cmap=cmap, vmin=low, vmax=high)
+    for ax, (key, title, cmap) in zip(axes.flat[:4], specifications):
+        values = (
+            first_item[key] if key == "density"
+            else first_item[f"{key}_full"]
+        )
+        alpha = None if key == "density" else first_item["density_alpha"].T
+        ax.set_facecolor(MASK_COLOR)
+        image = ax.imshow(
+            values.T, origin="lower", aspect="auto", extent=extent,
+            cmap=masked_cmap(cmap), vmin=limits[key][0], vmax=limits[key][1],
+            alpha=alpha,
+        )
         ax.set(xlabel="proton q", ylabel="heavy R")
         ax.set_title(title, loc="left", fontweight="semibold")
         fig.colorbar(image, ax=ax, pad=0.01, format=NUMBER_FORMATTER)
         images.append((image, key))
-    eps_line, = axes[1, 1].plot(R, items[0]["epsilon_2"], color=COLORS[0], lw=2)
-    density_line, = axes[1, 1].plot(R, items[0]["heavy"], color="0.5", alpha=0.7)
+    eps_line, eps_tail = _support_tail_lines(
+        axes[1, 1], R, first_item["epsilon_2"],
+        first_item["epsilon_2_full"], first_item["heavy_support"],
+        color=COLORS[0], label=r"$\mathcal{E}^{(2)}$", linewidth=2.0,
+    )
+    density_line = _scaled_density_line(axes[1, 1], R, first_item["heavy"])
+    axes[1, 1].set_ylim(limits["epsilon_2"])
+    axes[1, 1].set_xlim(float(R[0]), float(R[-1]))
+    color_y_axis(axes[1, 1], COLORS[0], "shifted energy (Hartree)")
     axes[1, 1].set_title(r"$\mathcal{E}^{(2)}$ and heavy density", loc="left", fontweight="semibold")
     populations = np.asarray(data["bo_populations"], float)
     populations /= np.maximum(np.sum(populations, axis=1)[:, None], 1.0e-300)
@@ -293,23 +440,35 @@ def make_native_animation(data, outdir, fps=12, max_frames=180, dpi=110, fmt="mp
     axes[1, 2].set(xlabel="time (fs)", ylabel="BO population", ylim=(1e-12, 1.5))
     axes[1, 2].set_title("Electronic-state transfer", loc="left", fontweight="semibold")
     axes[1, 2].legend(frameon=False, fontsize=7, ncol=2)
-    title = fig.suptitle("Native discrete MCEF geometry")
+    title = fig.suptitle(
+        "Native discrete MCEF geometry\n"
+        r"2D gray below $10^{-4}\rho_{\max}$; full color above $10^{-3}\rho_{\max}$"
+    )
 
     def update(number):
         frame = int(frames[number])
-        item = items[number]
+        item = _native_frame(data, joint, frame)
         for image, key in images:
-            image.set_data(item[key].T)
+            values = item[key] if key == "density" else item[f"{key}_full"]
+            image.set_data(values.T)
+            if key != "density":
+                image.set_alpha(item["density_alpha"].T)
         eps_line.set_ydata(item["epsilon_2"])
-        density_line.set_ydata(item["heavy"])
+        eps_tail.set_ydata(np.where(
+            ~item["heavy_support"], item["epsilon_2_full"], np.nan
+        ))
+        density_line.set_ydata(
+            item["heavy"]/max(float(np.max(item["heavy"])), 1.0e-300)
+        )
         marker.set_xdata([times[frame], times[frame]])
         residual = _diagnostic(data, "relative_unexplained_residual")[frame]
         temporal = _diagnostic(data, "rk_product_local_defect_relative")[frame]
         title.set_text(
             f"Native discrete MCEF | t={times[frame]:.4f} fs | "
-            f"spatial={residual:.1e}, temporal={temporal:.1e}"
+            f"spatial={residual:.1e}, temporal={temporal:.1e}\n"
+            r"2D gray below $10^{-4}\rho_{\max}$; full color above $10^{-3}\rho_{\max}$"
         )
-        return *(item[0] for item in images), eps_line, density_line, marker, title
+        return *(entry[0] for entry in images), eps_line, eps_tail, density_line, marker, title
 
     animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
     _save_animation(animation, fig, outdir, fps, dpi, fmt)

@@ -5,6 +5,10 @@ import unittest
 import numpy as np
 
 from multi_component_exact_factorization import born_huang_report
+from multi_component_exact_factorization.report_plot_style import (
+    density_display_alpha,
+    density_weighted_shift,
+)
 
 
 class BornHuangReportTests(unittest.TestCase):
@@ -60,6 +64,38 @@ class BornHuangReportTests(unittest.TestCase):
             np.sum(obs["normalized_state_populations"], axis=1), 1.0
         ))
         self.assertEqual(obs["mean_bo_energies"].shape, (3, 3))
+
+    def test_plotting_support_does_not_change_saved_field_values(self):
+        values = np.array([9.0, 2.0, -1.0, 7.0])
+        original = values.copy()
+        density = np.array([1.0e-8, 0.4, 0.6, 1.0e-8])
+        shifted = density_weighted_shift(values, density, floor=1.0e-3)
+        support = density >= 1.0e-3*np.max(density)
+        self.assertTrue(np.array_equal(values, original))
+        self.assertAlmostEqual(
+            float(np.sum(density[support]*shifted[support])), 0.0, places=14
+        )
+        opacity = density_display_alpha(density, floor=1.0e-3)
+        self.assertTrue(np.all((opacity >= 0.0) & (opacity <= 1.0)))
+        self.assertEqual(float(opacity[0]), 0.0)
+        self.assertEqual(float(opacity[1]), 1.0)
+
+    def test_connections_share_one_plot_scale(self):
+        data = self.synthetic_data()
+        obs = born_huang_report.calculate_observables(data)
+        diagnostics = born_huang_report._diagnostics(data)
+        fields = [
+            born_huang_report._potential_frame_fields(
+                data, obs, diagnostics, frame
+            )
+            for frame in range(len(obs["times_fs"]))
+        ]
+        limits = born_huang_report._potential_limits(fields)
+        self.assertEqual(limits["a"], limits["b"])
+        self.assertTrue(np.allclose(
+            fields[-1]["eps2"][fields[-1]["heavy_support"]],
+            fields[-1]["eps2_full"][fields[-1]["heavy_support"]],
+        ))
 
     def test_static_report_does_not_require_coefficients_or_basis_states(self):
         data = self.synthetic_data()

@@ -20,10 +20,28 @@ from matplotlib.colors import LogNorm, SymLogNorm
 import numpy as np
 
 from .potential_analysis import gauge_invariant_diagnostics
-from .visualize import NUMBER_FORMATTER, selected_frames
-
-
-COLORS = ("#2878B5", "#E07A2D", "#3A9654", "#B05279", "#7B61A8", "#8C6D31")
+from .report_plot_style import (
+    COLORS,
+    CURRENT_COLOR,
+    FORCE_COLOR,
+    HEAVY_DENSITY_COLOR,
+    JOINT_CMAP,
+    MASK_COLOR,
+    PARTICLE_COLORS,
+    SCALAR_CMAP,
+    SIGNED_CMAP,
+    add_fixed_center_markers,
+    color_y_axis,
+    density_display_alpha,
+    density_weighted_shift,
+    joint_density_limit,
+    masked_cmap,
+)
+from .visualize import (
+    NUMBER_FORMATTER,
+    archive_arguments,
+    selected_frames,
+)
 
 
 class _ArchiveView(dict):
@@ -388,73 +406,226 @@ def _potential_frame_fields(data, obs, diagnostics, frame, floor=1.0e-3):
     """Grid-report-equivalent occupied-support exact-potential fields."""
     density = obs["nuclear_joint_density"][frame]
     heavy = obs["heavy_density"][frame]
-    joint_peak = np.unravel_index(int(np.argmax(density)), density.shape)
-    heavy_peak = int(np.argmax(heavy))
     eps1_raw = np.asarray(data["epsilon_1"])[frame]
     eps2_raw = np.asarray(data["epsilon_2"])[frame]
+    eps1_full = density_weighted_shift(eps1_raw, density, floor)
+    heavy_cutoff = floor*max(float(np.max(heavy)), 1.0e-300)
+    heavy_support = heavy >= heavy_cutoff
+    eps2_full = density_weighted_shift(eps2_raw, heavy, floor)
+    alpha_full = np.asarray(data["alpha"])[frame]
+    phase_R_full = diagnostics["phase_gradient_R_chi"][frame]
+    momentum_R_full = diagnostics["momentum_R_outer"][frame]
+    current_R_full = diagnostics["heavy_current"][frame]
+    force_R_full = diagnostics["force_R"][frame]
     return dict(
         density=density,
+        density_alpha=density_display_alpha(density, floor),
         heavy=heavy,
-        eps1=_support_field(eps1_raw-eps1_raw[joint_peak], density, floor),
+        heavy_support=heavy_support,
+        eps1=_support_field(eps1_full, density, floor),
+        eps1_full=eps1_full,
         a=_support_field(np.asarray(data["a"])[frame], density, floor),
+        a_full=np.asarray(data["a"])[frame],
         b=_support_field(np.asarray(data["b"])[frame], density, floor),
-        eps2=_support_field(eps2_raw-eps2_raw[heavy_peak], heavy, floor),
-        alpha=_support_field(np.asarray(data["alpha"])[frame], heavy, floor),
-        phase_R=_support_field(diagnostics["phase_gradient_R_chi"][frame], heavy, floor),
-        momentum_R=_support_field(diagnostics["momentum_R_outer"][frame], heavy, floor),
-        current_R=_support_field(diagnostics["heavy_current"][frame], heavy, floor),
-        force_R=_support_field(diagnostics["force_R"][frame], heavy, floor),
+        b_full=np.asarray(data["b"])[frame],
+        eps2=np.where(heavy_support, eps2_full, np.nan),
+        alpha=np.where(heavy_support, alpha_full, np.nan),
+        phase_R=np.where(heavy_support, phase_R_full, np.nan),
+        momentum_R=np.where(heavy_support, momentum_R_full, np.nan),
+        current_R=np.where(heavy_support, current_R_full, np.nan),
+        force_R=np.where(heavy_support, force_R_full, np.nan),
+        eps2_full=eps2_full,
+        alpha_full=alpha_full,
+        phase_R_full=phase_R_full,
+        momentum_R_full=momentum_R_full,
+        current_R_full=current_R_full,
+        force_R_full=force_R_full,
     )
+
+
+def _potential_limits(fields):
+    """Trajectory-wide scales shared by the static and animated dashboards."""
+    specifications = {
+        "eps1": False,
+        "connection": True,
+        "eps2": False,
+        "momentum_R": True,
+        "current_R": True,
+        "force_R": True,
+    }
+    bounds = {key: [] for key in specifications}
+
+    def record(key, values):
+        finite = np.asarray(values)[np.isfinite(values)]
+        if not finite.size:
+            return
+        if specifications[key]:
+            bounds[key].append(float(np.max(np.abs(finite))))
+        else:
+            bounds[key].append((float(np.min(finite)), float(np.max(finite))))
+
+    # Only percentile scalars survive each iteration.  This is intentionally
+    # streaming: a 50 fs q-R field can be several GiB if copied per frame.
+    for item in fields:
+        record("eps1", item["eps1"])
+        record("connection", item["a"])
+        record("connection", item["b"])
+        record("eps2", item["eps2"])
+        for key in ("alpha", "phase_R", "momentum_R"):
+            record("momentum_R", item[key])
+        record("current_R", item["current_R"])
+        record("force_R", item["force_R"])
+
+    result = {}
+    for key, symmetric in specifications.items():
+        values = bounds[key]
+        if not values:
+            result[key] = (-1.0, 1.0)
+        elif symmetric:
+            bound = max(max(values), 1.0e-12)
+            result[key] = (-bound, bound)
+        else:
+            low = min(value[0] for value in values)
+            high = max(value[1] for value in values)
+            if high <= low:
+                padding = max(abs(low)*1.0e-6, 1.0e-12)
+                low, high = low-padding, high+padding
+            result[key] = (low, high)
+    # a and b are components of one electronic connection and therefore use
+    # exactly the same symmetric color scale.
+    result["a"] = result["connection"]
+    result["b"] = result["connection"]
+    del result["connection"]
+    return result
+
+
+def _scaled_density_line(axis, coordinate, density):
+    """Overlay occupied support in axes-height units without changing y limits."""
+    scaled = np.asarray(density, float)/max(
+        float(np.max(density)), 1.0e-300
+    )
+    line, = axis.plot(
+        coordinate, scaled, transform=axis.get_xaxis_transform(),
+        color=HEAVY_DENSITY_COLOR, lw=1.1, alpha=0.42,
+        label=r"$\rho_R$ (scaled)", zorder=0,
+    )
+    return line
+
+
+def _support_tail_lines(
+    axis, coordinate, occupied, full, support, *, color, label,
+    linewidth=1.8, linestyle="-", zorder=2,
+):
+    """Draw trusted support solid and low-density continuation thin/dotted."""
+    full = np.asarray(full, float)
+    support = np.asarray(support, bool)
+    tail = np.where(~support & np.isfinite(full), full, np.nan)
+    tail_line, = axis.plot(
+        coordinate, tail, color=color, lw=0.8, ls=":", alpha=0.55,
+        zorder=max(zorder-1, 0),
+    )
+    support_line, = axis.plot(
+        coordinate, occupied, color=color, lw=linewidth, ls=linestyle,
+        label=label, zorder=zorder,
+    )
+    return support_line, tail_line
 
 
 def plot_exact_potentials(data, obs, diagnostics, outdir, dpi, frame=-1):
     """Same six-panel scalar/connection/transport story as the grid report."""
     q, R, times = obs["q"], obs["R"], obs["times_fs"]
     item = _potential_frame_fields(data, obs, diagnostics, frame)
+    scale_frames = selected_frames(len(times), min(180, len(times)))
+    limits = _potential_limits(
+        _potential_frame_fields(data, obs, diagnostics, int(index))
+        for index in scale_frames
+    )
     fields = (
-        (item["eps1"], r"Electron level: $\epsilon^{(1)}$", "viridis", False),
-        (item["a"], r"Electron connection $a$ along $q$", "coolwarm", True),
-        (item["b"], r"Electron connection $b$ along $R$", "coolwarm", True),
+        (item["eps1_full"], "eps1", r"Electron level: $\epsilon^{(1)}$", SCALAR_CMAP),
+        (item["a_full"], "a", r"Electron connection $a$ along $q$", SIGNED_CMAP),
+        (item["b_full"], "b", r"Electron connection $b$ along $R$", SIGNED_CMAP),
     )
     fig, axes = plt.subplots(2, 3, figsize=(15.5, 8.4), constrained_layout=True)
-    extent = [R[0], R[-1], q[0], q[-1]]
-    for ax, (values, title, cmap, symmetric) in zip(axes[0], fields):
-        finite = values[np.isfinite(values)]
-        kwargs = {}
-        if symmetric:
-            bound = max(float(np.percentile(np.abs(finite), 99.0)), 1.0e-14)
-            kwargs.update(vmin=-bound, vmax=bound)
-        image = ax.imshow(values, origin="lower", aspect="auto", extent=extent,
-                          cmap=cmap, **kwargs)
-        ax.contour(R, q, item["density"], levels=[1.0e-3*np.max(item["density"])],
+    extent = [q[0], q[-1], R[0], R[-1]]
+    for ax, (values, key, title, cmap) in zip(axes[0], fields):
+        ax.set_facecolor(MASK_COLOR)
+        image = ax.imshow(
+            values.T, origin="lower", aspect="auto", extent=extent,
+            cmap=masked_cmap(cmap),
+            vmin=limits[key][0], vmax=limits[key][1],
+            alpha=item["density_alpha"].T,
+        )
+        ax.contour(q, R, item["density"].T,
+                   levels=[1.0e-3*np.max(item["density"])],
                    colors="white", linewidths=1.0)
         ax.set_title(title, loc="left", fontweight="semibold")
-        ax.set_xlabel(r"heavy $R$ ($a_0$)")
-        ax.set_ylabel(r"proton $q$ ($a_0$)")
+        ax.set_xlabel(r"proton $q$ ($a_0$)")
+        ax.set_ylabel(r"heavy $R$ ($a_0$)")
         fig.colorbar(image, ax=ax, pad=0.012, format=NUMBER_FORMATTER)
-    axes[1, 0].plot(R, item["eps2"], color=COLORS[0], lw=2)
-    axes[1, 0].fill_between(
-        R, 0.0, item["heavy"]/max(float(np.max(item["heavy"])), 1e-300),
-        color="0.45", alpha=0.15,
+
+    epsilon_line, _epsilon_tail = _support_tail_lines(
+        axes[1, 0], R, item["eps2"], item["eps2_full"],
+        item["heavy_support"], color=COLORS[0],
+        label=r"$\epsilon^{(2)}$", linewidth=2.0,
     )
+    _scaled_density_line(axes[1, 0], R, item["heavy"])
+    axes[1, 0].set_ylim(limits["eps2"])
+    color_y_axis(axes[1, 0], COLORS[0], "shifted energy (Hartree)")
     axes[1, 0].set_title(r"Proton-heavy level: $\epsilon^{(2)}$", loc="left", fontweight="semibold")
-    axes[1, 1].plot(R, item["alpha"], label=r"$\alpha$")
-    axes[1, 1].plot(R, item["phase_R"], ls="--", label=r"$\partial_RS_\chi$")
-    axes[1, 1].plot(R, item["momentum_R"], color="black", lw=2, label=r"$K_R^{(\chi)}$")
+    axes[1, 0].legend(frameon=False, fontsize=8)
+
+    alpha_line, _alpha_tail = _support_tail_lines(
+        axes[1, 1], R, item["alpha"], item["alpha_full"],
+        item["heavy_support"], color=COLORS[3], label=r"$\alpha$",
+    )
+    phase_line, _phase_tail = _support_tail_lines(
+        axes[1, 1], R, item["phase_R"], item["phase_R_full"],
+        item["heavy_support"], color=COLORS[1],
+        label=r"$\partial_RS_\chi$", linewidth=1.6, linestyle="--",
+    )
+    momentum_line, _momentum_tail = _support_tail_lines(
+        axes[1, 1], R, item["momentum_R"], item["momentum_R_full"],
+        item["heavy_support"], color="black", label=r"$K_R^{(\chi)}$",
+        linewidth=2.0,
+    )
+    _scaled_density_line(axes[1, 1], R, item["heavy"])
+    axes[1, 1].set_ylim(limits["momentum_R"])
+    axes[1, 1].set_ylabel(r"momentum ($a_0^{-1}$)")
     axes[1, 1].set_title(r"Heavy momentum: $K_R^{(\chi)}=\partial_RS_\chi+\alpha$", loc="left", fontweight="semibold")
     axes[1, 1].legend(frameon=False, fontsize=8)
-    axes[1, 2].plot(R, item["current_R"], color=COLORS[0], lw=2, label=r"$j_R^{(\chi)}$")
+
+    current_line, _current_tail = _support_tail_lines(
+        axes[1, 2], R, item["current_R"], item["current_R_full"],
+        item["heavy_support"], color=CURRENT_COLOR,
+        label=r"$j_R^{(\chi)}$", linewidth=2.0,
+    )
+    _scaled_density_line(axes[1, 2], R, item["heavy"])
+    axes[1, 2].set_ylim(limits["current_R"])
+    color_y_axis(axes[1, 2], CURRENT_COLOR, "heavy probability current")
     force_axis = axes[1, 2].twinx()
-    force_axis.plot(R, item["force_R"], color=COLORS[3], lw=1.8, label=r"$F_R^{GI}$")
+    force_line, _force_tail = _support_tail_lines(
+        force_axis, R, item["force_R"], item["force_R_full"],
+        item["heavy_support"], color=FORCE_COLOR,
+        label=r"$F_R^{GI}$", linewidth=1.8,
+    )
+    force_axis.set_ylim(limits["force_R"])
+    color_y_axis(force_axis, FORCE_COLOR, r"heavy drive (Hartree/$a_0$)")
     axes[1, 2].set_title(r"Heavy transport $j_R^{(\chi)}$ and drive $F_R^{GI}$", loc="left", fontweight="semibold")
-    axes[1, 2].legend(frameon=False, fontsize=8, loc="upper left")
-    force_axis.legend(frameon=False, fontsize=8, loc="upper right")
+    axes[1, 2].legend(
+        handles=[current_line, force_line], frameon=False, fontsize=8,
+        loc="upper left",
+    )
     for ax in axes[1]:
         ax.set_xlabel(r"heavy $R$ ($a_0$)")
+        # The occupied packet moves during the movie.  A fixed full-grid
+        # window prevents late-time fields from leaving the visible x range.
+        ax.set_xlim(float(R[0]), float(R[-1]))
         ax.grid(alpha=0.18)
     fig.suptitle(
-        f"3 | Exact potentials, momentum, transport and force | t={times[frame]:.3f} fs; gray = unoccupied support",
-        fontsize=14, fontweight="bold",
+        f"3 | Exact potentials, momentum, transport and force | t={times[frame]:.3f} fs\n"
+        r"2D gray $\leq10^{-4}\rho_{\max}$, full color $\geq10^{-3}\rho_{\max}$; "
+        "1D solid=occupied, dotted=tail; scalar offset only",
+        fontsize=12.8, fontweight="bold",
     )
     path = outdir/"03_exact_potentials.png"
     fig.savefig(path, dpi=dpi)
@@ -515,95 +686,192 @@ def _save_animation(animation, fig, outdir, stem, fps, dpi, fmt):
 def make_overview_animation(data, obs, diagnostics, outdir, fps, max_frames, dpi, fmt):
     """Grid-report-equivalent dynamics, momentum, transport and drive."""
     times, q, R = obs["times_fs"], obs["q"], obs["R"]
-    populations = obs["normalized_state_populations"]
     frames = selected_frames(len(times), min(max_frames, len(times)))
     first = int(frames[0])
-    fig, axes = plt.subplots(2, 3, figsize=(16.2, 8.6), constrained_layout=True)
-    population_ax, joint_ax, marginal_ax = axes[0]
-    vmax = max(float(np.max(obs["nuclear_joint_density"][frame])) for frame in frames)
-    joint_image = joint_ax.imshow(
-        obs["nuclear_joint_density"][first].T, origin="lower", aspect="auto",
-        extent=[q[0], q[-1], R[0], R[-1]], cmap="magma", vmin=0.0, vmax=vmax,
-    )
-    peak = np.unravel_index(
-        int(np.argmax(obs["nuclear_joint_density"][first])),
-        obs["nuclear_joint_density"][first].shape,
-    )
-    peak_marker, = joint_ax.plot(q[peak[0]], R[peak[1]], "wo", ms=4)
-    joint_ax.set_xlabel("proton q")
-    joint_ax.set_ylabel("heavy R")
-    joint_ax.set_title("Nuclear joint density", loc="left", fontweight="semibold")
-    fig.colorbar(joint_image, ax=joint_ax, pad=0.012, format=NUMBER_FORMATTER)
+    fig = plt.figure(figsize=(16.2, 8.6), constrained_layout=True)
+    grid_spec = fig.add_gridspec(2, 3, height_ratios=(0.78, 1.22))
+    marginal_ax = fig.add_subplot(grid_spec[0, :])
+    field_axes = [fig.add_subplot(grid_spec[1, column]) for column in range(3)]
 
-    q_line, = marginal_ax.plot(q, obs["proton_density"][first], color=COLORS[0], label="q")
-    R_line, = marginal_ax.plot(R, obs["heavy_density"][first], color=COLORS[2], label="R")
-    marginal_ax.set_xlim(min(q[0], R[0]), max(q[-1], R[-1]))
-    marginal_ax.set_ylim(0.0, 1.08*max(np.max(obs["proton_density"]), np.max(obs["heavy_density"])))
-    marginal_ax.set_xlabel("position (a.u.)")
-    marginal_ax.set_ylabel("probability density")
-    marginal_ax.set_title("Nuclear marginals", loc="left", fontweight="semibold")
-    marginal_ax.legend(frameon=False)
-
-    electron_line = None
+    # A single common position panel makes electron/proton/heavy motion
+    # directly comparable.  The stored, normalized probability densities are
+    # plotted without peak rescaling or smoothing.
+    marginal_specs = []
     if obs["electron_density"] is not None:
-        electron = obs["electron_density"]
-        population_ax.plot(obs["x"], electron[0], color="0.65", ls="--", label="initial")
-        electron_line, = population_ax.plot(obs["x"], electron[first], color=COLORS[0], lw=2.0, label="current")
-        population_ax.set(xlabel=r"electron $x$ ($a_0$)", ylabel="probability density")
-        population_ax.set_ylim(0.0, 1.08*np.max(electron))
-        population_ax.set_title("Electron marginal", loc="left", fontweight="semibold")
-        population_ax.legend(frameon=False)
-        time_marker = None
-    else:
-        for state in range(populations.shape[1]):
-            population_ax.plot(times, populations[:, state], color=COLORS[state % len(COLORS)],
-                               lw=1.7, label=rf"$P_{state}$")
-        time_marker = population_ax.axvline(times[first], color="black", lw=1.2)
-        population_ax.set(xlabel="time (fs)", ylabel="population", ylim=(-0.02, 1.02))
-        population_ax.set_title("Electronic BO-state composition", loc="left", fontweight="semibold")
-        population_ax.legend(frameon=False, fontsize=7, ncol=3)
+        marginal_specs.append((
+            np.asarray(obs["x"]), np.asarray(obs["electron_density"]),
+            "electron", PARTICLE_COLORS["electron"],
+            obs["electron_mean"], obs["electron_width"], "x",
+        ))
+    marginal_specs.extend((
+        (q, np.asarray(obs["proton_density"]), "proton",
+         PARTICLE_COLORS["proton"], obs["proton_mean"],
+         obs["proton_width"], "q"),
+        (R, np.asarray(obs["heavy_density"]), "heavy nucleus",
+         PARTICLE_COLORS["heavy"], obs["heavy_mean"],
+         obs["heavy_width"], "R"),
+    ))
+    marginal_lines = []
+    for coordinate, density, name, color, _mean, _width, _symbol in marginal_specs:
+        marginal_ax.plot(
+            coordinate, density[0], color=color, lw=1.2, ls="--", alpha=0.38,
+        )
+        line, = marginal_ax.plot(
+            coordinate, density[first], color=color, lw=2.2, label=name,
+        )
+        marginal_lines.append(line)
+    coordinates = [spec[0] for spec in marginal_specs]
+    position_min = min(float(values[0]) for values in coordinates)
+    position_max = max(float(values[-1]) for values in coordinates)
+    options = archive_arguments(
+        data if hasattr(data, "files") else _ArchiveView(data)
+    )
+    if "x_min" in options:
+        position_min = min(position_min, float(options["x_min"]))
+    if "x_max" in options:
+        position_max = max(position_max, float(options["x_max"]))
+    add_fixed_center_markers(marginal_ax, options)
+    density_maximum = max(
+        float(np.nanmax(density))
+        for _coordinate, density, *_rest in marginal_specs
+    )
+    marginal_ax.set(
+        xlim=(position_min, position_max),
+        ylim=(0.0, 1.05*max(density_maximum, 1.0e-300)),
+        xlabel=r"common position coordinate ($a_0$)",
+        ylabel=r"probability density ($a_0^{-1}$)",
+    )
+    marginal_ax.set_title(
+        "Electron, proton and heavy-nucleus marginals on one position axis",
+        loc="left", fontweight="semibold",
+    )
+    marginal_ax.grid(alpha=0.18, linewidth=0.7)
+    marginal_ax.legend(frameon=False, ncol=4, fontsize=8, loc="upper left")
+    marginal_ax.text(
+        0.995, 0.96,
+        "solid = current; faint dashed = initial; stored density values",
+        transform=marginal_ax.transAxes, ha="right", va="top", fontsize=7.8,
+        color="0.25", bbox=dict(fc="white", ec="0.85", alpha=0.84, pad=3),
+    )
+    marginal_summary = marginal_ax.text(
+        0.995, 0.04, "", transform=marginal_ax.transAxes,
+        ha="right", va="bottom", fontsize=8.0, color="0.18",
+        bbox=dict(fc="white", ec="0.85", alpha=0.84, pad=3),
+    )
+
+    def update_summary(frame):
+        entries = [
+            rf"$\langle {symbol}\rangle={mean[frame]:.3f}$, "
+            rf"$\sigma_{symbol}={width[frame]:.3f}$"
+            for _coordinate, _density, _name, _color, mean, width, symbol
+            in marginal_specs
+        ]
+        marginal_summary.set_text("   |   ".join(entries)+r"  ($a_0$)")
+
+    update_summary(first)
 
     sampled = [int(frame) for frame in frames]
     field_specs = (
-        ("momentum_q", r"Mechanical proton momentum $K_q$", "momentum"),
-        ("proton_current", r"Probability transport $j_q$", "current"),
-        ("force_q", r"Gauge-invariant drive $E_q$", "force"),
+        (
+            "momentum_q", r"Mechanical proton momentum $K_q$",
+            r"momentum ($a_0^{-1}$)", "linear",
+        ),
+        (
+            "proton_current", r"Probability transport $j_q$",
+            "proton probability current", "linear",
+        ),
+        (
+            "force_q", r"Gauge-invariant drive $E_q$",
+            r"drive (Hartree/$a_0$)", "symlog",
+        ),
     )
     field_images = []
-    extent = [R[0], R[-1], q[0], q[-1]]
-    for ax, (key, label, _unit) in zip(axes[1], field_specs):
-        arrays = [_support_field(diagnostics[key][frame], obs["nuclear_joint_density"][frame]) for frame in sampled]
-        finite = np.concatenate([np.abs(value[np.isfinite(value)]) for value in arrays])
-        bound = max(float(np.percentile(finite, 99.0)), 1.0e-14)
-        image = ax.imshow(arrays[0], origin="lower", aspect="auto", extent=extent,
-                          cmap="coolwarm", vmin=-bound, vmax=bound)
+    extent = [q[0], q[-1], R[0], R[-1]]
+    for ax, (key, label, unit, scale) in zip(field_axes, field_specs):
+        # Scan occupied-support percentiles without retaining q-R copies for
+        # every movie frame.  Rendering below always uses the unmodified raw
+        # diagnostic; density only controls its display opacity.
+        frame_maxima = []
+        frame_typical = []
+        for frame in sampled:
+            occupied = _support_field(
+                np.asarray(diagnostics[key][frame], float),
+                obs["nuclear_joint_density"][frame],
+            )
+            finite = np.abs(occupied[np.isfinite(occupied)])
+            if finite.size:
+                frame_maxima.append(float(np.max(finite)))
+                frame_typical.append(float(np.percentile(finite, 80.0)))
+        maximum = max(frame_maxima+[1.0e-12])
+        if scale == "symlog":
+            typical = max(frame_typical+[1.0e-12])
+            linear_threshold = min(max(0.2*typical, 1.0e-12), maximum)
+            norm = SymLogNorm(
+                linthresh=linear_threshold, linscale=0.8,
+                vmin=-maximum, vmax=maximum, base=10,
+            )
+            image_kwargs = {"norm": norm}
+            scale_note = (
+                rf"symlog: linear $|E|\leq{linear_threshold:.1e}$; "
+                rf"max $={maximum:.1e}$"
+            )
+        else:
+            low, high = -maximum, maximum
+            image_kwargs = {"vmin": low, "vmax": high}
+            scale_note = rf"trajectory scale $\pm{high:.1e}$"
+        ax.set_facecolor(MASK_COLOR)
+        initial_raw = np.asarray(diagnostics[key][first], float)
+        initial_opacity = density_display_alpha(
+            obs["nuclear_joint_density"][first]
+        )
+        image = ax.imshow(
+            initial_raw.T, origin="lower", aspect="auto", extent=extent,
+            cmap=masked_cmap(SIGNED_CMAP), alpha=initial_opacity.T,
+            **image_kwargs,
+        )
         ax.set_title(label, loc="left", fontweight="semibold")
-        ax.set_xlabel(r"heavy $R$ ($a_0$)")
-        ax.set_ylabel(r"proton $q$ ($a_0$)")
-        fig.colorbar(image, ax=ax, pad=0.01, format=NUMBER_FORMATTER)
-        field_images.append((image, arrays))
-    title = fig.suptitle(f"Born--Huang dynamics overview | t={times[first]:.4f} fs")
+        ax.set_xlabel(r"proton $q$ ($a_0$)")
+        ax.set_ylabel(r"heavy $R$ ($a_0$)")
+        ax.text(
+            0.985, 0.025, scale_note, transform=ax.transAxes,
+            ha="right", va="bottom", fontsize=7.2, color="0.18",
+            bbox=dict(fc="white", ec="none", alpha=0.78, pad=2),
+        )
+        fig.colorbar(
+            image, ax=ax, pad=0.01, format=NUMBER_FORMATTER, label=unit,
+        )
+        field_images.append((image, key))
+    title = fig.suptitle(
+        f"Born--Huang dynamics overview | t={times[first]:.4f} fs\n"
+        r"gray below $10^{-4}\rho_{\max}$, full color above $10^{-3}\rho_{\max}$; "
+        "white: signed field near zero; "
+        "all color scales fixed over the trajectory"
+    )
 
     def update(number):
         frame = int(frames[number])
-        density = obs["nuclear_joint_density"][frame]
-        joint_image.set_data(density.T)
-        peak = np.unravel_index(int(np.argmax(density)), density.shape)
-        peak_marker.set_data([q[peak[0]]], [R[peak[1]]])
-        q_line.set_ydata(obs["proton_density"][frame])
-        R_line.set_ydata(obs["heavy_density"][frame])
-        if time_marker is not None:
-            time_marker.set_xdata([times[frame], times[frame]])
-        if electron_line is not None:
-            electron_line.set_ydata(obs["electron_density"][frame])
-        for image, arrays in field_images:
-            image.set_data(arrays[number])
+        for line, (_coordinate, density, *_rest) in zip(
+            marginal_lines, marginal_specs
+        ):
+            line.set_ydata(density[frame])
+        update_summary(frame)
+        frame_opacity = density_display_alpha(
+            obs["nuclear_joint_density"][frame]
+        )
+        for image, key in field_images:
+            image.set_data(np.asarray(diagnostics[key][frame], float).T)
+            image.set_alpha(frame_opacity.T)
         title.set_text(
             f"Born--Huang dynamics overview | t={times[frame]:.4f} fs | "
-            f"norm-1={obs['norm'][frame]-1:+.2e}"
+            f"norm-1={obs['norm'][frame]-1:+.2e}\n"
+            r"gray below $10^{-4}\rho_{\max}$, full color above $10^{-3}\rho_{\max}$; "
+            "white: signed field near zero; "
+            "all color scales fixed over the trajectory"
         )
-        dynamic = [artist for artist in (time_marker, electron_line) if artist is not None]
-        return joint_image, peak_marker, q_line, R_line, *dynamic, *[item[0] for item in field_images], title
+        return (
+            *marginal_lines, marginal_summary,
+            *[item[0] for item in field_images], title,
+        )
 
     animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
     return _save_animation(
@@ -635,29 +903,33 @@ def make_potential_animation(data, obs, outdir, fps, max_frames, dpi, fmt):
     frames = selected_frames(len(times), min(max_frames, len(times)))
     diagnostics = _diagnostics(data)
     sampled = [int(frame) for frame in frames]
-    fields = [_potential_frame_fields(data, obs, diagnostics, frame) for frame in sampled]
+    plot_limits = _potential_limits(
+        _potential_frame_fields(data, obs, diagnostics, frame)
+        for frame in sampled
+    )
     first = sampled[0]
-
-    def limits(key, symmetric=False):
-        finite = np.concatenate([
-            np.asarray(item[key])[np.isfinite(item[key])] for item in fields
-        ])
-        if symmetric:
-            bound = max(float(np.percentile(np.abs(finite), 99.0)), 1e-14)
-            return -bound, bound
-        return tuple(np.percentile(finite, [1.0, 99.0]))
+    first_item = _potential_frame_fields(data, obs, diagnostics, first)
 
     fig, axes = plt.subplots(2, 3, figsize=(15.5, 8.4), constrained_layout=True)
     map_axes = axes[0]
-    arrays = (fields[0]["eps1"], fields[0]["a"], fields[0]["b"])
+    arrays = (
+        first_item["eps1_full"], first_item["a_full"], first_item["b_full"],
+    )
     names = (r"shifted $\epsilon_1(q,R)$", r"$a(q,R)$", r"$b(q,R)$")
-    map_limits = (limits("eps1"), limits("a", True), limits("b", True))
+    map_limits = (
+        plot_limits["eps1"], plot_limits["a"], plot_limits["b"],
+    )
     images = []
     for ax, array, name, bound in zip(map_axes, arrays, names, map_limits):
+        ax.set_facecolor(MASK_COLOR)
         image = ax.imshow(
             array.T, origin="lower", aspect="auto",
-            extent=[q[0], q[-1], R[0], R[-1]], cmap="coolwarm",
+            extent=[q[0], q[-1], R[0], R[-1]],
+            cmap=masked_cmap(
+                SCALAR_CMAP if "epsilon" in name else SIGNED_CMAP
+            ),
             vmin=bound[0], vmax=bound[1],
+            alpha=first_item["density_alpha"].T,
         )
         ax.set_xlabel("proton q")
         ax.set_ylabel("heavy R")
@@ -665,46 +937,111 @@ def make_potential_animation(data, obs, outdir, fps, max_frames, dpi, fmt):
         fig.colorbar(image, ax=ax, pad=0.012, format=NUMBER_FORMATTER)
         images.append(image)
 
-    epsilon_line, = axes[1, 0].plot(R, fields[0]["eps2"], color=COLORS[0], lw=2)
-    heavy_line, = axes[1, 0].plot(
-        R, fields[0]["heavy"]/max(float(np.max(fields[0]["heavy"])), 1e-300),
-        color="0.45", alpha=0.6,
+    epsilon_line, epsilon_tail = _support_tail_lines(
+        axes[1, 0], R, first_item["eps2"], first_item["eps2_full"],
+        first_item["heavy_support"], color=COLORS[0],
+        label=r"$\epsilon^{(2)}$", linewidth=2.0,
     )
-    axes[1, 0].set_ylim(limits("eps2"))
+    heavy_lines = [
+        _scaled_density_line(axis, R, first_item["heavy"])
+        for axis in axes[1]
+    ]
+    axes[1, 0].set_ylim(plot_limits["eps2"])
+    color_y_axis(axes[1, 0], COLORS[0], "shifted energy (Hartree)")
     axes[1, 0].set_title(r"Proton-heavy level: $\epsilon^{(2)}$", loc="left", fontweight="semibold")
-    alpha_line, = axes[1, 1].plot(R, fields[0]["alpha"], label=r"$\alpha$")
-    phase_line, = axes[1, 1].plot(R, fields[0]["phase_R"], ls="--", label=r"$\partial_RS_\chi$")
-    momentum_line, = axes[1, 1].plot(R, fields[0]["momentum_R"], color="black", lw=2, label=r"$K_R^{(\chi)}$")
-    momentum_limits = [limits(key, True) for key in ("alpha", "phase_R", "momentum_R")]
-    axes[1, 1].set_ylim(min(x[0] for x in momentum_limits), max(x[1] for x in momentum_limits))
+    axes[1, 0].legend(frameon=False, fontsize=8)
+    alpha_line, alpha_tail = _support_tail_lines(
+        axes[1, 1], R, first_item["alpha"], first_item["alpha_full"],
+        first_item["heavy_support"], color=COLORS[3], label=r"$\alpha$",
+    )
+    phase_line, phase_tail = _support_tail_lines(
+        axes[1, 1], R, first_item["phase_R"], first_item["phase_R_full"],
+        first_item["heavy_support"], color=COLORS[1],
+        label=r"$\partial_RS_\chi$", linewidth=1.6, linestyle="--",
+    )
+    momentum_line, momentum_tail = _support_tail_lines(
+        axes[1, 1], R, first_item["momentum_R"],
+        first_item["momentum_R_full"], first_item["heavy_support"],
+        color="black", label=r"$K_R^{(\chi)}$", linewidth=2.0,
+    )
+    axes[1, 1].set_ylim(plot_limits["momentum_R"])
+    axes[1, 1].set_ylabel(r"momentum ($a_0^{-1}$)")
     axes[1, 1].set_title(r"$K_R^{(\chi)}=\partial_RS_\chi+\alpha$", loc="left", fontweight="semibold")
     axes[1, 1].legend(frameon=False, fontsize=8)
-    current_line, = axes[1, 2].plot(R, fields[0]["current_R"], color=COLORS[0], lw=2, label=r"$j_R^{(\chi)}$")
+    current_line, current_tail = _support_tail_lines(
+        axes[1, 2], R, first_item["current_R"],
+        first_item["current_R_full"], first_item["heavy_support"],
+        color=CURRENT_COLOR, label=r"$j_R^{(\chi)}$", linewidth=2.0,
+    )
     force_ax = axes[1, 2].twinx()
-    force_line, = force_ax.plot(R, fields[0]["force_R"], color=COLORS[3], lw=1.8, label=r"$F_R^{GI}$")
-    axes[1, 2].set_ylim(limits("current_R", True))
-    force_ax.set_ylim(limits("force_R", True))
+    force_line, force_tail = _support_tail_lines(
+        force_ax, R, first_item["force_R"], first_item["force_R_full"],
+        first_item["heavy_support"], color=FORCE_COLOR,
+        label=r"$F_R^{GI}$", linewidth=1.8,
+    )
+    axes[1, 2].set_ylim(plot_limits["current_R"])
+    force_ax.set_ylim(plot_limits["force_R"])
+    color_y_axis(axes[1, 2], CURRENT_COLOR, "heavy probability current")
+    color_y_axis(force_ax, FORCE_COLOR, r"heavy drive (Hartree/$a_0$)")
     axes[1, 2].set_title(r"Transport $j_R^{(\chi)}$ and drive $F_R^{GI}$", loc="left", fontweight="semibold")
+    axes[1, 2].legend(
+        handles=[current_line, force_line], frameon=False, fontsize=8,
+        loc="upper left",
+    )
     for ax in axes[1]:
         ax.set_xlabel("heavy R")
+        ax.set_xlim(float(R[0]), float(R[-1]))
         ax.grid(alpha=0.18)
-    title = fig.suptitle(f"Born--Huang exact potentials | t={times[first]:.4f} fs")
+    title = fig.suptitle(
+        f"Born--Huang exact potentials | t={times[first]:.4f} fs | "
+        "solid=occupied, thin dotted=low density"
+    )
 
     def update(number):
         frame = int(frames[number])
-        item = fields[number]
-        for image, key in zip(images, ("eps1", "a", "b")):
+        item = _potential_frame_fields(data, obs, diagnostics, frame)
+        for image, key in zip(images, ("eps1_full", "a_full", "b_full")):
             image.set_data(item[key].T)
+            image.set_alpha(item["density_alpha"].T)
         epsilon_line.set_ydata(item["eps2"])
-        heavy_line.set_ydata(item["heavy"]/max(float(np.max(item["heavy"])), 1e-300))
+        epsilon_tail.set_ydata(np.where(
+            ~item["heavy_support"], item["eps2_full"], np.nan
+        ))
+        scaled_heavy = item["heavy"]/max(
+            float(np.max(item["heavy"])), 1.0e-300
+        )
+        for density_line in heavy_lines:
+            density_line.set_ydata(scaled_heavy)
         alpha_line.set_ydata(item["alpha"])
+        alpha_tail.set_ydata(np.where(
+            ~item["heavy_support"], item["alpha_full"], np.nan
+        ))
         phase_line.set_ydata(item["phase_R"])
+        phase_tail.set_ydata(np.where(
+            ~item["heavy_support"], item["phase_R_full"], np.nan
+        ))
         momentum_line.set_ydata(item["momentum_R"])
+        momentum_tail.set_ydata(np.where(
+            ~item["heavy_support"], item["momentum_R_full"], np.nan
+        ))
         current_line.set_ydata(item["current_R"])
+        current_tail.set_ydata(np.where(
+            ~item["heavy_support"], item["current_R_full"], np.nan
+        ))
         force_line.set_ydata(item["force_R"])
-        title.set_text(f"Born--Huang exact potentials | t={times[frame]:.4f} fs")
-        return (*images, epsilon_line, heavy_line, alpha_line, phase_line,
-                momentum_line, current_line, force_line, title)
+        force_tail.set_ydata(np.where(
+            ~item["heavy_support"], item["force_R_full"], np.nan
+        ))
+        title.set_text(
+            f"Born--Huang exact potentials | t={times[frame]:.4f} fs | "
+            "solid=occupied, thin dotted=low density"
+        )
+        return (
+            *images, epsilon_line, epsilon_tail, *heavy_lines,
+            alpha_line, alpha_tail, phase_line, phase_tail,
+            momentum_line, momentum_tail, current_line, current_tail,
+            force_line, force_tail, title,
+        )
 
     animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
     return _save_animation(
@@ -721,10 +1058,11 @@ def make_state_ladder_animation(data, obs, outdir, fps, max_frames, dpi, fmt):
     first = int(frames[0])
     fig, axes = plt.subplots(2, 2, figsize=(14.0, 9.0), constrained_layout=True)
     q_surface_ax, R_surface_ax, joint_ax, population_ax = axes.flat
-    vmax = max(float(np.max(obs["nuclear_joint_density"][frame])) for frame in frames)
+    vmax = joint_density_limit(obs["nuclear_joint_density"])
     joint_image = joint_ax.imshow(
         obs["nuclear_joint_density"][first].T, origin="lower", aspect="auto",
-        extent=[q[0], q[-1], R[0], R[-1]], cmap="magma", vmin=0.0, vmax=vmax,
+        extent=[q[0], q[-1], R[0], R[-1]], cmap=JOINT_CMAP,
+        vmin=0.0, vmax=vmax,
     )
     joint_ax.set_xlabel("proton q")
     joint_ax.set_ylabel("heavy R")

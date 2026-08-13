@@ -255,17 +255,17 @@ def plot_particle_motion(data, densities, means, widths, outdir, dpi):
 def _gap_nac_panel(ax, q, R, gap, nac, joint, pair, support_floor):
     shown = _support_mask(gap, joint, support_floor)
     image = ax.imshow(
-        shown, origin="lower", aspect="auto",
-        extent=[R[0], R[-1], q[0], q[-1]], cmap=_masked_cmap("viridis"),
+        shown.T, origin="lower", aspect="auto",
+        extent=[q[0], q[-1], R[0], R[-1]], cmap=_masked_cmap("viridis"),
     )
     cutoff = support_floor*float(np.max(joint))
-    ax.contour(R, q, joint, levels=[cutoff], colors="white", linewidths=1.2)
+    ax.contour(q, R, joint.T, levels=[cutoff], colors="white", linewidths=1.2)
     finite_nac = nac[np.isfinite(shown)]
     if finite_nac.size:
         levels = np.unique(np.percentile(finite_nac, [35.0, 65.0, 85.0]))
         if len(levels):
             contours = ax.contour(
-                R, q, np.where(np.isfinite(shown), nac, np.nan),
+                q, R, np.where(np.isfinite(shown), nac, np.nan).T,
                 levels=levels, colors="#F6C85F", linewidths=1.0,
             )
             ax.clabel(contours, inline=True, fontsize=7, fmt="%.2f")
@@ -273,8 +273,8 @@ def _gap_nac_panel(ax, q, R, gap, nac, joint, pair, support_floor):
         rf"Pair {pair}: gap color + $|d^q_{{{pair}}}|$ contours",
         loc="left", fontweight="semibold",
     )
-    ax.set_xlabel(r"heavy coordinate $R$ ($a_0$)")
-    ax.set_ylabel(r"proton coordinate $q$ ($a_0$)")
+    ax.set_xlabel(r"proton coordinate $q$ ($a_0$)")
+    ax.set_ylabel(r"heavy coordinate $R$ ($a_0$)")
     return image
 
 
@@ -352,7 +352,7 @@ def plot_exact_potentials(data, diagnostics, joint, frame, support_floor, outdir
     q, R, times = data["q"], data["R"], data["times_fs"]
     density = joint[frame]
     heavy = np.sum(density, axis=0)*float(q[1]-q[0])
-    extent = [R[0], R[-1], q[0], q[-1]]
+    extent = [q[0], q[-1], R[0], R[-1]]
     eps1 = _support_mask(_shift_at_peak(data["epsilon_1"][frame], density), density, support_floor)
     avec = _support_mask(data["a"][frame], density, support_floor)
     force = _support_mask(diagnostics["force_q"][frame], density, support_floor)
@@ -382,17 +382,17 @@ def plot_exact_potentials(data, diagnostics, joint, frame, support_floor, outdir
         if limits is not None:
             image_kwargs.update(vmin=limits[0], vmax=limits[1])
         image = ax.imshow(
-            values, origin="lower", aspect="auto", extent=extent,
+            values.T, origin="lower", aspect="auto", extent=extent,
             cmap=_masked_cmap(cmap),
             **image_kwargs,
         )
         ax.contour(
-            R, q, density, levels=[support_floor*float(np.max(density))],
+            q, R, density.T, levels=[support_floor*float(np.max(density))],
             colors="white", linewidths=1.1,
         )
         ax.set_title(title, loc="left", fontweight="semibold")
-        ax.set_xlabel(r"heavy coordinate $R$ ($a_0$)")
-        ax.set_ylabel(r"proton coordinate $q$ ($a_0$)")
+        ax.set_xlabel(r"proton coordinate $q$ ($a_0$)")
+        ax.set_ylabel(r"heavy coordinate $R$ ($a_0$)")
         fig.colorbar(image, ax=ax, label=label, pad=0.012)
 
     ax = axes[1, 1]
@@ -404,6 +404,7 @@ def plot_exact_potentials(data, diagnostics, joint, frame, support_floor, outdir
     alpha = np.where(mask, data["alpha"][frame], np.nan)
     energy_line, = ax.plot(R, eps2, color=COLORS[0], lw=2, label=r"$\epsilon^{(2)}$ (left axis)")
     ax.set_xlabel(r"heavy coordinate $R$ ($a_0$)")
+    ax.set_xlim(float(R[0]), float(R[-1]))
     ax.set_ylabel("shifted energy (Hartree)", color=COLORS[0])
     ax.tick_params(axis="y", labelcolor=COLORS[0])
     connection_axis = ax.twinx()
@@ -728,7 +729,7 @@ def make_overview_animation(
     )
     joint_max = max(float(np.max(joint[i])) for i in frames)
     electron_max = max(float(np.max(electron[i])) for i in frames)
-    extent = [R[0], R[-1], q[0], q[-1]]
+    extent = [q[0], q[-1], R[0], R[-1]]
     first = int(frames[0])
 
     fig, axes = plt.subplots(2, 3, figsize=(16.2, 8.4), constrained_layout=True)
@@ -740,8 +741,8 @@ def make_overview_animation(
     axes[0, 0].set_title("Electron marginal", loc="left", fontweight="semibold")
     axes[0, 0].legend(frameon=False)
 
-    nuclear_image = axes[0, 1].imshow(joint[first], origin="lower", aspect="auto", extent=extent, cmap="magma", vmin=0, vmax=joint_max)
-    axes[0, 1].set(xlabel=r"heavy $R$ ($a_0$)", ylabel=r"proton $q$ ($a_0$)")
+    nuclear_image = axes[0, 1].imshow(joint[first].T, origin="lower", aspect="auto", extent=extent, cmap="magma", vmin=0, vmax=joint_max)
+    axes[0, 1].set(xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)")
     axes[0, 1].set_title("Joint nuclear density", loc="left", fontweight="semibold")
     fig.colorbar(nuclear_image, ax=axes[0, 1], label=r"$\rho_{qR}$", pad=0.012)
 
@@ -769,10 +770,10 @@ def make_overview_animation(
             "vmin": limits[0], "vmax": limits[1]
         }
         image = ax.imshow(
-            values, origin="lower", aspect="auto", extent=extent,
+            values.T, origin="lower", aspect="auto", extent=extent,
             cmap=_masked_cmap("coolwarm"), **kwargs,
         )
-        ax.set(xlabel=r"heavy $R$ ($a_0$)", ylabel=r"proton $q$ ($a_0$)")
+        ax.set(xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)")
         ax.set_title(title_text, loc="left", fontweight="semibold", fontsize=9.5)
         fig.colorbar(image, ax=ax, label=label, pad=0.01, fraction=0.046)
         images.append(image)
@@ -788,13 +789,13 @@ def make_overview_animation(
     def update(number):
         frame = int(frames[number])
         electron_line.set_ydata(electron[frame])
-        nuclear_image.set_data(joint[frame])
+        nuclear_image.set_data(joint[frame].T)
         marker.set_xdata([times[frame], times[frame]])
         for image, values in zip(
             images,
             (momentum_fields[number], current_fields[number], drive_fields[number]),
         ):
-            image.set_data(values)
+            image.set_data(values.T)
         title.set_text(
             title_prefix
             + "Physical dynamics (A-C) -> proton momentum (D) -> transport (E) -> drive (F)\n"
@@ -824,7 +825,7 @@ def make_physical_interpretation_animation(
     x, q, R = data["x"], data["q"], data["R"]
     frames = selected_frames(len(times), min(max_frames, len(times)))
     first = int(frames[0])
-    extent = [R[0], R[-1], q[0], q[-1]]
+    extent = [q[0], q[-1], R[0], R[-1]]
 
     proton_currents, proton_drives = [], []
     heavy_currents, heavy_drives = [], []
@@ -936,12 +937,12 @@ def make_physical_interpretation_animation(
     update_marginal_summary(first)
 
     current_image = bottom_axes[0].imshow(
-        proton_currents[0], origin="lower", aspect="auto", extent=extent,
+        proton_currents[0].T, origin="lower", aspect="auto", extent=extent,
         cmap=_masked_cmap("coolwarm"),
         vmin=current_limits[0], vmax=current_limits[1],
     )
     bottom_axes[0].set(
-        xlabel=r"heavy $R$ ($a_0$)", ylabel=r"proton $q$ ($a_0$)",
+        xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
     )
     bottom_axes[0].set_title(
         r"Transport: $j_q=\rho_{qR}(\partial_qT+a)/m_p$",
@@ -953,11 +954,11 @@ def make_physical_interpretation_animation(
     )
 
     drive_image = bottom_axes[1].imshow(
-        proton_drives[0], origin="lower", aspect="auto", extent=extent,
+        proton_drives[0].T, origin="lower", aspect="auto", extent=extent,
         cmap=_masked_cmap("coolwarm"), norm=drive_norm,
     )
     bottom_axes[1].set(
-        xlabel=r"heavy $R$ ($a_0$)", ylabel=r"proton $q$ ($a_0$)",
+        xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
     )
     bottom_axes[1].set_title(
         r"Drive: $E_q=-\partial_q\epsilon^{(1)}+\partial_ta$",
@@ -1015,8 +1016,8 @@ def make_physical_interpretation_animation(
                 density[frame]/max(float(np.max(density[frame])), 1.0e-300)
             )
         update_marginal_summary(frame)
-        current_image.set_data(proton_currents[number])
-        drive_image.set_data(proton_drives[number])
+        current_image.set_data(proton_currents[number].T)
+        drive_image.set_data(proton_drives[number].T)
         heavy_current_line.set_ydata(heavy_currents[number])
         heavy_drive_line.set_ydata(heavy_drives[number])
         title.set_text(
@@ -1050,7 +1051,7 @@ def make_potential_animation(
     """Nested scalar/connections followed by their outer-heavy consequence."""
     times, q, R = data["times_fs"], data["q"], data["R"]
     frames = selected_frames(len(times), min(max_frames, len(times)))
-    extent = [R[0], R[-1], q[0], q[-1]]
+    extent = [q[0], q[-1], R[0], R[-1]]
     fields = []
     for frame in frames:
         density = joint[frame]
@@ -1082,8 +1083,11 @@ def make_potential_animation(
         ))
 
     eps1_lim = robust_limits([item[0] for item in fields])
-    a_lim = robust_limits([item[1] for item in fields], symmetric=True)
-    b_lim = robust_limits([item[2] for item in fields], symmetric=True)
+    connection_lim = robust_limits(
+        [item[index] for item in fields for index in (1, 2)],
+        symmetric=True,
+    )
+    a_lim = b_lim = connection_lim
     eps2_lim = robust_limits([item[3] for item in fields])
     momentum_R_lim = robust_limits(
         [item[index] for item in fields for index in (4, 5, 6)],
@@ -1101,18 +1105,19 @@ def make_potential_animation(
         (axes[0, 2], fields[0][2], b_lim, r"Electron connection $b$ along $R$", "coolwarm", r"$a_0^{-1}$"),
     ):
         image = ax.imshow(
-            values, origin="lower", aspect="auto", extent=extent,
+            values.T, origin="lower", aspect="auto", extent=extent,
             cmap=_masked_cmap(cmap),
             vmin=limits[0], vmax=limits[1],
         )
-        ax.set_xlabel(r"heavy $R$ ($a_0$)")
-        ax.set_ylabel(r"proton $q$ ($a_0$)")
+        ax.set_xlabel(r"proton $q$ ($a_0$)")
+        ax.set_ylabel(r"heavy $R$ ($a_0$)")
         ax.set_title(title, loc="left", fontweight="semibold", fontsize=10)
         fig.colorbar(image, ax=ax, label=label, pad=0.01, fraction=0.046)
         images.append(image)
 
     eps2_line, = axes[1, 0].plot(R, fields[0][3], color=COLORS[0], lw=2)
     axes[1, 0].set(xlabel=r"heavy $R$ ($a_0$)", ylabel="shifted energy (Hartree)", ylim=eps2_lim)
+    axes[1, 0].set_xlim(float(R[0]), float(R[-1]))
     axes[1, 0].set_title(r"Proton-heavy level: $\epsilon^{(2)}$", loc="left", fontweight="semibold", fontsize=10)
     axes[1, 0].grid(alpha=0.18)
     density_axis = axes[1, 0].twinx()
@@ -1127,6 +1132,7 @@ def make_potential_animation(
     phase_R_line, = axes[1, 1].plot(R, fields[0][5], color=COLORS[1], lw=1.6, ls="--", label=r"$\partial_RS$")
     momentum_R_line, = axes[1, 1].plot(R, fields[0][6], color="black", lw=2.1, label=r"$K_R^{(\chi)}$")
     axes[1, 1].set(xlabel=r"heavy $R$ ($a_0$)", ylabel=r"momentum ($a_0^{-1}$)", ylim=momentum_R_lim)
+    axes[1, 1].set_xlim(float(R[0]), float(R[-1]))
     axes[1, 1].set_title(r"Heavy momentum: $\partial_RS+\alpha=K_R^{(\chi)}$", loc="left", fontweight="semibold", fontsize=10)
     axes[1, 1].grid(alpha=0.18)
     axes[1, 1].legend(frameon=False, fontsize=8)
@@ -1136,7 +1142,7 @@ def make_potential_animation(
     )
     axes[1, 2].set(
         xlabel=r"heavy $R$ ($a_0$)", ylabel="heavy probability current",
-        ylim=current_R_lim,
+        ylim=current_R_lim, xlim=(float(R[0]), float(R[-1])),
     )
     force_axis = axes[1, 2].twinx()
     force_R_line, = force_axis.plot(
@@ -1165,7 +1171,7 @@ def make_potential_animation(
         frame = int(frames[number])
         item = fields[number]
         for image, values in zip(images, item[:3]):
-            image.set_data(values)
+            image.set_data(values.T)
         eps2_line.set_ydata(item[3])
         heavy_density_line.set_ydata(
             item[9]/max(float(np.max(item[9])), 1.0e-300)
