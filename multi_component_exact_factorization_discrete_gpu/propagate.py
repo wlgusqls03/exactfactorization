@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 import shlex
+import signal
 import sys
 import time
 import traceback
@@ -42,6 +44,11 @@ from .gpu_core import (
     discrete_rhs_gpu,
     full_step_discrete_bh,
     make_discrete_gpu_model,
+)
+from .checkpoint import (
+    load_checkpoint,
+    validate_state_shapes,
+    write_checkpoint_atomic,
 )
 
 
@@ -106,6 +113,74 @@ def _pnc_errors(coefficients, lam, model):
     return cp.max(cp.abs(c_norm2-1.0)), cp.max(cp.abs(lam_norm2-1.0))
 
 
+def _checkpoint_metadata(args, cpu_model, n_states, cache_info):
+    """Return every invariant needed for a mathematically identical resume."""
+    cache_key = str(cache_info.get("key", ""))
+    if not cache_key:
+        raise ValueError(
+            "checkpoint/resume requires the immutable BO basis cache; "
+            "remove --no-bo-basis-cache"
+        )
+    return {
+        "formulation": "discretize_first_overlap_link_v1",
+        "time_integrator": "classical_rk4_product_preserving_pnc_retraction",
+        "dt_au": float(args.dt_au),
+        "bo_states": int(n_states),
+        "bo_basis_cache_key": cache_key,
+        "bo_link_kernel": str(args.bo_link_kernel),
+        "nx": int(len(cpu_model.x)),
+        "nq": int(len(cpu_model.q)),
+        "nR": int(len(cpu_model.R)),
+        "dx": float(cpu_model.dx),
+        "dq": float(cpu_model.dq),
+        "dR": float(cpu_model.dR),
+        "x_first": float(cpu_model.x[0]),
+        "x_last": float(cpu_model.x[-1]),
+        "q_first": float(cpu_model.q[0]),
+        "q_last": float(cpu_model.q[-1]),
+        "R_first": float(cpu_model.R[0]),
+        "R_last": float(cpu_model.R[-1]),
+        "proton_mass": float(cpu_model.proton_mass),
+        "heavy_mass": float(cpu_model.heavy_mass),
+        "flat_top_on_phi": float(cpu_model.flat_top_on_phi),
+        "flat_top_on_lam": float(cpu_model.flat_top_on_lam),
+        "flat_top_transition_decades": float(
+            cpu_model.flat_top_transition_decades
+        ),
+        "deep_tail_zero_threshold": float(args.deep_tail_zero_threshold),
+    }
+
+
+def _checkpoint_path(args, outdir):
+    if args.checkpoint_file:
+        return Path(args.checkpoint_file).expanduser().resolve()
+    if args.resume_from:
+        return Path(args.resume_from).expanduser().resolve()
+    return (outdir/"discrete_mcef_checkpoint.npz").resolve()
+
+
+def _install_termination_handlers(args):
+    """Turn HUP/TERM into a safe request handled after the active RK4 step."""
+    previous = {}
+
+    def request_termination(signum, _frame):
+        # Signal handlers execute between Python bytecodes.  Only set a flag;
+        # the propagation loop commits the whole RK4 result before stopping.
+        args.termination_signal = int(signum)
+
+    for name in ("SIGHUP", "SIGTERM"):
+        signum = getattr(signal, name, None)
+        if signum is not None:
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, request_termination)
+    return previous
+
+
+def _restore_termination_handlers(previous):
+    for signum, handler in previous.items():
+        signal.signal(signum, handler)
+
+
 def run(args):
     outdir = dated_results_dir(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -162,6 +237,35 @@ def run(args):
             "support-aware PNC gate가 1입니다."
         )
 
+    checkpoint_enabled = bool(args.checkpoint_every > 0 or args.resume_from)
+    checkpoint_metadata = None
+    checkpoint_path = None
+    resume_step = 0
+    if checkpoint_enabled:
+        checkpoint_metadata = _checkpoint_metadata(
+            args, cpu_model, n_states, cache_info
+        )
+        checkpoint_path = _checkpoint_path(args, outdir)
+    if args.resume_from:
+        resumed = load_checkpoint(
+            args.resume_from, expected_metadata=checkpoint_metadata
+        )
+        validate_state_shapes(
+            resumed,
+            coefficients_shape=c_cpu.shape,
+            lam_shape=lam_cpu.shape,
+            chi_shape=chi_cpu.shape,
+        )
+        c_cpu = resumed["electronic_coefficients"]
+        lam_cpu = resumed["lambda_wavefunction"]
+        chi_cpu = resumed["chi"]
+        resume_step = int(resumed["completed_step"])
+        print(
+            "checkpoint 재시작: "
+            f"{resumed['path']}; completed step={resume_step}, "
+            f"t={resume_step*args.dt_au/AU_PER_FS:.9f} fs"
+        )
+
     model = make_discrete_gpu_model(cpu_model)
     basis = to_gpu_basis(basis_cpu, model, args.bo_link_kernel)
     if args.bo_link_kernel != "fused":
@@ -185,6 +289,10 @@ def run(args):
     )
 
     n_steps = int(round(args.t_final_fs*AU_PER_FS/args.dt_au))
+    if resume_step > n_steps:
+        raise ValueError(
+            f"checkpoint step {resume_step} exceeds requested final step {n_steps}"
+        )
     args.save_every = args.save_every or max(1, int(np.ceil(max(n_steps, 1)/200)))
     args.progress_every = (
         args.progress_every or max(1, int(np.ceil(max(n_steps, 1)/20)))
@@ -205,6 +313,21 @@ def run(args):
             "GPU thermal throttle: 각 완료 step 뒤 stream synchronize + "
             f"sleep {args.step_sleep_ms:g} ms"
         )
+    if checkpoint_enabled:
+        if args.checkpoint_every > 0:
+            print(
+                "원자적 state checkpoint: "
+                f"every {args.checkpoint_every} global steps; {checkpoint_path}"
+            )
+        else:
+            print(
+                "주의: checkpoint에서 재시작했지만 새 periodic checkpoint는 "
+                "비활성입니다(--checkpoint-every=0)."
+            )
+        print(
+            "checkpoint는 C/Lambda/chi의 완료-step 상태만 저장하며, "
+            "재시작 archive는 그 시각부터 시작합니다."
+        )
 
     histories = {
         "times_fs": [], "electronic_coefficients": [],
@@ -224,6 +347,31 @@ def run(args):
         "bo_state_density_R": [], "electron_density": [],
     }
     diagnostics = {name: [] for name in DIAGNOSTIC_NAMES}
+    checkpoint_writes = 0
+    checkpoint_seconds = 0.0
+
+    def checkpoint_state(step):
+        nonlocal checkpoint_writes, checkpoint_seconds
+        if checkpoint_path is None:
+            return
+        checkpoint_started = time.perf_counter()
+        write_checkpoint_atomic(
+            checkpoint_path,
+            completed_step=step,
+            coefficients=coefficients,
+            lam=lam,
+            chi=chi,
+            metadata=checkpoint_metadata,
+        )
+        elapsed = time.perf_counter()-checkpoint_started
+        checkpoint_writes += 1
+        checkpoint_seconds += elapsed
+        size_mib = checkpoint_path.stat().st_size/1024**2
+        print(
+            "checkpoint 저장: "
+            f"step {step}, t={step*args.dt_au/AU_PER_FS:.6f} fs; "
+            f"{size_mib:.1f} MiB, {elapsed:.3f} s; {checkpoint_path}"
+        )
 
     def save(step, correction=0.0, step_diagnostics=None):
         evaluated = discrete_rhs_gpu(
@@ -315,34 +463,60 @@ def run(args):
             elif step_diagnostics is not None and name in step_diagnostics:
                 value = step_diagnostics[name]
             else:
-                value = 0.0 if step == 0 else np.nan
+                value = 0.0 if step == resume_step else np.nan
             diagnostics[name].append(_as_float(value))
 
-    save(0)
-    next_frame = 1
+    save(resume_step)
+    future_save_steps = [step for step in save_steps if step > resume_step]
+    next_frame = 0
     saved_frame_count = 1
-    last_saved_step = 0
-    last_completed_step = 0
+    last_saved_step = resume_step
+    last_completed_step = resume_step
     failure = ""
-    attempted = 0
+    attempted = resume_step
     correction_peak = cp.asarray(0.0)
     throttle_sleep_seconds = 0.0
     throttled_steps = 0
     started = time.perf_counter()
     last_step_diagnostics = None
+    interruption_requested = False
+    steps_executed = 0
+    committed_state = (
+        resume_step, coefficients, lam, chi, correction_peak,
+        last_step_diagnostics, steps_executed,
+    )
     try:
-        for step in range(1, n_steps+1):
+        for step in range(resume_step+1, n_steps+1):
             attempted = step
-            will_save = next_frame < len(save_steps) and step == save_steps[next_frame]
-            coefficients, lam, chi, correction, step_diagnostics = full_step_discrete_bh(
+            will_save = (
+                next_frame < len(future_save_steps)
+                and step == future_save_steps[next_frame]
+            )
+            step_result = full_step_discrete_bh(
                 coefficients, lam, chi, args.dt_au, model, basis,
                 collect_step_diagnostics=will_save,
             )
+            coefficients, lam, chi, correction, step_diagnostics = step_result
             correction_peak = cp.maximum(correction_peak, correction)
             last_step_diagnostics = step_diagnostics
             last_completed_step = step
+            steps_executed += 1
+            # One reference assignment is the commit point. If Ctrl+C lands
+            # during the preceding stores/bookkeeping, the exception path
+            # restores the preceding whole state instead of a mixed step.
+            committed_state = (
+                step, coefficients, lam, chi, correction_peak,
+                last_step_diagnostics, steps_executed,
+            )
             must_save = will_save
-            must_check = step % args.check_every == 0 or must_save or step == n_steps
+            must_checkpoint = (
+                args.checkpoint_every > 0
+                and (step % args.checkpoint_every == 0 or step == n_steps)
+            )
+            must_check = (
+                step % args.check_every == 0
+                or must_save or must_checkpoint or step == n_steps
+            )
             if must_check:
                 if not all_finite(coefficients, lam, chi):
                     failure = f"step {step}: non-finite C/Lambda/chi"
@@ -374,11 +548,22 @@ def run(args):
                 last_saved_step = step
                 correction_peak = cp.asarray(0.0)
                 next_frame += 1
+            if must_checkpoint:
+                checkpoint_state(step)
             if step % args.progress_every == 0 or step == n_steps:
                 print(
                     f"step {step:7d}/{n_steps}  "
                     f"t={step*args.dt_au/AU_PER_FS:9.4f} fs"
                 )
+            requested_signal = getattr(args, "termination_signal", None)
+            if requested_signal is not None:
+                signal_name = signal.Signals(requested_signal).name
+                failure = (
+                    f"{signal_name} 요청을 받아 완료된 step {step}에서 중단함"
+                )
+                interruption_requested = True
+                print(f"전파 중단: {failure}")
+                break
             if args.step_sleep_ms > 0.0:
                 cp.cuda.get_current_stream().synchronize()
                 sleep_started = time.perf_counter()
@@ -386,8 +571,15 @@ def run(args):
                 throttle_sleep_seconds += time.perf_counter()-sleep_started
                 throttled_steps += 1
     except KeyboardInterrupt:
+        (
+            last_completed_step, coefficients, lam, chi, correction_peak,
+            last_step_diagnostics, steps_executed,
+        ) = committed_state
         failure = f"사용자가 step {attempted}에서 계산을 중단함"
+        interruption_requested = True
         print(f"전파 중단: {failure}")
+
+    if interruption_requested:
         for values in histories.values():
             del values[saved_frame_count:]
         for values in diagnostics.values():
@@ -404,11 +596,13 @@ def run(args):
                 f"step {last_completed_step} "
                 f"(t={last_completed_step*args.dt_au/AU_PER_FS:.6f} fs)"
             )
+        if checkpoint_path is not None and all_finite(coefficients, lam, chi):
+            checkpoint_state(last_completed_step)
 
     cp.cuda.get_current_stream().synchronize()
     wall_seconds = time.perf_counter()-started
     completed = not failure
-    interrupted = failure.startswith("사용자가 step ")
+    interrupted = interruption_requested
     payload = {key: np.asarray(value) for key, value in histories.items()}
     payload.update({key: np.asarray(value) for key, value in diagnostics.items()})
     # Compatibility aliases are diagnostics only; no product projection is
@@ -454,6 +648,13 @@ def run(args):
         propagation_interrupted=np.array(interrupted),
         requested_final_time_fs=np.array(args.t_final_fs),
         requested_steps=np.array(n_steps), attempted_steps=np.array(attempted),
+        segment_start_step=np.array(resume_step),
+        segment_start_time_fs=np.array(resume_step*args.dt_au/AU_PER_FS),
+        resume_from=np.array(str(args.resume_from or "")),
+        checkpoint_every=np.array(args.checkpoint_every),
+        checkpoint_path=np.array(str(checkpoint_path or "")),
+        checkpoint_writes=np.array(checkpoint_writes),
+        checkpoint_seconds=np.array(checkpoint_seconds),
         step_sleep_ms=np.array(args.step_sleep_ms),
         throttle_sleep_seconds=np.array(throttle_sleep_seconds),
         throttled_steps=np.array(throttled_steps),
@@ -469,7 +670,9 @@ def run(args):
     status.write_text(
         f"status={status_name}\n"
         f"archive={archive}\n"
+        f"segment_start_step={resume_step}\n"
         f"last_saved_time_fs={payload['times_fs'][-1]:.12g}\n"
+        f"checkpoint={checkpoint_path or 'disabled'}\n"
         f"failure_reason={failure or 'none'}\n",
         encoding="utf-8",
     )
@@ -477,10 +680,16 @@ def run(args):
     print(f"{'저장 완료' if completed else '부분 저장 완료'}: {archive}")
     print(
         f"wall={wall_seconds:.3f} s; "
-        f"{wall_seconds/max(attempted, 1):.6f} s/step; "
+        f"{wall_seconds/max(steps_executed, 1):.6f} s/executed-step; "
         f"GPU pool used/reserved={pool.used_bytes()/1024**3:.2f}/"
         f"{pool.total_bytes()/1024**3:.2f} GiB"
     )
+    if checkpoint_writes:
+        print(
+            "checkpoint overhead: "
+            f"{checkpoint_seconds:.3f} s/{checkpoint_writes} writes "
+            f"({checkpoint_seconds/max(wall_seconds, 1.0e-300):.3%} wall)"
+        )
     if throttled_steps:
         active_wall = max(0.0, wall_seconds-throttle_sleep_seconds)
         print(
@@ -535,6 +744,24 @@ def parse_args(argv=None):
     parser.add_argument("--progress-every", type=int, default=0)
     parser.add_argument("--check-every", type=int, default=0)
     parser.add_argument(
+        "--checkpoint-every", type=int, default=0,
+        help=(
+            "완료된 global step 기준 atomic state-checkpoint 간격; "
+            "0이면 비활성"
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint-file", default=None,
+        help=(
+            "최신 checkpoint를 원자적으로 덮어쓸 경로; 기본값은 "
+            "run folder/discrete_mcef_checkpoint.npz"
+        ),
+    )
+    parser.add_argument(
+        "--resume-from", default=None,
+        help="이 solver가 저장한 state checkpoint에서 global step 재개",
+    )
+    parser.add_argument(
         "--step-sleep-ms", type=float, default=0.0,
         help=(
             "각 완료 step의 모든 GPU 작업을 동기화한 뒤 쉬는 시간(ms); "
@@ -577,6 +804,12 @@ def parse_args(argv=None):
         parser.error("dt must be positive and final time nonnegative")
     if not np.isfinite(args.step_sleep_ms) or args.step_sleep_ms < 0.0:
         parser.error("--step-sleep-ms must be a finite nonnegative number")
+    if args.checkpoint_every < 0:
+        parser.error("--checkpoint-every must be nonnegative")
+    if args.checkpoint_file and not (args.checkpoint_every or args.resume_from):
+        parser.error(
+            "--checkpoint-file requires --checkpoint-every or --resume-from"
+        )
     if not 0.0 <= args.flat_top_budget_phi < 1.0:
         parser.error("flat-top phi budget must be in [0,1)")
     if not 0.0 <= args.flat_top_budget_lam < 1.0:
@@ -585,15 +818,20 @@ def parse_args(argv=None):
 
 
 def _execute(args):
-    archive = run(args)
-    if args.render_after:
-        from multi_component_exact_factorization.render_all import (
-            render_completed_run,
-        )
-        render_completed_run(archive, fast=args.render_fast)
-    if getattr(args, "propagation_failed", False):
-        raise SystemExit(2)
-    return archive
+    args.termination_signal = None
+    previous_handlers = _install_termination_handlers(args)
+    try:
+        archive = run(args)
+        if args.render_after:
+            from multi_component_exact_factorization.render_all import (
+                render_completed_run,
+            )
+            render_completed_run(archive, fast=args.render_fast)
+        if getattr(args, "propagation_failed", False):
+            raise SystemExit(2)
+        return archive
+    finally:
+        _restore_termination_handlers(previous_handlers)
 
 
 def main(args=None):
@@ -603,10 +841,13 @@ def main(args=None):
     outdir = dated_results_dir(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     log_path = outdir/"propagation.log"
-    with log_path.open("w", encoding="utf-8", buffering=1) as log:
+    log_mode = "a" if args.resume_from else "w"
+    with log_path.open(log_mode, encoding="utf-8", buffering=1) as log:
         with redirect_stdout(_Tee(sys.stdout, log)), redirect_stderr(
             _Tee(sys.stderr, log)
         ):
+            if args.resume_from:
+                print("\n===== checkpoint resume invocation =====")
             print(f"명령: {shlex.join(sys.argv)}")
             print(f"전체 실행 로그: {log_path}")
             try:

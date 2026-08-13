@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
+import tempfile
 
 import numpy as np
 
@@ -33,6 +35,7 @@ from .gpu_core import (
     full_step_discrete_tdse_gpu,
     make_discrete_gpu_model,
 )
+from .checkpoint import load_checkpoint, write_checkpoint_atomic
 
 
 def _normalized_problem(model, states, seed):
@@ -168,6 +171,59 @@ def run(args):
             f"  step {name:6s}: max_abs={absolute:.6e}, "
             f"max_relative={relative:.6e}"
         )
+    print("[checkpoint round-trip + resumed RK4 step]")
+    fused_step = stepped["fused"]
+    checkpoint_metadata = {
+        "validation": "discrete-mcef-gpu",
+        "dt_au": float(args.step_dt),
+        "shape": list(coefficients.shape),
+    }
+    with tempfile.TemporaryDirectory() as temporary:
+        checkpoint_path = Path(temporary)/"checkpoint.npz"
+        write_checkpoint_atomic(
+            checkpoint_path,
+            completed_step=1,
+            coefficients=fused_step[0],
+            lam=fused_step[1],
+            chi=fused_step[2],
+            metadata=checkpoint_metadata,
+        )
+        loaded = load_checkpoint(
+            checkpoint_path, expected_metadata=checkpoint_metadata
+        )
+        loaded_gpu = (
+            cp.ascontiguousarray(cp.asarray(
+                loaded["electronic_coefficients"], dtype=cp.complex128
+            )),
+            cp.asarray(loaded["lambda_wavefunction"], dtype=cp.complex128),
+            cp.asarray(loaded["chi"], dtype=cp.complex128),
+        )
+        for index, name in enumerate(("C", "Lambda", "chi")):
+            expected = cp.asnumpy(fused_step[index])
+            actual = cp.asnumpy(loaded_gpu[index])
+            absolute, relative = _relative_error(expected, actual)
+            worst = max(worst, relative)
+            print(
+                f"  state {name:6s}: max_abs={absolute:.6e}, "
+                f"max_relative={relative:.6e}"
+            )
+        direct_next = full_step_discrete_bh(
+            fused_step[0], fused_step[1], fused_step[2], args.step_dt,
+            gpu_model, gpu_bases["fused"],
+        )
+        resumed_next = full_step_discrete_bh(
+            loaded_gpu[0], loaded_gpu[1], loaded_gpu[2], args.step_dt,
+            gpu_model, gpu_bases["fused"],
+        )
+        for index, name in enumerate(("C", "Lambda", "chi")):
+            expected = cp.asnumpy(direct_next[index])
+            actual = cp.asnumpy(resumed_next[index])
+            absolute, relative = _relative_error(expected, actual)
+            worst = max(worst, relative)
+            print(
+                f"  next {name:7s}: max_abs={absolute:.6e}, "
+                f"max_relative={relative:.6e}"
+            )
     print(f"worst_relative={worst:.6e}; limit={args.tolerance:.1e}")
     if not np.isfinite(worst) or worst > args.tolerance:
         raise SystemExit("Discrete MCEF GPU validation: FAIL")

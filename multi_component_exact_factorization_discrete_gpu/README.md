@@ -74,6 +74,51 @@ wall time.  The default is zero and preserves the original asynchronous fast
 path.  The archive records `step_sleep_ms`, `throttle_sleep_seconds`, and
 `throttled_steps`.
 
+## Atomic checkpoint and exact state resume
+
+Long calculations can keep one bounded, uncompressed state checkpoint:
+
+```bash
+--checkpoint-every 5000
+```
+
+The default path is
+`RUN_FOLDER/discrete_mcef_checkpoint.npz`. Each write first creates and
+`fsync`s a sibling temporary file and then atomically replaces the preceding
+checkpoint. Thus an OOM kill, lost login session, or full filesystem during a
+new write leaves the previous completed-step checkpoint intact. The file
+contains only complex128 `C`, `Lambda`, and `chi`, their completed global step,
+and a strict compatibility fingerprint. It does not change the RHS, RK4, PNC
+retraction, mask, time step, or floating-point precision.
+
+Resume with the same physical/numerical options and a final time later than
+the checkpoint time:
+
+```bash
+python -m multi_component_exact_factorization_discrete_gpu.propagate \
+  ...same model/grid/BO/mask/dt options... \
+  --t-final-fs 50 \
+  --checkpoint-every 5000 \
+  --resume-from results/20260814/RUN/discrete_mcef_checkpoint.npz \
+  --outdir results/20260814/RUN
+```
+
+The BO cache key, BO count/kernel, grids, masses, `dt`, masks and PNC-tail
+threshold are compared before a state is uploaded to CUDA. Any mismatch is
+rejected instead of silently changing the calculation. Host round trips of
+complex128 state arrays are bit preserving. `SIGHUP` and `SIGTERM` request a
+safe stop after the active RK4 step; `SIGKILL` and OOM cannot be caught, so the
+most recent periodic atomic checkpoint is the recovery point.
+
+A resumed result archive begins at the checkpoint time and records
+`segment_start_step`/`segment_start_time_fs`; the checkpoint intentionally
+does not duplicate the many-GiB trajectory history. It preserves exact future
+dynamics, while frames before an ungraceful crash are available only if an
+earlier partial/final trajectory archive was successfully written.
+Checkpoint overhead and write count are printed and stored as
+`checkpoint_seconds` and `checkpoint_writes`. An interval of 5000 steps is
+normally a very small wall-time cost because only one state file is replaced.
+
 ## Direct TDSE reference in the identical BO space
 
 `propagate_tdse` evolves the unfactorized coefficient wavefunction
