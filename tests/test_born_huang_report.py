@@ -80,6 +80,17 @@ class BornHuangReportTests(unittest.TestCase):
         self.assertEqual(float(opacity[0]), 0.0)
         self.assertEqual(float(opacity[1]), 1.0)
 
+    def test_display_opacity_is_strictly_closed_under_roundoff(self):
+        density = np.logspace(-300, 100, 10001)
+        density = np.r_[density, np.nan, -1.0, 0.0]
+        opacity = density_display_alpha(density, floor=1.0e-3)
+        self.assertTrue(np.all(np.isfinite(opacity)))
+        self.assertGreaterEqual(float(np.min(opacity)), 0.0)
+        self.assertLessEqual(float(np.max(opacity)), 1.0)
+        self.assertEqual(float(opacity[-3]), 0.0)
+        self.assertEqual(float(opacity[-2]), 0.0)
+        self.assertEqual(float(opacity[-1]), 0.0)
+
     def test_connections_share_one_plot_scale(self):
         data = self.synthetic_data()
         obs = born_huang_report.calculate_observables(data)

@@ -47,7 +47,11 @@ def density_display_alpha(density, floor=1.0e-3, transition_decades=1.0):
     opaque.  Values one decade lower are gray.  A quintic smoothstep between
     them avoids a one-frame flash when a cell barely crosses a hard cutoff.
     """
-    density = np.maximum(np.asarray(density, float), 0.0)
+    density = np.asarray(density, float)
+    # Opacity is a rendering attribute, not a propagated physical field.
+    # Invalid/negative density cells are shown as the gray background while
+    # the archived arrays remain untouched.
+    density = np.where(np.isfinite(density) & (density > 0.0), density, 0.0)
     relative = density/max(float(np.max(density)), 1.0e-300)
     upper = np.log10(max(float(floor), 1.0e-300))
     lower = upper-max(float(transition_decades), 1.0e-12)
@@ -55,7 +59,11 @@ def density_display_alpha(density, floor=1.0e-3, transition_decades=1.0):
         (np.log10(np.maximum(relative, 1.0e-300))-lower)/(upper-lower),
         0.0, 1.0,
     )
-    return scaled**3*(scaled*(6.0*scaled-15.0)+10.0)
+    opacity = scaled**3*(scaled*(6.0*scaled-15.0)+10.0)
+    # The quintic is mathematically in [0, 1], but its factored floating-point
+    # evaluation may overshoot 1 by a few ulps (observed: 1+1.6e-15).  Unlike
+    # color data, Matplotlib validates alpha strictly, so close the interval.
+    return np.clip(opacity, 0.0, 1.0)
 
 
 def density_weighted_shift(values, density, floor=1.0e-3):
