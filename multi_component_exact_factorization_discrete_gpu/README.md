@@ -183,6 +183,24 @@ python -m multi_component_exact_factorization_discrete_gpu.compare_tdse \
   --progress-every 5
 ```
 
+For multi-tens-of-GiB archives, avoid the extraction workspace with:
+
+```bash
+python -m multi_component_exact_factorization_discrete_gpu.compare_tdse \
+  TDSE_RUN MCEF_RUN \
+  --low-disk \
+  --progress-every 5
+```
+
+`--low-disk` sequentially decompresses each NPY member inside both NPZ files
+and retains only one common-time TDSE/MCEF frame pair in RAM. It needs no
+large temporary directory (roughly two coefficient frames plus factors in
+RAM), and computes the same fidelity, normalized density L1 errors, BO
+population errors and norms as the extraction/mmap path. The two paths are
+tested for bitwise-identical comparison arrays on the same archives. It can
+be slower than mmap extraction because decompression is sequential, but does
+not change any metric or trajectory data.
+
 The comparison saves `tdse_mcef_comparison.npz` beside the MCEF archive and
 reports coefficient-space fidelity, joint/proton/heavy density L1 errors,
 BO-population differences and both norms.  Temporary extracted arrays are
