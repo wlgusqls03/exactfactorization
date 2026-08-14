@@ -133,7 +133,13 @@ def _frame_fields(y_cpu, model, basis):
     epsilon_1_complex = electronic+temporal_1
 
     q_weights = kinetic_weights(model.dq, model.proton_mass)
-    q_action_lam = q_weights[0]*lam
+    # The positive-density gauge makes ``lam=F/chi`` a real float64 array,
+    # while conditional-state overlap links are generally complex.  Allocate
+    # the kinetic accumulator in the propagated complex precision before the
+    # first in-place neighbor contribution; CuPy deliberately refuses an
+    # implicit complex128 -> float64 ``+=`` cast.
+    q_action_lam = lam.astype(model.reduction_complex_dtype, copy=True)
+    q_action_lam *= q_weights[0]
     q_transports = neighbor_transports(c, basis, 1)
     sphi_q1 = None
     for index, offset in enumerate(OFFSETS):
