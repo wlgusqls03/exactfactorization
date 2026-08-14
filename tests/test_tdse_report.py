@@ -25,11 +25,16 @@ class TDSEReportTests(unittest.TestCase):
         populations = np.array([
             [0.9, 0.1], [0.8, 0.2], [0.7, 0.3],
         ])
+        x = np.linspace(-4.0, 4.0, 8)
+        electron = np.asarray([
+            np.exp(-0.5*((x-0.1*time)/0.8)**2) for time in times
+        ])
+        electron /= np.sum(electron, axis=1)[:, None]*(x[1]-x[0])
         archive = root/"multi_component_discrete_tdse_gpu.npz"
         np.savez_compressed(
             archive,
             kind=np.array("direct_discrete_born_huang_tdse_gpu"),
-            times_fs=times, q=q, R=R, x=np.linspace(-4.0, 4.0, 8),
+            times_fs=times, q=q, R=R, x=x,
             norm=np.array([1.0, 1.0+1e-12, 1.0-2e-12]),
             energy=np.array([-0.5, -0.5+1e-13, -0.5-2e-13]),
             energy_imaginary_defect=np.array([1e-16, 2e-16, 3e-16]),
@@ -41,6 +46,7 @@ class TDSEReportTests(unittest.TestCase):
             )),
             joint_density=joint,
             proton_density=proton, heavy_density=heavy,
+            electron_density=electron,
             outer_probability_q=np.array([1e-12, 2e-12, 3e-12]),
             outer_probability_R=np.array([1e-14, 2e-14, 3e-14]),
             fixed_center_crossing_q=np.array([1e-13, 2e-13, 3e-13]),
@@ -93,7 +99,7 @@ class TDSEReportTests(unittest.TestCase):
             self.assertNotIn("tdse_coefficients", data)
             self.assertEqual(data["joint_density"].shape, (3, 5, 7))
 
-    def test_all_three_tdse_movies_render_from_small_archive(self):
+    def test_all_tdse_movies_render_from_small_archive(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             archive, _ = self._write_archive(root)
@@ -105,8 +111,11 @@ class TDSEReportTests(unittest.TestCase):
             )
             for name in (
                 "tdse_dynamics_overview.gif",
+                "particle_marginals_fixed_scale.gif",
                 "tdse_exact_factorization_fields.gif",
                 "tdse_transport_and_drive.gif",
+                "heavy_coordinate_dynamics.gif",
+                "proton_coordinate_dynamics.gif",
             ):
                 self.assertTrue((report/name).is_file(), name)
 

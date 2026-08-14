@@ -33,6 +33,8 @@ from .report_plot_style import (
     masked_cmap,
 )
 from .visualize import NUMBER_FORMATTER, selected_frames
+from .marginal_movie import make_fixed_scale_marginal_animation
+from .coordinate_focus_movie import make_coordinate_focus_animation
 
 
 _REQUIRED = (
@@ -67,6 +69,8 @@ def load_observables(archive):
             raise ValueError(f"direct discrete TDSE archive가 아닙니다: kind={kind!r}")
         values = {key: np.asarray(stored[key]) for key in _REQUIRED}
         for key in (
+            "x",
+            "electron_density",
             "bo_energies",
             "energy_imaginary_defect",
             "norm_rate",
@@ -93,6 +97,11 @@ def calculate_observables(data):
     heavy = np.asarray(data["heavy_density"], float)
     joint = np.asarray(data["joint_density"], float)
     populations = np.asarray(data["bo_populations"], float)
+    x = np.asarray(data["x"], float) if "x" in data else None
+    electron = (
+        np.asarray(data["electron_density"], float)
+        if "electron_density" in data else None
+    )
     if joint.shape != (len(times), len(q), len(R)):
         raise ValueError(
             "joint_density shape mismatch: "
@@ -100,6 +109,9 @@ def calculate_observables(data):
         )
     if proton.shape != (len(times), len(q)) or heavy.shape != (len(times), len(R)):
         raise ValueError("stored marginal density shape가 grid/time과 맞지 않습니다")
+    if electron is not None:
+        if x is None or electron.shape != (len(times), len(x)):
+            raise ValueError("stored electron density shape가 x grid/time과 맞지 않습니다")
     dq = float(q[1]-q[0]) if len(q) > 1 else 1.0
     dR = float(R[1]-R[0]) if len(R) > 1 else 1.0
     q_mass = np.sum(proton, axis=1)*dq
@@ -123,6 +135,8 @@ def calculate_observables(data):
     result = dict(data)
     result.update(
         times_fs=times,
+        x=x,
+        electron_density=electron,
         q=q,
         R=R,
         proton_density=proton,
@@ -526,6 +540,8 @@ def _load_ef_fields(obs):
             raise ValueError("TDSE field cache와 source archive의 저장 시각이 다릅니다")
         result = {key: np.asarray(stored[key], float) for key in required}
         for key in (
+            "x",
+            "electron_density",
             "factorization_residual",
             "epsilon_1_imaginary_defect",
             "epsilon_2_imaginary_defect",
@@ -672,7 +688,9 @@ def _ef_limits(items):
             for key in keys:
                 selected = finite(item[key])
                 if selected.size:
-                    values[target].append(float(np.max(np.abs(selected))))
+                    values[target].append(
+                        float(np.percentile(np.abs(selected), 99.0))
+                    )
     result = {}
     for key in scalar_keys:
         if not values[key]:
@@ -685,7 +703,10 @@ def _ef_limits(items):
                 low, high = low-padding, high+padding
             result[key] = (low, high)
     for key in symmetric_keys:
-        bound = max(values[key]+[1.0e-12])
+        bound = max(
+            float(np.percentile(values[key], 98.0)) if values[key] else 0.0,
+            1.0e-12,
+        )
         result[key] = (-bound, bound)
     result["a"] = result["connection"]
     result["b"] = result["connection"]
@@ -708,11 +729,12 @@ def _support_tail_lines(axis, coordinate, occupied, full, support, *, color,
                         label, linewidth=1.8, linestyle="-"):
     tail = np.where(~np.asarray(support, bool), np.asarray(full), np.nan)
     tail_line, = axis.plot(
-        coordinate, tail, color=color, lw=0.8, ls=":", alpha=0.55,
+        coordinate, tail, color=color, lw=0.55, ls=":", alpha=0.22,
+        zorder=0.5,
     )
     support_line, = axis.plot(
         coordinate, occupied, color=color, lw=linewidth, ls=linestyle,
-        label=label,
+        label=label, zorder=2.5,
     )
     return support_line, tail_line
 
@@ -744,7 +766,9 @@ def _draw_ef_maps(fig, axes, item, obs, limits):
         )
         ax.set(xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)")
         ax.set_title(title, loc="left", fontweight="semibold")
-        fig.colorbar(image, ax=ax, pad=0.01, format=NUMBER_FORMATTER)
+        fig.colorbar(
+            image, ax=ax, pad=0.01, format=NUMBER_FORMATTER, extend="both"
+        )
         images.append((image, key))
     return images
 
@@ -832,7 +856,9 @@ def plot_transport_fields(obs, ef, outdir, dpi, frame=-1):
         )
         ax.set(xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)")
         ax.set_title(title, loc="left", fontweight="semibold", fontsize=9.5)
-        fig.colorbar(image, ax=ax, pad=0.01, format=NUMBER_FORMATTER)
+        fig.colorbar(
+            image, ax=ax, pad=0.01, format=NUMBER_FORMATTER, extend="both"
+        )
     fig.suptitle(
         f"TDSE postprocessed gauge-invariant transport | t={obs['times_fs'][frame]:.4f} fs\n"
         "raw reconstructed fields; density controls display opacity only",
@@ -945,7 +971,9 @@ def make_transport_animation(obs, ef, outdir, fps, max_frames, dpi, fmt):
         )
         ax.set(xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)")
         ax.set_title(label, loc="left", fontweight="semibold")
-        fig.colorbar(image, ax=ax, pad=0.01, format=NUMBER_FORMATTER)
+        fig.colorbar(
+            image, ax=ax, pad=0.01, format=NUMBER_FORMATTER, extend="both"
+        )
         images.append((image, key))
     title = fig.suptitle("")
 
@@ -966,8 +994,84 @@ def make_transport_animation(obs, ef, outdir, fps, max_frames, dpi, fmt):
     return _save_animation(animation, fig, outdir, "tdse_transport_and_drive", fps, dpi, fmt)
 
 
+def make_coordinate_focus_animations(
+    obs, ef, outdir, fps, max_frames, dpi, fmt,
+    marginal_ymax=1.5, marginal_xmax=12.0,
+):
+    """Make q- and R-focused movies from the reconstructed EF fields.
+
+    The heavy-coordinate panels are the same native one-dimensional fields
+    used by the exact-field report.  The first-level q-R fields are reduced to
+    q profiles using the physical joint density (or integrated directly for
+    the probability current); the raw two-dimensional maps remain available
+    in ``tdse_transport_and_drive``.
+    """
+    times = np.asarray(obs["times_fs"], float)
+    q, R = np.asarray(obs["q"], float), np.asarray(obs["R"], float)
+    joint = np.asarray(obs["joint_density"], float)
+    proton = np.asarray(obs["proton_density"], float)
+    heavy = np.asarray(obs["heavy_density"], float)
+    epsilon_q = np.zeros_like(proton)
+    momentum_q = np.zeros_like(proton)
+    current_q = np.zeros_like(proton)
+    epsilon_R = np.zeros_like(heavy)
+    momentum_R = np.zeros_like(heavy)
+    current_R = np.zeros_like(heavy)
+    for frame in range(len(times)):
+        item = _ef_frame(obs, ef, frame)
+        denominator = np.maximum(proton[frame], 1.0e-300)
+        epsilon_q[frame] = (
+            np.sum(joint[frame]*item["eps1_full"], axis=1)
+            *obs["dR"]/denominator
+        )
+        momentum_q[frame] = (
+            np.sum(joint[frame]*item["momentum_q_full"], axis=1)
+            *obs["dR"]/denominator
+        )
+        current_q[frame] = (
+            np.sum(item["proton_current_full"], axis=1)*obs["dR"]
+        )
+        epsilon_R[frame] = item["eps2_full"]
+        momentum_R[frame] = item["momentum_R_full"]
+        current_R[frame] = item["heavy_current_full"]
+
+    make_coordinate_focus_animation(
+        times_fs=times, coordinate=R, marginal=heavy,
+        profiles=(
+            (r"Second TDPES $\epsilon^{(2)}(R)$",
+             "shifted energy (Hartree)", epsilon_R, COLORS[0], False),
+            (r"Heavy mechanical momentum $K_R^{(\chi)}$",
+             r"momentum ($a_0^{-1}$)", momentum_R, "black", True),
+            (r"Heavy probability transport $j_R^{(\chi)}$",
+             "heavy probability current", current_R, CURRENT_COLOR, True),
+        ),
+        options=obs["options"], outdir=outdir, fps=fps,
+        max_frames=max_frames, dpi=dpi, fmt=fmt,
+        particle_name="Heavy nucleus", coordinate_symbol="R",
+        color=PARTICLE_COLORS["heavy"], stem="heavy_coordinate_dynamics",
+        marginal_ymax=marginal_ymax, marginal_xmax=marginal_xmax,
+    )
+    make_coordinate_focus_animation(
+        times_fs=times, coordinate=q, marginal=proton,
+        profiles=(
+            (r"Density-conditioned first TDPES $\bar\epsilon^{(1)}(q)$",
+             "shifted energy (Hartree)", epsilon_q, COLORS[0], False),
+            (r"Density-conditioned mechanical momentum $\bar K_q$",
+             r"momentum ($a_0^{-1}$)", momentum_q, "black", True),
+            (r"Integrated probability transport $J_q$",
+             "proton probability current", current_q, CURRENT_COLOR, True),
+        ),
+        options=obs["options"], outdir=outdir, fps=fps,
+        max_frames=max_frames, dpi=dpi, fmt=fmt,
+        particle_name="Proton", coordinate_symbol="q",
+        color=PARTICLE_COLORS["proton"], stem="proton_coordinate_dynamics",
+        marginal_ymax=marginal_ymax, marginal_xmax=marginal_xmax,
+    )
+
+
 def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
-        max_frames=180, animation_dpi=110, fmt="mp4", snapshot_count=6):
+        max_frames=180, animation_dpi=110, fmt="mp4", snapshot_count=6,
+        marginal_ymax=1.5, marginal_xmax=12.0):
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     data = load_observables(archive)
@@ -979,6 +1083,13 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
         f"{coefficient_note}"
     )
     ef = _load_ef_fields(obs)
+    if (
+        obs["electron_density"] is None
+        and ef is not None
+        and "electron_density" in ef
+    ):
+        obs["electron_density"] = ef["electron_density"]
+        obs["x"] = ef.get("x", obs["x"])
     plot_particle_motion(obs, outdir, dpi, snapshot_count=snapshot_count)
     plot_joint_snapshots(obs, outdir, dpi, snapshot_count=snapshot_count)
     plot_electronic_dynamics(obs, outdir, dpi, ef=ef)
@@ -995,6 +1106,24 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
         )
     if not no_animation:
         make_dynamics_animation(obs, outdir, fps, max_frames, animation_dpi, fmt)
+        if obs["electron_density"] is not None and obs["x"] is not None:
+            make_fixed_scale_marginal_animation(
+                times_fs=obs["times_fs"],
+                particle_series=(
+                    ("electron", obs["x"], obs["electron_density"]),
+                    ("proton", obs["q"], obs["proton_density"]),
+                    ("heavy", obs["R"], obs["heavy_density"]),
+                ),
+                options=obs["options"], outdir=outdir, fps=fps,
+                max_frames=max_frames, dpi=animation_dpi, fmt=fmt,
+                y_max=marginal_ymax, x_abs_max=marginal_xmax,
+                title_prefix="Direct TDSE dynamics",
+            )
+        else:
+            print(
+                "TDSE fixed-scale 3-particle marginal 영상 생략: "
+                "electron_density가 없습니다. postprocess_tdse_ef를 실행하세요."
+            )
         if ef is not None:
             make_exact_field_animation(
                 obs, ef, outdir, fps, max_frames, animation_dpi, fmt
@@ -1002,13 +1131,23 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
             make_transport_animation(
                 obs, ef, outdir, fps, max_frames, animation_dpi, fmt
             )
-    np.savez_compressed(
-        outdir/"tdse_report_observables.npz",
+            make_coordinate_focus_animations(
+                obs, ef, outdir, fps, max_frames, animation_dpi, fmt,
+                marginal_ymax, marginal_xmax,
+            )
+    report_payload = dict(
         times_fs=obs["times_fs"],
         q_mean=obs["q_mean"], R_mean=obs["R_mean"],
         q_width=obs["q_width"], R_width=obs["R_width"],
         norm=obs["norm"], energy=obs["energy"],
         bo_populations=obs["bo_populations"],
+    )
+    if obs["electron_density"] is not None:
+        report_payload.update(
+            x=obs["x"], electron_density=obs["electron_density"]
+        )
+    np.savez_compressed(
+        outdir/"tdse_report_observables.npz", **report_payload
     )
     print(f"TDSE standalone report 완료: {outdir}")
     return obs

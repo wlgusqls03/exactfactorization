@@ -42,6 +42,8 @@ from .visualize import (
     archive_arguments,
     selected_frames,
 )
+from .marginal_movie import make_fixed_scale_marginal_animation
+from .coordinate_focus_movie import make_coordinate_focus_animation
 
 
 class _ArchiveView(dict):
@@ -449,6 +451,7 @@ def _potential_limits(fields):
         "eps1": False,
         "connection": True,
         "eps2": False,
+        "momentum_component_R": True,
         "momentum_R": True,
         "current_R": True,
         "force_R": True,
@@ -460,7 +463,10 @@ def _potential_limits(fields):
         if not finite.size:
             return
         if specifications[key]:
-            bounds[key].append(float(np.max(np.abs(finite))))
+            # A handful of finite tail-adjacent spikes must not bleach the
+            # occupied-support color map. Values outside this plotting bound
+            # remain in the data and are shown by an extended colorbar.
+            bounds[key].append(float(np.percentile(np.abs(finite), 99.0)))
         else:
             bounds[key].append((float(np.min(finite)), float(np.max(finite))))
 
@@ -471,8 +477,9 @@ def _potential_limits(fields):
         record("connection", item["a"])
         record("connection", item["b"])
         record("eps2", item["eps2"])
-        for key in ("alpha", "phase_R", "momentum_R"):
-            record("momentum_R", item[key])
+        for key in ("alpha", "phase_R"):
+            record("momentum_component_R", item[key])
+        record("momentum_R", item["momentum_R"])
         record("current_R", item["current_R"])
         record("force_R", item["force_R"])
 
@@ -482,7 +489,7 @@ def _potential_limits(fields):
         if not values:
             result[key] = (-1.0, 1.0)
         elif symmetric:
-            bound = max(max(values), 1.0e-12)
+            bound = max(float(np.percentile(values, 98.0)), 1.0e-12)
             result[key] = (-bound, bound)
         else:
             low = min(value[0] for value in values)
@@ -521,8 +528,8 @@ def _support_tail_lines(
     support = np.asarray(support, bool)
     tail = np.where(~support & np.isfinite(full), full, np.nan)
     tail_line, = axis.plot(
-        coordinate, tail, color=color, lw=0.8, ls=":", alpha=0.55,
-        zorder=max(zorder-1, 0),
+        coordinate, tail, color=color, lw=0.55, ls=":", alpha=0.22,
+        zorder=max(zorder-1.5, 0),
     )
     support_line, = axis.plot(
         coordinate, occupied, color=color, lw=linewidth, ls=linestyle,
@@ -561,7 +568,9 @@ def plot_exact_potentials(data, obs, diagnostics, outdir, dpi, frame=-1):
         ax.set_title(title, loc="left", fontweight="semibold")
         ax.set_xlabel(r"proton $q$ ($a_0$)")
         ax.set_ylabel(r"heavy $R$ ($a_0$)")
-        fig.colorbar(image, ax=ax, pad=0.012, format=NUMBER_FORMATTER)
+        fig.colorbar(
+            image, ax=ax, pad=0.012, format=NUMBER_FORMATTER, extend="both"
+        )
 
     epsilon_line, _epsilon_tail = _support_tail_lines(
         axes[1, 0], R, item["eps2"], item["eps2_full"],
@@ -574,12 +583,13 @@ def plot_exact_potentials(data, obs, diagnostics, outdir, dpi, frame=-1):
     axes[1, 0].set_title(r"Proton-heavy level: $\epsilon^{(2)}$", loc="left", fontweight="semibold")
     axes[1, 0].legend(frameon=False, fontsize=8)
 
+    component_axis = axes[1, 1].twinx()
     alpha_line, _alpha_tail = _support_tail_lines(
-        axes[1, 1], R, item["alpha"], item["alpha_full"],
+        component_axis, R, item["alpha"], item["alpha_full"],
         item["heavy_support"], color=COLORS[3], label=r"$\alpha$",
     )
     phase_line, _phase_tail = _support_tail_lines(
-        axes[1, 1], R, item["phase_R"], item["phase_R_full"],
+        component_axis, R, item["phase_R"], item["phase_R_full"],
         item["heavy_support"], color=COLORS[1],
         label=r"$\partial_RS_\chi$", linewidth=1.6, linestyle="--",
     )
@@ -590,9 +600,17 @@ def plot_exact_potentials(data, obs, diagnostics, outdir, dpi, frame=-1):
     )
     _scaled_density_line(axes[1, 1], R, item["heavy"])
     axes[1, 1].set_ylim(limits["momentum_R"])
-    axes[1, 1].set_ylabel(r"momentum ($a_0^{-1}$)")
+    component_axis.set_ylim(limits["momentum_component_R"])
+    color_y_axis(axes[1, 1], "black", r"$K_R^{(\chi)}$ ($a_0^{-1}$)")
+    color_y_axis(
+        component_axis, COLORS[3],
+        r"components $\partial_RS_\chi,\alpha$ ($a_0^{-1}$)",
+    )
     axes[1, 1].set_title(r"Heavy momentum: $K_R^{(\chi)}=\partial_RS_\chi+\alpha$", loc="left", fontweight="semibold")
-    axes[1, 1].legend(frameon=False, fontsize=8)
+    axes[1, 1].legend(
+        handles=[momentum_line, phase_line, alpha_line],
+        frameon=False, fontsize=8,
+    )
 
     current_line, _current_tail = _support_tail_lines(
         axes[1, 2], R, item["current_R"], item["current_R_full"],
@@ -791,7 +809,7 @@ def make_overview_animation(data, obs, diagnostics, outdir, fps, max_frames, dpi
         # Scan occupied-support percentiles without retaining q-R copies for
         # every movie frame.  Rendering below always uses the unmodified raw
         # diagnostic; density only controls its display opacity.
-        frame_maxima = []
+        frame_bounds = []
         frame_typical = []
         for frame in sampled:
             occupied = _support_field(
@@ -800,9 +818,12 @@ def make_overview_animation(data, obs, diagnostics, outdir, fps, max_frames, dpi
             )
             finite = np.abs(occupied[np.isfinite(occupied)])
             if finite.size:
-                frame_maxima.append(float(np.max(finite)))
+                frame_bounds.append(float(np.percentile(finite, 99.0)))
                 frame_typical.append(float(np.percentile(finite, 80.0)))
-        maximum = max(frame_maxima+[1.0e-12])
+        maximum = max(
+            float(np.percentile(frame_bounds, 98.0)) if frame_bounds else 0.0,
+            1.0e-12,
+        )
         if scale == "symlog":
             typical = max(frame_typical+[1.0e-12])
             linear_threshold = min(max(0.2*typical, 1.0e-12), maximum)
@@ -818,7 +839,7 @@ def make_overview_animation(data, obs, diagnostics, outdir, fps, max_frames, dpi
         else:
             low, high = -maximum, maximum
             image_kwargs = {"vmin": low, "vmax": high}
-            scale_note = rf"trajectory scale $\pm{high:.1e}$"
+            scale_note = rf"robust occupied-support scale $\pm{high:.1e}$"
         ax.set_facecolor(MASK_COLOR)
         initial_raw = np.asarray(diagnostics[key][first], float)
         initial_opacity = density_display_alpha(
@@ -839,6 +860,7 @@ def make_overview_animation(data, obs, diagnostics, outdir, fps, max_frames, dpi
         )
         fig.colorbar(
             image, ax=ax, pad=0.01, format=NUMBER_FORMATTER, label=unit,
+            extend="both",
         )
         field_images.append((image, key))
     title = fig.suptitle(
@@ -934,7 +956,9 @@ def make_potential_animation(data, obs, outdir, fps, max_frames, dpi, fmt):
         ax.set_xlabel("proton q")
         ax.set_ylabel("heavy R")
         ax.set_title(name, loc="left", fontweight="semibold")
-        fig.colorbar(image, ax=ax, pad=0.012, format=NUMBER_FORMATTER)
+        fig.colorbar(
+            image, ax=ax, pad=0.012, format=NUMBER_FORMATTER, extend="both"
+        )
         images.append(image)
 
     epsilon_line, epsilon_tail = _support_tail_lines(
@@ -950,12 +974,13 @@ def make_potential_animation(data, obs, outdir, fps, max_frames, dpi, fmt):
     color_y_axis(axes[1, 0], COLORS[0], "shifted energy (Hartree)")
     axes[1, 0].set_title(r"Proton-heavy level: $\epsilon^{(2)}$", loc="left", fontweight="semibold")
     axes[1, 0].legend(frameon=False, fontsize=8)
+    component_ax = axes[1, 1].twinx()
     alpha_line, alpha_tail = _support_tail_lines(
-        axes[1, 1], R, first_item["alpha"], first_item["alpha_full"],
+        component_ax, R, first_item["alpha"], first_item["alpha_full"],
         first_item["heavy_support"], color=COLORS[3], label=r"$\alpha$",
     )
     phase_line, phase_tail = _support_tail_lines(
-        axes[1, 1], R, first_item["phase_R"], first_item["phase_R_full"],
+        component_ax, R, first_item["phase_R"], first_item["phase_R_full"],
         first_item["heavy_support"], color=COLORS[1],
         label=r"$\partial_RS_\chi$", linewidth=1.6, linestyle="--",
     )
@@ -965,9 +990,17 @@ def make_potential_animation(data, obs, outdir, fps, max_frames, dpi, fmt):
         color="black", label=r"$K_R^{(\chi)}$", linewidth=2.0,
     )
     axes[1, 1].set_ylim(plot_limits["momentum_R"])
-    axes[1, 1].set_ylabel(r"momentum ($a_0^{-1}$)")
+    component_ax.set_ylim(plot_limits["momentum_component_R"])
+    color_y_axis(axes[1, 1], "black", r"$K_R^{(\chi)}$ ($a_0^{-1}$)")
+    color_y_axis(
+        component_ax, COLORS[3],
+        r"components $\partial_RS_\chi,\alpha$ ($a_0^{-1}$)",
+    )
     axes[1, 1].set_title(r"$K_R^{(\chi)}=\partial_RS_\chi+\alpha$", loc="left", fontweight="semibold")
-    axes[1, 1].legend(frameon=False, fontsize=8)
+    axes[1, 1].legend(
+        handles=[momentum_line, phase_line, alpha_line],
+        frameon=False, fontsize=8,
+    )
     current_line, current_tail = _support_tail_lines(
         axes[1, 2], R, first_item["current_R"],
         first_item["current_R_full"], first_item["heavy_support"],
@@ -1110,8 +1143,72 @@ def make_state_ladder_animation(data, obs, outdir, fps, max_frames, dpi, fmt):
     )
 
 
+def make_coordinate_focus_animations(
+    data, obs, diagnostics, outdir, fps, max_frames, dpi, fmt,
+    marginal_ymax=1.5, marginal_xmax=12.0,
+):
+    """Reuse exact-potential diagnostics as q- and R-focused line movies."""
+    times, q, R = obs["times_fs"], obs["q"], obs["R"]
+    dR = float(R[1]-R[0]) if len(R) > 1 else 1.0
+    joint = np.asarray(obs["nuclear_joint_density"], float)
+    proton = np.asarray(obs["proton_density"], float)
+    heavy = np.asarray(obs["heavy_density"], float)
+    epsilon_q = np.zeros_like(proton)
+    momentum_q = np.zeros_like(proton)
+    current_q = np.sum(
+        np.asarray(diagnostics["proton_current"], float), axis=2
+    )*dR
+    epsilon_R = np.zeros_like(heavy)
+    for frame in range(len(times)):
+        item = _potential_frame_fields(data, obs, diagnostics, frame)
+        denominator = np.maximum(proton[frame], 1.0e-300)
+        epsilon_q[frame] = np.sum(
+            joint[frame]*item["eps1_full"], axis=1
+        )*dR/denominator
+        momentum_q[frame] = np.sum(
+            joint[frame]*np.asarray(diagnostics["momentum_q"])[frame], axis=1
+        )*dR/denominator
+        epsilon_R[frame] = item["eps2_full"]
+    options = archive_arguments(
+        data if hasattr(data, "files") else _ArchiveView(data)
+    )
+    make_coordinate_focus_animation(
+        times_fs=times, coordinate=R, marginal=heavy,
+        profiles=(
+            (r"Proton-heavy level $\epsilon^{(2)}(R)$",
+             "shifted energy (Hartree)", epsilon_R, COLORS[0], False),
+            (r"Heavy mechanical momentum $K_R^{(\chi)}$",
+             r"momentum ($a_0^{-1}$)",
+             diagnostics["momentum_R_outer"], "black", True),
+            (r"Heavy probability transport $j_R^{(\chi)}$",
+             "heavy probability current",
+             diagnostics["heavy_current"], CURRENT_COLOR, True),
+        ),
+        options=options, outdir=outdir, fps=fps, max_frames=max_frames,
+        dpi=dpi, fmt=fmt, particle_name="Heavy nucleus", coordinate_symbol="R",
+        color=PARTICLE_COLORS["heavy"], stem="heavy_coordinate_dynamics",
+        marginal_ymax=marginal_ymax, marginal_xmax=marginal_xmax,
+    )
+    make_coordinate_focus_animation(
+        times_fs=times, coordinate=q, marginal=proton,
+        profiles=(
+            (r"Density-conditioned $\bar\epsilon^{(1)}(q)$",
+             "shifted energy (Hartree)", epsilon_q, COLORS[0], False),
+            (r"Density-conditioned mechanical momentum $\bar K_q$",
+             r"momentum ($a_0^{-1}$)", momentum_q, "black", True),
+            (r"Integrated probability transport $J_q$",
+             "proton probability current", current_q, CURRENT_COLOR, True),
+        ),
+        options=options, outdir=outdir, fps=fps, max_frames=max_frames,
+        dpi=dpi, fmt=fmt, particle_name="Proton", coordinate_symbol="q",
+        color=PARTICLE_COLORS["proton"], stem="proton_coordinate_dynamics",
+        marginal_ymax=marginal_ymax, marginal_xmax=marginal_xmax,
+    )
+
+
 def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
-        max_frames=180, animation_dpi=110, fmt="mp4"):
+        max_frames=180, animation_dpi=110, fmt="mp4",
+        marginal_ymax=1.5, marginal_xmax=12.0):
     """Create the coefficient-native compact report and return observables."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -1124,7 +1221,7 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
     plot_reliability(data, obs, outdir, dpi)
     plot_energy_ladders(data, obs, outdir, dpi)
     if not no_animation:
-        print("Born--Huang compact dynamics 영상 3개 생성")
+        print("Born--Huang compact dynamics 기본 3개 + marginal/coordinate 영상 생성")
         make_overview_animation(
             data, obs, diagnostics, outdir, fps, max_frames, animation_dpi, fmt
         )
@@ -1133,6 +1230,31 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
         )
         make_state_ladder_animation(
             data, obs, outdir, fps, max_frames, animation_dpi, fmt
+        )
+        if obs["electron_density"] is not None:
+            make_fixed_scale_marginal_animation(
+                times_fs=obs["times_fs"],
+                particle_series=(
+                    ("electron", obs["x"], obs["electron_density"]),
+                    ("proton", obs["q"], obs["proton_density"]),
+                    ("heavy", obs["R"], obs["heavy_density"]),
+                ),
+                options=archive_arguments(
+                    data if hasattr(data, "files") else _ArchiveView(data)
+                ),
+                outdir=outdir, fps=fps, max_frames=max_frames,
+                dpi=animation_dpi, fmt=fmt, y_max=marginal_ymax,
+                x_abs_max=marginal_xmax,
+                title_prefix="Direct MCEF factor dynamics",
+            )
+        else:
+            print(
+                "fixed-scale 3-particle marginal 영상 생략: "
+                "electron_density가 archive에 없습니다."
+            )
+        make_coordinate_focus_animations(
+            data, obs, diagnostics, outdir, fps, max_frames,
+            animation_dpi, fmt, marginal_ymax, marginal_xmax,
         )
     payload = {
         key: value for key, value in obs.items()

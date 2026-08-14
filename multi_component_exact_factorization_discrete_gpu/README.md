@@ -222,12 +222,18 @@ python -m multi_component_exact_factorization.render_all \
   --max-frames 240 \
   --dpi 180 \
   --animation-dpi 110 \
+  --marginal-ymax 1.5 \
+  --marginal-xmax 12 \
   --no-3d
 ```
 
 This creates raw proton/heavy marginal figures, fixed-scale q-R joint-density
 snapshots, BO populations and sampled BO energies, numerical reliability and
-`tdse_dynamics_overview.mp4`.  Densities and populations are neither smoothed
+`tdse_dynamics_overview.mp4`. When an electron marginal is available it also
+creates `particle_marginals_fixed_scale.mp4`, with electron, proton and heavy
+density on the same `[-12,12]` position window and `0..1.5` density window.
+Those are plotting windows only: values outside them are not modified.
+Densities and populations are neither smoothed
 nor peak-normalized; animation axes and the joint-density color maximum are
 fixed over the complete trajectory.
 
@@ -240,6 +246,7 @@ CUDA_VISIBLE_DEVICES=0 python -m \
   results/YYYYMMDD/expanded_tdse_bh10_50fs \
   --device 0 \
   --bo-link-kernel fused \
+  --overwrite \
   --progress-every 5
 ```
 
@@ -253,17 +260,37 @@ It saves `tdse_exact_factorization_fields.npz` beside the TDSE archive with
 - the first vector potential's q/R components `a(q,R)` and `b(q,R)`;
 - the second vector potential `alpha(R)`;
 - exact factorization and imaginary-scalar residual audits.
+- the exact electron marginal reconstructed from the BO coefficients and
+  cached electronic states.
+
+Electron-marginal reconstruction is exact but expensive because every saved
+frame must stream the large cached BO eigenstate tensor. Use
+`--no-electron-density` only when the exact-potential fields are needed without
+the three-particle marginal movie. New TDSE propagation archives save the
+electron marginal at each output frame by default; use
+`--no-bo-save-electron-density` to opt out.
 
 Run the standard renderer again.  It automatically finds this field cache
 and additionally creates
 `05_tdse_exact_factorization_fields.png`,
 `06_tdse_transport_and_drive.png`,
 `tdse_exact_factorization_fields.mp4`, and
-`tdse_transport_and_drive.mp4`.  The latter fields include mechanical
+`tdse_transport_and_drive.mp4`.  It also creates
+`heavy_coordinate_dynamics.mp4` and `proton_coordinate_dynamics.mp4`:
+each uses the existing exact-potential colors and definitions, while the
+three field panels follow the instantaneous occupied coordinate interval.
+The marginal panel remains on the requested fixed display window.  The
+proton panels label the density-conditioned R reduction of the first TDPES
+and momentum, and the R-integrated proton current.  The latter fields include mechanical
 momenta, currents, and gauge-invariant drives.  Spatial derivatives and the
 saved-frame connection time derivative use the same periodic five-point and
 centered-time diagnostic convention as the existing MCEF report; they do not
 feed back into TDSE propagation.
+
+All continuum-MCEF, discrete-MCEF and TDSE 2D momentum/current/drive maps use
+a trajectory-wide robust color range computed only on occupied support.
+Outliers outside the plotting range saturate the end color and are marked by
+extended colorbars; the stored field values are not clipped or rescaled.
 
 ## Saved diagnostics
 
@@ -340,7 +367,10 @@ python -m multi_component_exact_factorization.render_all \
 
 The existing Born--Huang report still produces its standard density,
 electron/proton/heavy marginal, momentum/current/force, exact-potential and BO
-surface products (five PNGs and three movies).  A discrete archive adds:
+surface products.  In addition to its original three movies it creates a
+fixed-scale three-particle marginal movie and heavy/proton coordinate movies;
+the latter reuse the exact-potential fields and move only their x display
+window with occupied support.  A discrete archive adds:
 
 ```text
 06_discrete_mcef_consistency.png

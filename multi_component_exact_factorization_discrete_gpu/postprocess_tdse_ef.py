@@ -27,6 +27,9 @@ from multi_component_exact_factorization.render_all import (
     find_archive,
     resolve_run_input,
 )
+from multi_component_exact_factorization.tdse_electron import (
+    electron_marginal_from_bo,
+)
 from multi_component_exact_factorization_discrete.core import (
     OFFSETS,
     kinetic_weights,
@@ -54,6 +57,7 @@ def _metadata(archive):
         return {
             "args": dict(stored[0]),
             "times_fs": np.asarray(data["times_fs"], float),
+            "x": np.asarray(data["x"], float),
             "q": np.asarray(data["q"], float),
             "R": np.asarray(data["R"], float),
             "bo_states": int(np.asarray(data["bo_states_count"]).item()),
@@ -222,6 +226,8 @@ def run(args):
     estimated_bytes = nt*(
         3*nq*nR+2*nR+metadata["bo_states"]*(nq+nR)
     )*np.dtype(np.float64).itemsize
+    if args.electron_density:
+        estimated_bytes += nt*len(metadata["x"])*np.dtype(np.float64).itemsize
     free_bytes = shutil.disk_usage(output.parent).free
     print(
         "EF field cache 예상 raw payload="
@@ -240,9 +246,11 @@ def run(args):
         cpu_model, metadata["bo_states"], cache_dir=cache_dir,
     )
     model = make_discrete_gpu_model(cpu_model)
+    compact_states = basis_cpu.states if args.electron_density else None
     link_kernel = args.bo_link_kernel or metadata["bo_link_kernel"]
     basis = to_gpu_basis(basis_cpu, model, link_kernel)
-    basis_cpu.states = np.empty((0,), dtype=float)
+    if compact_states is None:
+        basis_cpu.states = np.empty((0,), dtype=float)
     print(
         f"TDSE -> exact factorization fields: frames={len(metadata['times_fs'])}, "
         f"N_BO={metadata['bo_states']}, GPU={args.device}, links={link_kernel}"
@@ -268,6 +276,14 @@ def run(args):
         "epsilon_2_imaginary_defect": np.empty(nt, dtype=np.float64),
         "factorization_residual": np.empty(nt, dtype=np.float64),
     }
+    if compact_states is not None:
+        fields["electron_density"] = np.empty(
+            (nt, len(metadata["x"])), dtype=np.float64
+        )
+        print(
+            "TDSE electron marginal도 정확히 복원합니다. BO states를 "
+            f"R-block={args.electron_density_R_block}으로 순차 읽습니다."
+        )
     with _stream_arrays(archive, ("tdse_coefficients",)) as readers:
         reader = readers["tdse_coefficients"]
         if reader.shape != (nt, metadata["bo_states"], nq, nR):
@@ -275,7 +291,13 @@ def run(args):
                 f"tdse_coefficients shape mismatch: {reader.shape}"
             )
         for frame in range(nt):
-            current = _frame_fields(reader.read(frame), model, basis)
+            y_frame = reader.read(frame)
+            current = _frame_fields(y_frame, model, basis)
+            if compact_states is not None:
+                current["electron_density"] = electron_marginal_from_bo(
+                    y_frame, compact_states, model.dq, model.dR,
+                    args.electron_density_R_block,
+                )
             for key in fields:
                 fields[key][frame] = current[key]
             if args.progress_every and (
@@ -296,7 +318,8 @@ def run(args):
         source_kind=np.array(metadata["source_kind"]),
         gauge=np.array("positive_density_marginals"),
         scalar_time_derivative=np.array("instantaneous_tdse_action"),
-        times_fs=metadata["times_fs"], q=metadata["q"], R=metadata["R"],
+        times_fs=metadata["times_fs"], x=metadata["x"],
+        q=metadata["q"], R=metadata["R"],
     )
     print(f"TDSE exact-factorization fields 저장: {output}")
     print(
@@ -319,7 +342,16 @@ def parse_args(argv=None):
     parser.add_argument("--progress-every", type=int, default=5)
     parser.add_argument("--output")
     parser.add_argument("--overwrite", action="store_true")
-    return parser.parse_args(argv)
+    parser.set_defaults(electron_density=True)
+    parser.add_argument(
+        "--no-electron-density", action="store_false", dest="electron_density",
+        help="전자 marginal 복원을 생략해 field 후처리를 더 빠르게 수행",
+    )
+    parser.add_argument("--electron-density-R-block", type=int, default=24)
+    args = parser.parse_args(argv)
+    if args.electron_density_R_block <= 0:
+        parser.error("--electron-density-R-block must be positive")
+    return args
 
 
 if __name__ == "__main__":

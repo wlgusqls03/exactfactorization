@@ -128,7 +128,7 @@ class BornHuangReportTests(unittest.TestCase):
             ):
                 self.assertTrue((report/name).is_file(), name)
 
-    def test_three_animations_write_without_electronic_grid(self):
+    def test_animations_write_without_electronic_grid(self):
         data = self.synthetic_data()
         obs = born_huang_report.calculate_observables(data)
         diagnostics = born_huang_report._diagnostics(data)
@@ -143,10 +143,16 @@ class BornHuangReportTests(unittest.TestCase):
             born_huang_report.make_state_ladder_animation(
                 data, obs, root, fps=2, max_frames=3, dpi=35, fmt="gif"
             )
+            born_huang_report.make_coordinate_focus_animations(
+                data, obs, diagnostics, root, fps=2, max_frames=3,
+                dpi=35, fmt="gif",
+            )
             for name in (
                 "mcef_dynamics_overview.gif",
                 "mcef_exact_potentials.gif",
                 "mcef_physical_interpretation.gif",
+                "heavy_coordinate_dynamics.gif",
+                "proton_coordinate_dynamics.gif",
             ):
                 self.assertGreater((root/name).stat().st_size, 0, name)
 

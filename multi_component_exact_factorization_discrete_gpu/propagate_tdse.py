@@ -23,6 +23,9 @@ from multi_component_exact_factorization.core import (
     build_model,
     fixed_center_crossing_probabilities,
 )
+from multi_component_exact_factorization.tdse_electron import (
+    electron_marginal_from_bo,
+)
 from multi_component_exact_factorization_gpu.gpu_born_huang import to_gpu_basis
 from multi_component_exact_factorization_gpu.gpu_core import cp
 
@@ -86,10 +89,12 @@ def run(args):
     y_cpu = c_cpu*(lam_cpu*chi_cpu[None, :])[None, :, :]
     model = make_discrete_gpu_model(cpu_model)
     basis = to_gpu_basis(basis_cpu, model, args.bo_link_kernel)
+    compact_states = basis_cpu.states if args.bo_save_electron_density else None
     y = cp.ascontiguousarray(cp.asarray(y_cpu, dtype=cp.complex128))
     # Eigenstates are not needed after initial projection.  Keep only the
     # immutable energies and links already uploaded by to_gpu_basis().
-    basis_cpu.states = np.empty((0,), dtype=float)
+    if compact_states is None:
+        basis_cpu.states = np.empty((0,), dtype=float)
     print(
         f"동적 배열: Y={y.shape}; direct i*dY/dt=H_hY; "
         "mask/PNC/retraction 없음"
@@ -130,6 +135,8 @@ def run(args):
         "fixed_center_crossing_R_right": [],
         "fixed_center_crossing_R": [],
     }
+    if compact_states is not None:
+        histories["electron_density"] = []
 
     def save(step):
         action = discrete_tdse_action_gpu(y, model, basis)
@@ -156,8 +163,9 @@ def run(args):
         )*model.dq/norm
         q_edge = min(5, len(cpu_model.q)//2)
         R_edge = min(5, len(cpu_model.R)//2)
+        y_out = cp.asnumpy(y)
         histories["times_fs"].append(step*args.dt_au/AU_PER_FS)
-        histories["tdse_coefficients"].append(cp.asnumpy(y))
+        histories["tdse_coefficients"].append(y_out)
         histories["norm"].append(_scalar(norm))
         histories["energy"].append(_scalar(energy_complex.real))
         histories["energy_imaginary_defect"].append(
@@ -168,6 +176,13 @@ def run(args):
         histories["joint_density"].append(cp.asnumpy(joint/norm))
         histories["proton_density"].append(cp.asnumpy(q_density))
         histories["heavy_density"].append(cp.asnumpy(R_density))
+        if compact_states is not None:
+            histories["electron_density"].append(
+                electron_marginal_from_bo(
+                    y_out, compact_states, cpu_model.dq, cpu_model.dR,
+                    block_R=args.electron_density_R_block,
+                )
+            )
         histories["outer_probability_q"].append(_scalar(
             (cp.sum(q_density[:q_edge])+cp.sum(q_density[-q_edge:]))*model.dq
         ))
@@ -369,12 +384,21 @@ def parse_args(argv=None):
         "--no-bo-basis-cache", action="store_false", dest="bo_basis_cache"
     )
     parser.add_argument("--rebuild-bo-basis-cache", action="store_true")
+    parser.set_defaults(bo_save_electron_density=True)
+    parser.add_argument(
+        "--no-bo-save-electron-density", action="store_false",
+        dest="bo_save_electron_density",
+        help="저장 frame의 exact electron marginal 복원을 생략",
+    )
+    parser.add_argument("--electron-density-R-block", type=int, default=24)
     add_model_arguments(parser)
     args = parser.parse_args(argv)
     if args.dt_au <= 0.0 or args.t_final_fs < 0.0:
         parser.error("dt must be positive and final time nonnegative")
     if not np.isfinite(args.step_sleep_ms) or args.step_sleep_ms < 0.0:
         parser.error("--step-sleep-ms must be a finite nonnegative number")
+    if args.electron_density_R_block <= 0:
+        parser.error("--electron-density-R-block must be positive")
     return args
 
 

@@ -180,6 +180,8 @@ def run(args):
             no_animation=args.no_animation, fps=args.fps,
             max_frames=max_frames, animation_dpi=animation_dpi,
             fmt=args.format, snapshot_count=snapshots,
+            marginal_ymax=args.marginal_ymax,
+            marginal_xmax=args.marginal_xmax,
         )
         return
 
@@ -189,7 +191,8 @@ def run(args):
             archive, output_root/"report", dpi=args.dpi,
             no_animation=args.no_animation, fps=args.fps,
             max_frames=max_frames, animation_dpi=animation_dpi,
-            fmt=args.format,
+            fmt=args.format, marginal_ymax=args.marginal_ymax,
+            marginal_xmax=args.marginal_xmax,
         )
         with np.load(archive, allow_pickle=False) as stored:
             kind = str(np.asarray(stored.get("kind", "")).item())
@@ -339,6 +342,20 @@ def parse_args(argv=None):
     parser.add_argument("--snapshots", type=int, default=5)
     parser.add_argument("--dpi", type=int, default=180)
     parser.add_argument("--animation-dpi", type=int, default=120)
+    parser.add_argument(
+        "--marginal-ymax", type=float, default=1.5,
+        help=(
+            "새 particle_marginals_fixed_scale 영상의 표시 y 상한; "
+            "density 값은 변경하지 않음"
+        ),
+    )
+    parser.add_argument(
+        "--marginal-xmax", type=float, default=12.0,
+        help=(
+            "새 particle_marginals_fixed_scale 영상의 대칭 위치 표시 범위; "
+            "기본값은 -12..12 a0"
+        ),
+    )
     parser.add_argument("--fps", type=int, default=12)
     parser.add_argument("--max-frames", type=int, default=180)
     parser.add_argument("--format", choices=("mp4", "gif"), default="mp4")

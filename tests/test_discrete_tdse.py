@@ -5,9 +5,23 @@ import unittest
 import numpy as np
 
 from multi_component_exact_factorization_discrete_gpu.compare_tdse import compare
+from multi_component_exact_factorization.tdse_electron import (
+    electron_marginal_from_bo,
+)
 
 
 class DiscreteTDSEComparisonTests(unittest.TestCase):
+    def test_electron_marginal_matches_direct_grid_contraction(self):
+        rng = np.random.default_rng(12)
+        states = rng.normal(size=(3, 7, 5, 6))
+        y = rng.normal(size=(3, 5, 6))+1j*rng.normal(size=(3, 5, 6))
+        dq, dR = 0.4, 0.3
+        actual = electron_marginal_from_bo(y, states, dq, dR, block_R=2)
+        psi = np.einsum("nqR,nxqR->xqR", y, states)
+        norm = np.sum(np.abs(y)**2)*dq*dR
+        expected = np.sum(np.abs(psi)**2, axis=(1, 2))*dq*dR/norm
+        self.assertTrue(np.allclose(actual, expected, rtol=2e-15, atol=2e-15))
+
     def test_identical_factorized_trajectory_has_unit_fidelity(self):
         rng = np.random.default_rng(71)
         states, nq, nR, frames = 3, 5, 6, 2
