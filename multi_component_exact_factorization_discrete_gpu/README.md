@@ -329,6 +329,11 @@ The archive keeps `a`, `b`, and `alpha` as principal-branch `arg(S)/h`
 diagnostics.  Native discrete figures unwrap those phases along their bond
 coordinate before applying the occupied-support display mask.  This is
 plotting-only; propagation always uses the full complex overlap links.
+Together with `sphi_q1_magnitude`, `sphi_R1_magnitude`, and
+`sgamma_R1_magnitude`, these fields are a lossless polar representation of
+the three native nearest-neighbour links: for example
+`Sphi_q1 = magnitude*exp(1j*a*dq)`.  The archive metadata records this storage
+convention explicitly, so a redundant multi-GiB complex copy is unnecessary.
 
 The factor equations use no weighted product projection.  Therefore a small
 `relative_unexplained_residual` directly tests the discretize-first spatial

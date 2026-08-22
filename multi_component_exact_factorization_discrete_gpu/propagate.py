@@ -635,6 +635,13 @@ def run(args):
         ratio_regularization=np.array("probability_budget_flat_top_mass_inverse"),
         horizontal_correction=np.array("product_preserving_parallel_transport"),
         pnc_projection_backend=np.array("support_aware_product_preserving"),
+        native_discrete_link_output=np.array(
+            "nearest_polar_lossless"
+        ),
+        native_discrete_link_convention=np.array(
+            "forward S(g,g+1); magnitude keys plus principal phase "
+            "a*dq, b*dR, alpha*dR"
+        ),
         bo_states_count=np.array(n_states),
         bo_energies=np.asarray(basis_cpu.energies),
         bo_basis_cache_hit=np.array(cache_info["hit"]),

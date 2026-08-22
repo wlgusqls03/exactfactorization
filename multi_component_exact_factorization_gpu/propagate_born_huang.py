@@ -23,6 +23,7 @@ from multi_component_exact_factorization.propagate import output_gauge
 from .gpu_born_huang import (
     full_step_bh,
     instantaneous_functionals_bh,
+    nearest_conditional_overlap_links,
     pnc_project_coefficients,
     PNC_NORM_DIAGNOSTIC_NAMES,
     to_gpu_basis,
@@ -137,6 +138,19 @@ def run_born_huang(args):
         fixed_center_crossing_q=[], fixed_center_crossing_R_left=[],
         fixed_center_crossing_R_right=[], fixed_center_crossing_R=[],
     )
+    save_native_links = bool(
+        getattr(args, "bo_save_native_discrete_links", True)
+    )
+    if save_native_links:
+        histories.update(sphi_q1=[], sphi_R1=[], sgamma_R1=[])
+        native_link_bytes = len(save_steps)*(
+            2*len(cpu_model.q)*len(cpu_model.R)+len(cpu_model.R)
+        )*np.dtype(np.complex128).itemsize
+        print(
+            "continuous archive native discrete links: "
+            "S^Phi_q(+1), S^Phi_R(+1), S^Gamma_R(+1); "
+            f"raw payload={native_link_bytes/1024**3:.2f} GiB"
+        )
     diagnostic_names = (
         "max_product_residual_l2", "max_effective_product_residual_l2",
         "max_relative_product_projection_l2",
@@ -176,9 +190,25 @@ def run_born_huang(args):
             key: cp.asnumpy(fields[key])
             for key in ("a", "b", "alpha", "epsilon_1", "epsilon_2")
         }
-        c_out, l_out, h_out, transformed, _, _ = output_gauge(
+        c_out, l_out, h_out, transformed, theta_1, theta_2 = output_gauge(
             c_cpu, l_cpu, h_cpu, fields_cpu, step*args.dt_au, cpu_model, args
         )
+        if save_native_links:
+            sphi_q1, sphi_R1, sgamma_R1 = (
+                nearest_conditional_overlap_links(
+                    coefficients, lam, model, basis
+                )
+            )
+            sphi_q1 = cp.asnumpy(sphi_q1)
+            sphi_R1 = cp.asnumpy(sphi_R1)
+            sgamma_R1 = cp.asnumpy(sgamma_R1)
+            # output_gauge stores transformed factors.  Apply the same gauge
+            # to their overlap links so every archived object belongs to one
+            # representation.  With the default zero gauge these multipliers
+            # are exactly one and no dynamics or value is changed.
+            sphi_q1 *= np.exp(1j*(np.roll(theta_1, -1, axis=0)-theta_1))
+            sphi_R1 *= np.exp(1j*(np.roll(theta_1, -1, axis=1)-theta_1))
+            sgamma_R1 *= np.exp(1j*(np.roll(theta_2, -1)-theta_2))
         joint = np.abs(l_out)**2*np.abs(h_out[None, :])**2
         norm = np.sum(
             np.sum(np.abs(c_out)**2, axis=0)*joint,
@@ -190,6 +220,10 @@ def run_born_huang(args):
         histories["chi"].append(h_out)
         for key in ("a", "b", "alpha", "epsilon_1", "epsilon_2"):
             histories[key].append(transformed[key])
+        if save_native_links:
+            histories["sphi_q1"].append(sphi_q1)
+            histories["sphi_R1"].append(sphi_R1)
+            histories["sgamma_R1"].append(sgamma_R1)
         histories["norm"].append(norm)
         state_joint = np.abs(c_out)**2*joint[None, :, :]
         q_density = np.sum(state_joint, axis=(0, 2), dtype=np.float64)*cpu_model.dR
@@ -397,6 +431,12 @@ def run_born_huang(args):
         bo_link_kernel=np.array(link_kernel),
         bo_link_kernel_version=np.array(1),
         bo_overlap_links_in_cache=np.array(True),
+        native_discrete_link_output=np.array(
+            "nearest_complex" if save_native_links else "none"
+        ),
+        native_discrete_link_convention=np.array(
+            "forward S(g,g+1); backward=S(g-1,g)^dagger"
+        ),
         bo_energies=basis_cpu.energies,
         x=cpu_model.x, q=cpu_model.q, R=cpu_model.R,
         log_derivative_backend=np.array(args.log_derivative_backend),

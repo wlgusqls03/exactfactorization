@@ -481,6 +481,57 @@ def neighbor_transports(coefficients, basis, axis):
     ))
 
 
+def nearest_conditional_overlap_links(coefficients, lam, model, basis):
+    """Return the three native forward nearest-neighbour EF links.
+
+    The continuous-equation Born--Huang solver propagates the same finite
+    conditional states as the discretize-first solver, but its continuum
+    vector potentials are not, at finite spacing, interchangeable with the
+    principal phase of a nearest-neighbour overlap.  This helper therefore
+    evaluates the actual discrete geometry
+
+      S^Phi_q(g,g+q), S^Phi_R(g,g+R), S^Gamma_R(R,R+R)
+
+    from the propagated factors.  It uses the same current-site local-norm
+    convention as the discretize-first equations; on PNC support this is the
+    ordinary overlap of normalized conditional states up to roundoff.
+    The fused transport workspace is consumed immediately along each axis;
+    no four-neighbour transport tensor is retained by the caller.
+    """
+    tiny = cp.asarray(
+        cp.finfo(model.real_dtype).tiny, dtype=model.reduction_real_dtype
+    )
+    c_norm2 = cp.sum(
+        cp.real(coefficients*cp.conj(coefficients)), axis=0,
+        dtype=model.reduction_real_dtype,
+    )
+    c_norm_safe = cp.maximum(c_norm2, tiny)
+
+    q_plus_one = neighbor_transports(coefficients, basis, 1)[2]
+    sphi_q1 = cp.sum(
+        cp.conj(coefficients)*q_plus_one, axis=0,
+        dtype=model.reduction_complex_dtype,
+    )/c_norm_safe
+
+    R_plus_one = neighbor_transports(coefficients, basis, 2)[2]
+    sphi_R1 = cp.sum(
+        cp.conj(coefficients)*R_plus_one, axis=0,
+        dtype=model.reduction_complex_dtype,
+    )/c_norm_safe
+
+    lam_norm2 = cp.sum(
+        cp.real(lam*cp.conj(lam)), axis=0,
+        dtype=model.reduction_real_dtype,
+    )*model.dq
+    lam_norm_safe = cp.maximum(lam_norm2, tiny)
+    lam_plus_one = cp.roll(lam, -1, axis=1)
+    sgamma_R1 = cp.sum(
+        cp.conj(lam)*sphi_R1*lam_plus_one, axis=0,
+        dtype=model.reduction_complex_dtype,
+    )*model.dq/lam_norm_safe
+    return sphi_q1, sphi_R1, sgamma_R1
+
+
 def projected_gradient(coefficients, connection, spacing, axis):
     return (
         derivative(coefficients, spacing, axis=axis)

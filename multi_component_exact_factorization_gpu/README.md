@@ -384,6 +384,14 @@ surface 위 state-resolved nuclear wave packet을 그릴 수 있다. 이 추가 
 ``--no-bo-save-electron-density``를 쓸 수 있으며, 그 archive의 electron panel은
 BO-state composition으로 대체된다.
 
+Continuous-equation Born--Huang archive는 continuum fields
+``epsilon_1``, ``epsilon_2``, ``a``, ``b``, ``alpha``와 별도로 native finite-grid
+nearest-neighbour links ``sphi_q1``, ``sphi_R1``, ``sgamma_R1``도 complex128로
+저장한다. 이 링크는 저장된 factor와 같은 output gauge이며, backward link는
+shifted conjugate transpose로 정확히 복원한다. 링크는 저장 frame에서만
+계산되어 propagation RHS에는 영향을 주지 않는다. 매우 제한된 disk/RAM에서
+링크가 필요 없는 실행은 ``--no-bo-save-native-discrete-links``로 생략할 수 있다.
+
 정적 출력은 direct-grid와 같은 핵심 4장에 BO 전용 1장이 추가된다.
 
 * ``01_particle_motion.png``: electron/proton/heavy motion과 marginal

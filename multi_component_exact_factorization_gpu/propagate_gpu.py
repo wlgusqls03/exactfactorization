@@ -928,6 +928,15 @@ def parse_args():
         "--bo-save-basis-states", action="store_true",
         help="큰 static BO eigenvector tensor도 archive에 저장",
     )
+    electronic.set_defaults(bo_save_native_discrete_links=True)
+    electronic.add_argument(
+        "--no-bo-save-native-discrete-links", action="store_false",
+        dest="bo_save_native_discrete_links",
+        help=(
+            "Born--Huang continuous 결과에서 최근접 복소 "
+            "S^Phi_q/S^Phi_R/S^Gamma_R 저장을 생략해 disk/RAM 사용량을 줄임"
+        ),
+    )
     electronic.add_argument(
         "--no-bo-save-electron-density", action="store_false",
         dest="bo_save_electron_density", default=True,
