@@ -100,7 +100,7 @@ def _safe_density_gauge_factorization(y, action, model):
     return c, lam, chi, dc, dlam, dchi
 
 
-def _frame_fields(y_cpu, model, basis):
+def _frame_fields(y_cpu, model, basis, link_keys=()):
     y = cp.ascontiguousarray(cp.asarray(y_cpu, dtype=cp.complex128))
     action = discrete_tdse_action_gpu(y, model, basis)
     state_probability = cp.real(y*cp.conj(y))
@@ -141,7 +141,7 @@ def _frame_fields(y_cpu, model, basis):
     q_action_lam = lam.astype(model.reduction_complex_dtype, copy=True)
     q_action_lam *= q_weights[0]
     q_transports = neighbor_transports(c, basis, 1)
-    sphi_q1 = None
+    sphi_q = {}
     for index, offset in enumerate(OFFSETS):
         transport = q_transports[index]
         overlap = cp.sum(
@@ -152,8 +152,8 @@ def _frame_fields(y_cpu, model, basis):
             q_weights[offset]
             *overlap*cp.roll(lam, -int(offset), axis=0)
         )
-        if offset == 1:
-            sphi_q1 = overlap
+        if offset in (1, 2):
+            sphi_q[int(offset)] = overlap
 
     hpr_local = epsilon_1_complex*lam+q_action_lam
     temporal_2 = -1j*cp.sum(
@@ -166,31 +166,36 @@ def _frame_fields(y_cpu, model, basis):
     )*model.dq/lam_norm_safe+temporal_2
 
     R_transports = neighbor_transports(c, basis, 2)
-    sphi_R1 = sgamma_R1 = None
+    sphi_R = {}
+    sgamma_R = {}
     for index, offset in enumerate(OFFSETS):
-        if offset != 1:
+        if offset not in (1, 2):
             continue
         transport = R_transports[index]
-        sphi_R1 = cp.sum(
+        overlap = cp.sum(
             cp.conj(c)*transport, axis=0,
             dtype=model.reduction_complex_dtype,
         )/c_norm_safe
-        lam_neighbor = cp.roll(lam, -1, axis=1)
-        transported_lam = sphi_R1*lam_neighbor
-        sgamma_R1 = cp.sum(
+        lam_neighbor = cp.roll(lam, -int(offset), axis=1)
+        transported_lam = overlap*lam_neighbor
+        outer_overlap = cp.sum(
             cp.conj(lam)*transported_lam, axis=0,
             dtype=model.reduction_complex_dtype,
         )*model.dq/lam_norm_safe
-        break
+        sphi_R[int(offset)] = overlap
+        sgamma_R[int(offset)] = outer_overlap
 
     reconstructed = c*(lam*chi[None, :])[None, :, :]
     factorization_difference = y-reconstructed
     result = {
         "epsilon_1": epsilon_1_complex.real,
         "epsilon_2": epsilon_2_complex.real,
-        "a": cp.angle(sphi_q1)/model.dq,
-        "b": cp.angle(sphi_R1)/model.dR,
-        "alpha": cp.angle(sgamma_R1)/model.dR,
+        # Connections are derived diagnostics.  The complex overlap links
+        # below are the native finite-grid geometry and retain both phase and
+        # magnitude; no branch unwrapping or density masking is applied here.
+        "a": cp.angle(sphi_q[1])/model.dq,
+        "b": cp.angle(sphi_R[1])/model.dR,
+        "alpha": cp.angle(sgamma_R[1])/model.dR,
         "bo_state_density_q": cp.sum(
             state_probability, axis=2, dtype=model.reduction_real_dtype,
         )*model.dR/total_probability,
@@ -204,6 +209,15 @@ def _frame_fields(y_cpu, model, basis):
             dtype=model.reduction_real_dtype,
         )*model.dq*model.dR),
     }
+    native_links = {
+        "sphi_q1": sphi_q[1],
+        "sphi_q2": sphi_q[2],
+        "sphi_R1": sphi_R[1],
+        "sphi_R2": sphi_R[2],
+        "sgamma_R1": sgamma_R[1],
+        "sgamma_R2": sgamma_R[2],
+    }
+    result.update({key: native_links[key] for key in link_keys})
     return {key: cp.asnumpy(value) for key, value in result.items()}
 
 
@@ -232,6 +246,20 @@ def run(args):
     estimated_bytes = nt*(
         3*nq*nR+2*nR+metadata["bo_states"]*(nq+nR)
     )*np.dtype(np.float64).itemsize
+    link_keys = ()
+    if args.link_output == "nearest":
+        link_keys = ("sphi_q1", "sphi_R1", "sgamma_R1")
+    elif args.link_output == "full":
+        link_keys = (
+            "sphi_q1", "sphi_q2", "sphi_R1", "sphi_R2",
+            "sgamma_R1", "sgamma_R2",
+        )
+    if link_keys:
+        map_links = sum(key.startswith("sphi_") for key in link_keys)
+        line_links = len(link_keys)-map_links
+        estimated_bytes += nt*(
+            map_links*nq*nR+line_links*nR
+        )*np.dtype(np.complex128).itemsize
     if args.electron_density:
         estimated_bytes += nt*len(metadata["x"])*np.dtype(np.float64).itemsize
     free_bytes = shutil.disk_usage(output.parent).free
@@ -282,6 +310,9 @@ def run(args):
         "epsilon_2_imaginary_defect": np.empty(nt, dtype=np.float64),
         "factorization_residual": np.empty(nt, dtype=np.float64),
     }
+    for key in link_keys:
+        shape = (nt, nq, nR) if key.startswith("sphi_") else (nt, nR)
+        fields[key] = np.empty(shape, dtype=np.complex128)
     if compact_states is not None:
         fields["electron_density"] = np.empty(
             (nt, len(metadata["x"])), dtype=np.float64
@@ -298,7 +329,7 @@ def run(args):
             )
         for frame in range(nt):
             y_frame = reader.read(frame)
-            current = _frame_fields(y_frame, model, basis)
+            current = _frame_fields(y_frame, model, basis, link_keys)
             if compact_states is not None:
                 current["electron_density"] = electron_marginal_from_bo(
                     y_frame, compact_states, model.dq, model.dR,
@@ -324,6 +355,10 @@ def run(args):
         source_kind=np.array(metadata["source_kind"]),
         gauge=np.array("positive_density_marginals"),
         scalar_time_derivative=np.array("instantaneous_tdse_action"),
+        discrete_link_output=np.array(args.link_output),
+        discrete_link_convention=np.array(
+            "forward S(g,g+r); backward=S(g-r,g)^dagger"
+        ),
         times_fs=metadata["times_fs"], x=metadata["x"],
         q=metadata["q"], R=metadata["R"],
     )
@@ -337,6 +372,8 @@ def run(args):
         f"({np.max(fields['epsilon_1_imaginary_defect']):.3e}, "
         f"{np.max(fields['epsilon_2_imaginary_defect']):.3e})"
     )
+    if link_keys:
+        print("  saved native overlap links: " + ", ".join(link_keys))
     return output
 
 
@@ -348,6 +385,15 @@ def parse_args(argv=None):
     parser.add_argument("--progress-every", type=int, default=5)
     parser.add_argument("--output")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--link-output", choices=("none", "nearest", "full"),
+        default="nearest",
+        help=(
+            "저장할 native discrete overlap links: nearest는 +1 links, "
+            "full은 5-point stencil의 +1/+2 links; backward links는 "
+            "shifted conjugate transpose로 정확히 복원 가능"
+        ),
+    )
     parser.set_defaults(electron_density=True)
     parser.add_argument(
         "--no-electron-density", action="store_false", dest="electron_density",

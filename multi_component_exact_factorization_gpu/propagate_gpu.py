@@ -23,6 +23,7 @@ from multi_component_exact_factorization.core import (
     AU_PER_FS,
     add_model_arguments,
     build_model,
+    print_model_geometry,
     calibrate_flat_top_args,
     initial_factors,
     mask_threshold_for_probability_budget,
@@ -167,6 +168,7 @@ def run(args):
 
     # Local BO diagonalization은 CPU SciPy가 효율적이고 처음 한 번만 필요하다.
     cpu_model = build_model(args)
+    print_model_geometry(cpu_model, args)
     phi_cpu, lam_cpu, chi_cpu = initial_factors(cpu_model, args)
     phi_norm2 = np.sum(np.abs(phi_cpu)**2, axis=0)*cpu_model.dx
     rho_qR_initial = phi_norm2*np.abs(lam_cpu*chi_cpu[None, :])**2

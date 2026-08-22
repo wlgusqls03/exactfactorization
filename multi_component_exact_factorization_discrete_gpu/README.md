@@ -26,7 +26,8 @@ kernels) with the NumPy discrete algebra on a small physical Shin--Metiu grid:
 ```bash
 CUDA_VISIBLE_DEVICES=0 python -m \
   multi_component_exact_factorization_discrete_gpu.validate \
-  --device 0
+  --device 0 \
+  --heavy-trap-alpha 0.05
 ```
 
 This checks `dC`, `dLambda`, `dChi`, both discrete scalars, exact marginal
@@ -48,8 +49,11 @@ CUDA_VISIBLE_DEVICES=0 python -m \
   --flat-top-budget-lam 1e-10 \
   --flat-top-transition-decades 3 \
   --deep-tail-zero-threshold 1e-12 \
+  --heavy-trap-alpha 0.05 \
+  --proton-force-constant 0.19245621776826924 \
+  --heavy-force-constant 0.19168954579929773 \
   --electron-excitation 1 \
-  --nx 300 --nq 450 --nR 900 \
+  --nx 300 --nq 600 --nR 800 \
   --dt-au 0.025 \
   --t-final-fs 0.1 \
   --save-every 20 \
@@ -61,9 +65,14 @@ CUDA_VISIBLE_DEVICES=0 python -m \
   --outdir results/discrete_mcef_bh10_01fs
 ```
 
-Defaults are `x in (-22,22)` with electronic Dirichlet endpoints, periodic
-q/R grids `[-9,9)`, fixed charges at `-10,+10`, and initial `q0=0,R0=2`.
-Thus omitting explicit box/charge options still matches the current model.
+The current model defaults are the electronic Dirichlet box `x in (-22,22)`,
+periodic nuclear grids `q in [-12,12)` and `R in [2,18)`, one fixed charge at
+`X_L=-10`, and initial centers `q0=0,R0=10`.  The old right fixed ion is
+disabled (`right_charge=0`) and the moving heavy ion is bound by
+`V_trap=alpha*(R-10)^2`.  Because `alpha` fixes a physical vibrational
+frequency rather than a numerical tolerance, every new propagation must pass
+`--heavy-trap-alpha` explicitly.  The example value `0.05 Ha/a0^2` is only a
+trial value; choose it from `alpha=M_R*omega^2/2` for the intended bond.
 
 For a thermally constrained GPU, add (for example)
 `--step-sleep-ms 20`.  A positive value synchronizes the active CUDA stream
@@ -246,6 +255,7 @@ CUDA_VISIBLE_DEVICES=0 python -m \
   results/YYYYMMDD/expanded_tdse_bh10_50fs \
   --device 0 \
   --bo-link-kernel fused \
+  --link-output full \
   --overwrite \
   --progress-every 5
 ```
@@ -259,6 +269,10 @@ It saves `tdse_exact_factorization_fields.npz` beside the TDSE archive with
 - the two scalar/TDPES fields `epsilon_1(q,R)` and `epsilon_2(R)`;
 - the first vector potential's q/R components `a(q,R)` and `b(q,R)`;
 - the second vector potential `alpha(R)`;
+- native forward overlap links `S^Phi_q`, `S^Phi_R`, and `S^Gamma_R`.
+  `--link-output nearest` stores the `+1` links, while `full` also stores the
+  `+2` links used by the five-point stencil; backward links follow exactly by
+  shifted conjugate transpose;
 - exact factorization and imaginary-scalar residual audits.
 - the exact electron marginal reconstructed from the BO coefficients and
   cached electronic states.
@@ -274,6 +288,7 @@ Run the standard renderer again.  It automatically finds this field cache
 and additionally creates
 `05_tdse_exact_factorization_fields.png`,
 `06_tdse_transport_and_drive.png`,
+`07_tdse_discrete_link_geometry.png`,
 `tdse_exact_factorization_fields.mp4`, and
 `tdse_transport_and_drive.mp4`.  It also creates
 `heavy_coordinate_dynamics.mp4` and `proton_coordinate_dynamics.mp4`:

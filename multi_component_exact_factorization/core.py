@@ -49,6 +49,8 @@ class Model:
     heavy_mass: float
     fft_workers: int             # 전자 DST에 사용할 CPU worker 수
     potential: np.ndarray         # (nx,nq,nR)
+    heavy_trap_center: float = 10.0
+    heavy_trap_alpha: float = 0.0
     log_derivative_backend: str = "pointwise"
     weak_log_delta: float = 1.0e-10
     weak_log_smoothing: float = 0.04
@@ -71,8 +73,49 @@ def soft_inverse(distance: np.ndarray, softening: float) -> np.ndarray:
     return 1.0 / np.sqrt(distance**2 + softening**2)
 
 
+def heavy_trap_frequency(model: Model) -> tuple[float, float]:
+    """Return ``(omega_au, period_fs)`` for ``alpha*(R-Rc)^2``.
+
+    Since ``alpha*(R-Rc)^2 = (M*omega^2/2)*(R-Rc)^2``, the angular
+    frequency is ``sqrt(2*alpha/M)``.  A disabled trap returns ``(0, inf)``.
+    """
+    alpha = float(model.heavy_trap_alpha)
+    if alpha <= 0.0:
+        return 0.0, np.inf
+    omega = float(np.sqrt(2.0*alpha/float(model.heavy_mass)))
+    return omega, float(2.0*np.pi/(omega*AU_PER_FS))
+
+
+def print_model_geometry(model: Model, args) -> None:
+    """Print the physical centers and heavy trap used by a propagation."""
+    right_status = (
+        f"active at {float(args.right_position):.6g}, "
+        f"Z_R={float(args.right_charge):.6g}"
+        if float(args.right_charge) != 0.0 else "disabled (Z_R=0)"
+    )
+    omega, period_fs = heavy_trap_frequency(model)
+    print(
+        "model geometry: "
+        f"X_L={float(args.left_position):.6g}, "
+        f"Z_L={float(args.left_charge):.6g}; right fixed={right_status}; "
+        f"q0={float(args.q0):.6g}, R0={float(args.R0):.6g}; "
+        f"x=[{model.x_left:.6g},{model.x_right:.6g}], "
+        f"q=[{model.q[0]:.6g},{model.q[0]+len(model.q)*model.dq:.6g}), "
+        f"R=[{model.R[0]:.6g},{model.R[0]+len(model.R)*model.dR:.6g})"
+    )
+    if model.heavy_trap_alpha > 0.0:
+        print(
+            "heavy harmonic trap: "
+            f"V=alpha*(R-Rc)^2, alpha={model.heavy_trap_alpha:.9g} Ha/a0^2, "
+            f"Rc={model.heavy_trap_center:.9g}, omega={omega:.9g} au, "
+            f"period={period_fs:.9g} fs"
+        )
+    else:
+        print("heavy harmonic trap: disabled (alpha=0)")
+
+
 def build_model(args) -> Model:
-    """고정 중심-전자-양성자-무거운 핵의 1D model을 만든다.
+    """왼쪽 고정 중심-전자-양성자-구속된 무거운 핵의 1D model을 만든다.
 
     선택적인 좌/우 고정 전하의 물리적 위치와 전자 Dirichlet 계산경계는 서로
     독립적이다. q와 R box도 각 packet의 예상 이동범위에 맞게 별도로 둔다.
@@ -112,7 +155,9 @@ def build_model(args) -> Model:
     dq = float(q[1] - q[0])
     dR = float(R[1] - R[0])
 
-    # 실제로 사용한 전자 box와 선택적 오른쪽 고정 중심을 metadata에 남긴다.
+    # 실제로 사용한 전자 box, 선택적 오른쪽 고정 중심과 heavy trap을
+    # metadata에 남긴다.  이전 archive에는 trap option이 없으므로 0으로
+    # fallback하여 원래 Hamiltonian을 그대로 재구성한다.
     args.x_min = x_left
     args.right_position = float(getattr(args, "right_position", 10.0))
     # Older archives do not contain the optional right-center parameters.
@@ -122,14 +167,39 @@ def build_model(args) -> Model:
     args.soft_p_right = float(getattr(args, "soft_p_right", 0.8))
     args.soft_right_heavy = float(getattr(args, "soft_right_heavy", 0.8))
     args.soft_left_right = float(getattr(args, "soft_left_right", 0.8))
+    args.heavy_trap_center = float(
+        getattr(args, "heavy_trap_center", 10.0)
+    )
+    args.heavy_trap_alpha = float(
+        getattr(args, "heavy_trap_alpha", 0.0)
+    )
+    if not np.isfinite(args.heavy_trap_center):
+        raise ValueError("--heavy-trap-center는 유한한 값이어야 합니다.")
+    if not np.isfinite(args.heavy_trap_alpha) or args.heavy_trap_alpha < 0.0:
+        raise ValueError("--heavy-trap-alpha는 유한한 0 이상의 값이어야 합니다.")
+    if args.heavy_trap_alpha > 0.0 and not (
+        R_min < args.heavy_trap_center < R_max
+    ):
+        raise ValueError(
+            "harmonic heavy trap 중심은 R grid 내부에 있어야 합니다: "
+            f"R_c={args.heavy_trap_center}, grid=[{R_min},{R_max})"
+        )
+    if args.heavy_trap_alpha > 0.0 and args.right_charge != 0.0:
+        warnings.warn(
+            "heavy trap과 오른쪽 fixed charge를 동시에 사용합니다. "
+            "오른쪽 fixed ion을 moving heavy로 대체하는 모델은 "
+            "--right-charge 0을 사용하세요.",
+            RuntimeWarning,
+        )
 
     xx = x[:, None, None]       # (nx,1,1)
     qq = q[None, :, None]       # (1,nq,1)
     RR = R[None, None, :]       # (1,1,nR)
 
     # 전자(-1)는 움직이는 두 핵과 선택적인 좌/우 고정 중심에 끌리고,
-    # 양전하끼리는 서로 밀어낸다. right_charge=0이면 아래 추가항이 정확히
-    # 0이므로 기존 Hamiltonian과 수학적으로 동일하다.
+    # 양전하끼리는 서로 밀어낸다. 새 기본 geometry에서는 right_charge=0으로
+    # 오른쪽 fixed ion을 제거하고, R~heavy_trap_center인 moving heavy가 그
+    # 역할을 대신한다. 마지막 real diagonal term은 heavy에만 작용한다.
     # 모든 항은 broadcasting되어 최종 shape (nx,nq,nR)가 된다.
     potential = (
         -args.left_charge * soft_inverse(xx - args.left_position, args.soft_e_left)
@@ -151,6 +221,7 @@ def build_model(args) -> Model:
         * soft_inverse(
             args.right_position - args.left_position, args.soft_left_right
         )
+        + args.heavy_trap_alpha*(RR-args.heavy_trap_center)**2
     )
 
     return Model(
@@ -160,6 +231,8 @@ def build_model(args) -> Model:
         # 예전 archive metadata에는 이 option이 없으므로 재분석 시 fallback한다.
         fft_workers=getattr(args, "fft_workers", -1),
         potential=np.asarray(potential),
+        heavy_trap_center=args.heavy_trap_center,
+        heavy_trap_alpha=args.heavy_trap_alpha,
         log_derivative_backend=getattr(
             args, "log_derivative_backend", "pointwise"
         ),
@@ -1556,6 +1629,31 @@ def fixed_center_crossing_probabilities(
     return left, right, left+right
 
 
+def crossing_reference_positions(model: Model, args, coordinate: str):
+    """Return physical crossing references appropriate to q or R.
+
+    Without a right fixed ion, the proton is compared with the equilibrium
+    heavy position.  The heavy packet itself must not be classified as having
+    crossed a fixed center merely because half of it lies above ``R_c``;
+    therefore its upper reference falls back to the numerical box edge.
+    """
+    if coordinate not in ("q", "R"):
+        raise ValueError("coordinate must be 'q' or 'R'")
+    grid = model.q if coordinate == "q" else model.R
+    spacing = model.dq if coordinate == "q" else model.dR
+    lower = (
+        float(args.left_position)
+        if float(args.left_charge) != 0.0 else float(grid[0]-spacing)
+    )
+    if float(args.right_charge) != 0.0:
+        upper = float(args.right_position)
+    elif coordinate == "q" and model.heavy_trap_alpha > 0.0:
+        upper = float(model.heavy_trap_center)
+    else:
+        upper = float(grid[0]+len(grid)*spacing)
+    return lower, upper
+
+
 def add_model_arguments(parser):
     """direct/reference 명령행에서 공유하는 model option을 등록한다."""
     grid = parser.add_argument_group("실공간 격자")
@@ -1577,10 +1675,10 @@ def add_model_arguments(parser):
             "0이면 --x-min/--x-max를 그대로 사용; 고정 전하 위치는 바꾸지 않음"
         ),
     )
-    grid.add_argument("--q-min", type=float, default=-9.0)
-    grid.add_argument("--q-max", type=float, default=9.0)
-    grid.add_argument("--R-min", type=float, default=-9.0)
-    grid.add_argument("--R-max", type=float, default=9.0)
+    grid.add_argument("--q-min", type=float, default=-12.0)
+    grid.add_argument("--q-max", type=float, default=12.0)
+    grid.add_argument("--R-min", type=float, default=2.0)
+    grid.add_argument("--R-max", type=float, default=18.0)
     grid.add_argument(
         "--full-nuclear-range", action="store_true",
         help=(
@@ -1604,7 +1702,7 @@ def add_model_arguments(parser):
     particle.add_argument("--proton-mass", type=float, default=1836.0)
     particle.add_argument("--heavy-mass", type=float, default=12000.0)
     particle.add_argument("--q0", type=float, default=0.0)
-    particle.add_argument("--R0", type=float, default=2.0)
+    particle.add_argument("--R0", type=float, default=10.0)
     particle.add_argument("--proton-momentum", type=float, default=0.0)
     particle.add_argument("--heavy-momentum", type=float, default=0.0)
     particle.add_argument(
@@ -1634,8 +1732,22 @@ def add_model_arguments(parser):
         help="선택적인 오른쪽 고정 중심의 물리적 위치",
     )
     potential.add_argument(
-        "--right-charge", type=float, default=1.0,
-        help="오른쪽 고정 중심 전하 Z_R",
+        "--right-charge", type=float, default=0.0,
+        help=(
+            "선택적인 오른쪽 고정 중심 전하 Z_R; 새 기본 모델에서는 "
+            "0을 사용해 움직이는 heavy ion이 오른쪽 중심을 대체"
+        ),
+    )
+    potential.add_argument(
+        "--heavy-trap-center", type=float, default=10.0,
+        help="움직이는 heavy ion harmonic 결합의 중심 R_c",
+    )
+    potential.add_argument(
+        "--heavy-trap-alpha", type=float, required=True,
+        help=(
+            "V_trap=alpha*(R-R_c)^2의 alpha (Hartree/a0^2); "
+            "물리적 결합 진동수에 맞춰 명시적으로 지정"
+        ),
     )
     potential.add_argument("--heavy-charge", type=float, default=1.0)
     potential.add_argument("--soft-e-left", type=float, default=1.0)

@@ -67,6 +67,9 @@ class TDSEReportTests(unittest.TestCase):
             epsilon_2=np.broadcast_to(R[None, :], (len(times), len(R))),
             a=np.full(shape, 0.03), b=np.full(shape, -0.02),
             alpha=np.full((len(times), len(R)), 0.01),
+            sphi_q1=np.exp(1j*np.full(shape, 0.03*dq)),
+            sphi_R1=np.exp(-1j*np.full(shape, 0.02*dR)),
+            sgamma_R1=np.exp(1j*np.full((len(times), len(R)), 0.01*dR)),
             factorization_residual=np.zeros(len(times)),
         )
         return archive, joint
@@ -88,6 +91,7 @@ class TDSEReportTests(unittest.TestCase):
                 "04_tdse_numerical_reliability.png",
                 "05_tdse_exact_factorization_fields.png",
                 "06_tdse_transport_and_drive.png",
+                "07_tdse_discrete_link_geometry.png",
                 "tdse_report_observables.npz",
             ):
                 self.assertTrue((report/name).is_file(), name)

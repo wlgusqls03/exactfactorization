@@ -15,7 +15,8 @@ from multi_component_exact_factorization.born_huang import (
 )
 from multi_component_exact_factorization.core import (
     AU_PER_FS, build_model, calibrate_flat_top_args,
-    fixed_center_crossing_probabilities,
+    crossing_reference_positions, fixed_center_crossing_probabilities,
+    print_model_geometry,
 )
 from multi_component_exact_factorization.propagate import output_gauge
 
@@ -41,6 +42,7 @@ def run_born_huang(args):
     outdir.mkdir(parents=True, exist_ok=True)
     cp.cuda.Device(args.device).use()
     cpu_model = build_model(args)
+    print_model_geometry(cpu_model, args)
     n_states = int(args.bo_states)
     if n_states <= int(args.electron_excitation):
         raise ValueError("--bo-states must exceed --electron-excitation")
@@ -202,13 +204,15 @@ def run_born_huang(args):
             (np.sum(R_density[:R_edge])+np.sum(R_density[-R_edge:]))
             *cpu_model.dR/max(norm, 1.0e-300)
         )
+        q_references = crossing_reference_positions(cpu_model, args, "q")
+        R_references = crossing_reference_positions(cpu_model, args, "R")
         q_cross = fixed_center_crossing_probabilities(
             q_density, cpu_model.q, cpu_model.dq,
-            args.left_position, args.right_position, norm,
+            *q_references, norm,
         )
         R_cross = fixed_center_crossing_probabilities(
             R_density, cpu_model.R, cpu_model.dR,
-            args.left_position, args.right_position, norm,
+            *R_references, norm,
         )
         for suffix, value in zip(("left", "right", ""), q_cross):
             key = "fixed_center_crossing_q" + (f"_{suffix}" if suffix else "")
@@ -460,13 +464,19 @@ def run_born_huang(args):
         "max highest-state population="
         f"{np.max(payload['bo_populations'][:, -1]):.3e}"
     )
+    boundary_message = (
+        "max proton outside X_L..R_c="
+        f"{np.max(payload['fixed_center_crossing_q']):.3e}"
+        if args.right_charge == 0.0 and cpu_model.heavy_trap_alpha > 0.0
+        else "max beyond fixed centers (q,R)="
+        f"({np.max(payload['fixed_center_crossing_q']):.3e}, "
+        f"{np.max(payload['fixed_center_crossing_R']):.3e})"
+    )
     print(
         "BO 경계 진단: max outer probability (q,R)="
         f"({np.max(payload['outer_probability_q']):.3e}, "
         f"{np.max(payload['outer_probability_R']):.3e}); "
-        "max beyond fixed centers (q,R)="
-        f"({np.max(payload['fixed_center_crossing_q']):.3e}, "
-        f"{np.max(payload['fixed_center_crossing_R']):.3e})"
+        +boundary_message
     )
     args.propagation_failed = not completed
     return path

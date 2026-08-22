@@ -29,7 +29,9 @@ from multi_component_exact_factorization.core import (
     add_model_arguments,
     build_model,
     calibrate_flat_top_args,
+    crossing_reference_positions,
     fixed_center_crossing_probabilities,
+    print_model_geometry,
 )
 from multi_component_exact_factorization_gpu.gpu_born_huang import (
     PNC_NORM_DIAGNOSTIC_NAMES,
@@ -192,6 +194,7 @@ def run(args):
     print(f"GPU {args.device}: {gpu_name}; precision=complex128/float64")
 
     cpu_model = build_model(args)
+    print_model_geometry(cpu_model, args)
     n_states = int(args.bo_states)
     if n_states <= int(args.electron_excitation):
         raise ValueError("--bo-states must exceed --electron-excitation")
@@ -419,13 +422,15 @@ def run(args):
             (np.sum(R_density[:R_edge])+np.sum(R_density[-R_edge:]))
             *cpu_model.dR/max(total_norm, 1.0e-300)
         )
+        q_references = crossing_reference_positions(cpu_model, args, "q")
+        R_references = crossing_reference_positions(cpu_model, args, "R")
         q_cross = fixed_center_crossing_probabilities(
             q_density, cpu_model.q, cpu_model.dq,
-            args.left_position, args.right_position, total_norm,
+            *q_references, total_norm,
         )
         R_cross = fixed_center_crossing_probabilities(
             R_density, cpu_model.R, cpu_model.dR,
-            args.left_position, args.right_position, total_norm,
+            *R_references, total_norm,
         )
         for suffix, value in zip(("left", "right", ""), q_cross):
             key = "fixed_center_crossing_q" + (f"_{suffix}" if suffix else "")
@@ -706,11 +711,17 @@ def run(args):
         f"({np.max(payload['outer_probability_q']):.3e}, "
         f"{np.max(payload['outer_probability_R']):.3e})"
     )
-    print(
-        "  max probability beyond fixed centers (q,R): "
-        f"({np.max(payload['fixed_center_crossing_q']):.3e}, "
-        f"{np.max(payload['fixed_center_crossing_R']):.3e})"
-    )
+    if args.right_charge == 0.0 and cpu_model.heavy_trap_alpha > 0.0:
+        print(
+            "  max proton probability outside X_L..R_c: "
+            f"{np.max(payload['fixed_center_crossing_q']):.3e}"
+        )
+    else:
+        print(
+            "  max probability beyond fixed centers (q,R): "
+            f"({np.max(payload['fixed_center_crossing_q']):.3e}, "
+            f"{np.max(payload['fixed_center_crossing_R']):.3e})"
+        )
     print(
         "  max PNC retraction load: "
         f"{np.max(payload['pnc_projection_correction']):.3e}"

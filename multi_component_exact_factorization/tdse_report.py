@@ -22,6 +22,7 @@ from .report_plot_style import (
     FORCE_COLOR,
     HEAVY_DENSITY_COLOR,
     JOINT_CMAP,
+    LINK_CMAP,
     MASK_COLOR,
     PARTICLE_COLORS,
     SCALAR_CMAP,
@@ -159,11 +160,26 @@ def calculate_observables(data):
 
 def _fixed_positions(options):
     positions = []
-    for key in ("left_position", "right_position"):
+    for key, charge_key in (
+        ("left_position", "left_charge"),
+        ("right_position", "right_charge"),
+    ):
         if key in options and np.isfinite(float(options[key])):
             value = float(options[key])
-            if not any(np.isclose(value, old) for old in positions):
+            charge = float(options.get(charge_key, 1.0))
+            if charge != 0.0 and not any(
+                np.isclose(value, old) for old in positions
+            ):
                 positions.append(value)
+    if (
+        float(options.get("heavy_trap_alpha", 0.0)) > 0.0
+        and "heavy_trap_center" in options
+    ):
+        value = float(options["heavy_trap_center"])
+        if np.isfinite(value) and not any(
+            np.isclose(value, old) for old in positions
+        ):
+            positions.append(value)
     return positions
 
 
@@ -395,12 +411,23 @@ def plot_numerical_reliability(obs, outdir, dpi):
     axes[1, 0].semilogy(times, np.maximum(_series(obs, "norm_rate"), tiny), label=r"$|d\|Y\|^2/dt|$")
     axes[1, 0].set_title("Instantaneous Hermiticity checks", loc="left", fontweight="semibold")
     axes[1, 0].legend(frameon=False)
-    for key, label, color in (
+    boundary_series = [
         ("outer_probability_q", "q: outer five cells", PARTICLE_COLORS["proton"]),
         ("outer_probability_R", "R: outer five cells", PARTICLE_COLORS["heavy"]),
-        ("fixed_center_crossing_q", "q: beyond fixed centers", COLORS[3]),
-        ("fixed_center_crossing_R", "R: beyond fixed centers", COLORS[4]),
+    ]
+    if (
+        float(obs["options"].get("right_charge", 1.0)) == 0.0
+        and float(obs["options"].get("heavy_trap_alpha", 0.0)) > 0.0
     ):
+        boundary_series.append((
+            "fixed_center_crossing_q", r"q: outside $X_L..R_c$", COLORS[3]
+        ))
+    else:
+        boundary_series.extend((
+            ("fixed_center_crossing_q", "q: beyond fixed centers", COLORS[3]),
+            ("fixed_center_crossing_R", "R: beyond fixed centers", COLORS[4]),
+        ))
+    for key, label, color in boundary_series:
         axes[1, 1].semilogy(times, np.maximum(_series(obs, key), tiny), color=color, label=label)
     axes[1, 1].set_title("Boundary and fixed-center probability", loc="left", fontweight="semibold")
     axes[1, 1].set_ylabel("probability")
@@ -550,6 +577,12 @@ def _load_ef_fields(obs):
         ):
             if key in stored.files:
                 result[key] = np.asarray(stored[key], float)
+        for key in (
+            "sphi_q1", "sphi_q2", "sphi_R1", "sphi_R2",
+            "sgamma_R1", "sgamma_R2",
+        ):
+            if key in stored.files:
+                result[key] = np.asarray(stored[key], complex)
     result["path"] = path
     return result
 
@@ -871,6 +904,70 @@ def plot_transport_fields(obs, ef, outdir, dpi, frame=-1):
     return path
 
 
+def plot_discrete_link_geometry(obs, ef, outdir, dpi, frame=-1):
+    """Plot native complex overlap links without altering archived values."""
+    required = ("sphi_q1", "sphi_R1", "sgamma_R1")
+    if any(key not in ef for key in required):
+        return None
+    q, R = obs["q"], obs["R"]
+    density = np.asarray(obs["joint_density"][frame], float)
+    heavy = np.asarray(obs["heavy_density"][frame], float)
+    opacity = density_display_alpha(density, 1.0e-3)
+    extent = [q[0], q[-1], R[0], R[-1]]
+    q_link = np.asarray(ef["sphi_q1"][frame], complex)
+    R_link = np.asarray(ef["sphi_R1"][frame], complex)
+    gamma_link = np.asarray(ef["sgamma_R1"][frame], complex)
+    map_values = (
+        (1.0-np.abs(q_link), r"$1-|S^{\Phi}_{q,+1}|$", LINK_CMAP),
+        (np.angle(q_link), r"$\arg S^{\Phi}_{q,+1}$", SIGNED_CMAP),
+        (1.0-np.abs(R_link), r"$1-|S^{\Phi}_{R,+1}|$", LINK_CMAP),
+        (np.angle(R_link), r"$\arg S^{\Phi}_{R,+1}$", SIGNED_CMAP),
+    )
+    fig, axes = plt.subplots(2, 3, figsize=(15.8, 8.6), constrained_layout=True)
+    for ax, (values, title, cmap) in zip(axes.flat[:4], map_values):
+        ax.set_facecolor(MASK_COLOR)
+        if "arg" in title:
+            limit = max(float(np.nanpercentile(np.abs(values), 99.5)), 1.0e-14)
+            vmin, vmax = -limit, limit
+        else:
+            vmin, vmax = 0.0, max(float(np.nanpercentile(values, 99.5)), 1.0e-14)
+        image = ax.imshow(
+            values.T, origin="lower", aspect="auto", interpolation="nearest",
+            extent=extent, cmap=masked_cmap(cmap), vmin=vmin, vmax=vmax,
+            alpha=opacity.T,
+        )
+        ax.set(xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)")
+        ax.set_title(title, loc="left", fontweight="semibold")
+        fig.colorbar(image, ax=ax, pad=0.01, format=NUMBER_FORMATTER)
+    support = heavy >= 1.0e-3*max(float(np.max(heavy)), 1.0e-300)
+    magnitude = 1.0-np.abs(gamma_link)
+    phase = np.angle(gamma_link)
+    _support_tail_lines(
+        axes[1, 1], R, np.where(support, magnitude, np.nan), magnitude,
+        support, color=COLORS[2], label=r"$1-|S^{\Gamma}_{R,+1}|$",
+    )
+    _support_tail_lines(
+        axes[1, 2], R, np.where(support, phase, np.nan), phase,
+        support, color=COLORS[3], label=r"$\arg S^{\Gamma}_{R,+1}$",
+    )
+    for ax in axes[1, 1:]:
+        ax.set(xlabel=r"heavy $R$ ($a_0$)", xlim=(R[0], R[-1]))
+        ax.legend(frameon=False, fontsize=8)
+        _style_axis(ax)
+    axes[1, 1].set_ylabel("link magnitude defect")
+    axes[1, 2].set_ylabel("principal phase (rad)")
+    fig.suptitle(
+        f"TDSE-derived native discrete geometry | t={obs['times_fs'][frame]:.4f} fs\n"
+        "raw complex links; color values unchanged, density controls opacity only",
+        fontweight="bold",
+    )
+    path = Path(outdir)/"07_tdse_discrete_link_geometry.png"
+    fig.savefig(path, dpi=dpi)
+    plt.close(fig)
+    print(f"TDSE native discrete link geometry 저장: {path}")
+    return path
+
+
 def make_exact_field_animation(obs, ef, outdir, fps, max_frames, dpi, fmt):
     frames = selected_frames(len(obs["times_fs"]), min(max_frames, len(obs["times_fs"])))
     limits = _trajectory_ef_limits(obs, ef, max_frames)
@@ -1098,6 +1195,7 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
         print(f"TDSE postprocessed exact-factorization fields 사용: {ef['path']}")
         plot_exact_factorization_fields(obs, ef, outdir, dpi)
         plot_transport_fields(obs, ef, outdir, dpi)
+        plot_discrete_link_geometry(obs, ef, outdir, dpi)
     else:
         print(
             "TDSE exact-potential/connection 그림 생략: "

@@ -37,7 +37,12 @@ class LocalNormCorrectionHelperTests(unittest.TestCase):
 class SmoothGaugeIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        with patch.object(sys, "argv", ["test", "--electron-excitation", "1"]):
+        with patch.object(sys, "argv", [
+            "test", "--electron-excitation", "1",
+            "--heavy-trap-alpha", "0",
+            "--proton-force-constant", "0.1",
+            "--heavy-force-constant", "0.1",
+        ]):
             cls.args = parse_args()
         cls.model = build_model(cls.args)
         cls.phi, cls.lam, cls.chi = initial_factors(cls.model, cls.args)

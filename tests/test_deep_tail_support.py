@@ -6,6 +6,7 @@ import numpy as np
 
 from multi_component_exact_factorization.core import (
     build_model,
+    crossing_reference_positions,
     deep_tail_gate,
     pnc_project,
     project_discrete_product_residual,
@@ -17,19 +18,47 @@ from multi_component_exact_factorization.propagate import parse_args
 
 class DeepTailSupportTests(unittest.TestCase):
     def test_default_geometry_separates_fixed_center_and_electron_wall(self):
-        with patch("sys.argv", ["propagate"]):
+        with patch("sys.argv", [
+            "propagate", "--heavy-trap-alpha", "0.05",
+        ]):
             args = parse_args()
         model = build_model(args)
 
         self.assertEqual((model.x_left, model.x_right), (-22.0, 22.0))
         self.assertEqual((args.left_position, args.left_charge), (-10.0, 1.0))
-        self.assertEqual((args.right_position, args.right_charge), (10.0, 1.0))
-        self.assertEqual((args.q_min, args.q_max, args.q0), (-9.0, 9.0, 0.0))
-        self.assertEqual((args.R_min, args.R_max, args.R0), (-9.0, 9.0, 2.0))
+        self.assertEqual((args.right_position, args.right_charge), (10.0, 0.0))
+        self.assertEqual((args.q_min, args.q_max, args.q0), (-12.0, 12.0, 0.0))
+        self.assertEqual((args.R_min, args.R_max, args.R0), (2.0, 18.0, 10.0))
+        self.assertEqual((model.heavy_trap_center, model.heavy_trap_alpha), (10.0, 0.05))
         self.assertEqual((args.nx, args.nq, args.nR), (151, 151, 151))
         self.assertAlmostEqual(model.dx, 44.0/152.0)
-        self.assertAlmostEqual(model.dq, 18.0/151.0)
-        self.assertAlmostEqual(model.dR, 18.0/151.0)
+        self.assertAlmostEqual(model.dq, 24.0/151.0)
+        self.assertAlmostEqual(model.dR, 16.0/151.0)
+        self.assertEqual(
+            crossing_reference_positions(model, args, "q"), (-10.0, 10.0)
+        )
+        R_references = crossing_reference_positions(model, args, "R")
+        self.assertEqual(R_references[0], -10.0)
+        self.assertAlmostEqual(R_references[1], 18.0)
+
+    def test_harmonic_heavy_trap_is_real_diagonal_and_centered(self):
+        argv = [
+            "propagate", "--nx", "5", "--nq", "5", "--nR", "8",
+            "--heavy-trap-alpha", "0",
+        ]
+        with patch("sys.argv", argv):
+            args_free = parse_args()
+        free = build_model(args_free)
+        with patch("sys.argv", argv[:-1] + ["0.125"]):
+            args_trapped = parse_args()
+        trapped = build_model(args_trapped)
+        expected = 0.125*(trapped.R-10.0)**2
+        difference = trapped.potential-free.potential
+        self.assertTrue(np.allclose(
+            difference, expected[None, None, :], atol=2.0e-14, rtol=0.0,
+        ))
+        center = int(np.argmin(np.abs(trapped.R-10.0)))
+        self.assertAlmostEqual(expected[center], 0.0, places=14)
 
     def test_gate_has_exact_zero_one_and_smooth_transition(self):
         density = np.array([1.0e-14, 1.0e-13, 1.0e-12, 1.0e-11, 1.0])
@@ -88,7 +117,10 @@ class DeepTailSupportTests(unittest.TestCase):
         self.assertTrue(np.array_equal(dphi[:, :, 0], zeros[0][:, :, 0]))
 
     def test_full_nuclear_range_matches_electronic_box(self):
-        with patch("sys.argv", ["propagate", "--full-nuclear-range"]):
+        with patch("sys.argv", [
+            "propagate", "--full-nuclear-range",
+            "--heavy-trap-alpha", "0",
+        ]):
             args = parse_args()
         model = build_model(args)
         self.assertEqual(args.q_min, args.x_min)
@@ -104,7 +136,7 @@ class DeepTailSupportTests(unittest.TestCase):
         argv = [
             "propagate", "--symmetric-box-half-width", "10",
             "--full-nuclear-range", "--nx", "249", "--nq", "500",
-            "--nR", "1000",
+            "--nR", "1000", "--heavy-trap-alpha", "0",
         ]
         with patch("sys.argv", argv):
             args = parse_args()
@@ -122,6 +154,7 @@ class DeepTailSupportTests(unittest.TestCase):
         argv = [
             "propagate", "--nx", "5", "--nq", "5", "--nR", "5",
             "--left-charge", "0.7", "--right-charge", "0.0",
+            "--heavy-trap-alpha", "0",
         ]
         with patch("sys.argv", argv):
             args_zero = parse_args()

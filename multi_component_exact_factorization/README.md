@@ -206,14 +206,17 @@ Propagation 중 작은 wavefunction 값을 임의로 0으로 자르지는 않는
 --x-max 22.0           # 전자 오른쪽 Dirichlet 경계
 --left-position -10.0  # 왼쪽 고정 중심의 위치
 --left-charge 1.0      # 왼쪽 고정 중심 전하 Z_L
---right-position 10.0  # 오른쪽 고정 중심의 위치
---right-charge 1.0     # 오른쪽 고정 중심 전하 Z_R
+--right-position 10.0  # 선택적 오른쪽 고정 중심 위치(기본 비활성)
+--right-charge 0.0     # 움직이는 heavy가 오른쪽 fixed ion을 대체
+--heavy-trap-center 10.0
+--heavy-trap-alpha ALPHA  # V_trap=ALPHA*(R-10)^2, 반드시 명시
 ```
 
-기본 초기 중심은 `q0=0`, `R0=2`이다. `x=+-10`의 두 고정 `+1` 전하는
-electron attraction과 proton/heavy repulsion soft-Coulomb 항을 만든다. 이는
-고정 이온 두 개와 움직이는 이온 하나인 표준 Shin--Metiu에 움직이는 proton과
-heavy를 모두 둔 extended MCEF geometry이다.
+현재 기본 초기 중심은 `q0=0`, `R0=10`이다. 왼쪽 `x=-10`의 고정 `+1`
+전하와 움직이는 proton/heavy만 존재하며, 이전 오른쪽 fixed ion은 제거했다.
+Heavy는 `V_trap=alpha*(R-10)^2`로 결합된다. `alpha`는 수치 안정화 계수가
+아니라 실제 결합 진동수를 정하는 물리 parameter이므로 CLI에서 반드시
+명시한다. `alpha=M_R*omega^2/2`이고 `omega=sqrt(2*alpha/M_R)`이다.
 
 이 범위와 점 수는 Zaidi--Bian--Subotnik (2026)의 정적 Shin--Metiu 계산
 (`L=20`, `R in [-9,9]`, `r in [-22,22]`, 각 151점)을 기준으로 정했다. 그
@@ -224,9 +227,10 @@ tail과 fixed-center/wall 분리를 위한 출발점이지 MCEF 장시간 안정
 `44/152`, `18/151`로 문헌의 약 `44/150`, `18/150`과 1% 이내에서 대응한다.
 
 단, 151점 q/R grid는 문헌의 정적 benchmark를 재현하기 위한 가벼운 기본값이다.
-현재 초기 Gaussian 폭(`sigma_q` 약 0.16, `sigma_R` 약 0.10)을 dynamics에서
-분해하려면 Born--Huang production 계산에는 예를 들어 `nx=300`, `nq=450`,
-`nR=900`(`dx` 약 0.146, `dq` 약 0.04, `dR` 약 0.02)을 권장한다. 이 고해상도 조합은 direct-grid
+현재 초기 Gaussian 폭을 dynamics에서 분해하려면 Born--Huang production
+계산에는 `x[-22,22], q[-12,12], R[2,18]`에서 예를 들어 `nx=300`,
+`nq=600`, `nR=800`(`dx` 약 0.146, `dq` 약 0.04, `dR` 약 0.02)을
+권장한다. 이 고해상도 조합은 direct-grid
 `Phi(nx,nq,nR)`에는 매우 크므로 electronic Born--Huang backend용이다.
 
 `--symmetric-box-half-width L`은 전자 box를 `[-L,+L]`로 설정한다. q와 R도

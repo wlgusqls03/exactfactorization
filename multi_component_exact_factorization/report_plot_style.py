@@ -90,18 +90,36 @@ def color_y_axis(axis, color, label):
 
 
 def add_fixed_center_markers(axis, options):
-    """Mark physical fixed positive centers, independently of grid boundaries."""
+    """Mark active fixed charges and the heavy harmonic-trap center."""
     positions = []
-    for key in ("left_position", "right_position"):
+    for key, charge_key in (
+        ("left_position", "left_charge"),
+        ("right_position", "right_charge"),
+    ):
         value = options.get(key)
         if value is None:
             continue
         value = float(value)
-        if np.isfinite(value) and not any(np.isclose(value, old) for old in positions):
+        charge = float(options.get(charge_key, 1.0))
+        if (
+            charge != 0.0 and np.isfinite(value)
+            and not any(np.isclose(value, old) for old in positions)
+        ):
             positions.append(value)
     for index, position in enumerate(positions):
         axis.axvline(
             position, color="0.42", lw=1.0, ls=":", alpha=0.82,
             label=("fixed + charge" if index == 0 else None), zorder=1,
         )
+    trap_alpha = float(options.get("heavy_trap_alpha", 0.0))
+    trap_center = options.get("heavy_trap_center")
+    if trap_alpha > 0.0 and trap_center is not None:
+        trap_center = float(trap_center)
+        if np.isfinite(trap_center):
+            axis.axvline(
+                trap_center, color="#6A3D9A", lw=1.0, ls="--", alpha=0.78,
+                label="heavy trap center", zorder=1,
+            )
+            if not any(np.isclose(trap_center, old) for old in positions):
+                positions.append(trap_center)
     return positions

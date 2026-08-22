@@ -203,7 +203,7 @@ class BornHuangOperatorTests(unittest.TestCase):
     def test_local_basis_nacs_are_finite_and_normalized(self):
         with patch.object(sys, "argv", [
             "test", "--nx", "18", "--nq", "7", "--nR", "6",
-            "--electron-excitation", "1",
+            "--electron-excitation", "1", "--heavy-trap-alpha", "0",
         ]):
             args = parse_args()
         model = build_model(args)
@@ -219,7 +219,7 @@ class BornHuangOperatorTests(unittest.TestCase):
     def test_basis_cache_round_trip_and_fingerprint(self):
         with patch.object(sys, "argv", [
             "test", "--nx", "12", "--nq", "5", "--nR", "5",
-            "--electron-excitation", "1",
+            "--electron-excitation", "1", "--heavy-trap-alpha", "0",
         ]):
             args = parse_args()
         model = build_model(args)
@@ -256,7 +256,7 @@ class BornHuangOperatorTests(unittest.TestCase):
     def test_smaller_basis_reuses_cached_superset(self):
         with patch.object(sys, "argv", [
             "test", "--nx", "12", "--nq", "5", "--nR", "5",
-            "--electron-excitation", "1",
+            "--electron-excitation", "1", "--heavy-trap-alpha", "0",
         ]):
             args = parse_args()
         model = build_model(args)

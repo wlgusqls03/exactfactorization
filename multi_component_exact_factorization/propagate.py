@@ -32,6 +32,7 @@ from .core import (
     initial_factors,
     instantaneous_functionals,
     pnc_project,
+    print_model_geometry,
     project_discrete_product_residual,
     reconstruct_psi,
 )
@@ -296,6 +297,7 @@ def run(args):
     outdir = dated_results_dir(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     model = build_model(args)
+    print_model_geometry(model, args)
     phi, lam, chi = initial_factors(model, args)
     print(
         "초기 배열: "
