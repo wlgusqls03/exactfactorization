@@ -135,3 +135,122 @@ def make_fixed_scale_marginal_animation(
     plt.close(fig)
     print(f"fixed-scale particle marginals 저장: {path}")
     return path
+
+
+def make_relative_log_marginal_animation(
+    *,
+    times_fs,
+    particle_series,
+    options,
+    outdir,
+    fps,
+    max_frames,
+    dpi,
+    fmt,
+    decades=6.0,
+    x_abs_max=12.0,
+    title_prefix="Dynamics",
+    stem="particle_marginals_relative_log",
+):
+    """Show marginal shapes on a per-frame relative logarithmic scale.
+
+    This is deliberately an additional visualization.  The stored densities
+    are not changed, and the absolute linear-scale movie remains the source
+    for comparing peak heights between times.  Here each curve is divided by
+    its own frame maximum so that spreading and small secondary branches do
+    not disappear behind the initially narrow Gaussian peak.
+    """
+    times = np.asarray(times_fs, dtype=float)
+    if times.ndim != 1 or not len(times):
+        raise ValueError("times_fs must be a nonempty one-dimensional array")
+    if not np.isfinite(decades) or decades <= 0.0:
+        raise ValueError("log-density decades must be finite and positive")
+    if not np.isfinite(x_abs_max) or x_abs_max <= 0.0:
+        raise ValueError("marginal position maximum must be finite and positive")
+
+    prepared = []
+    relative_floor = 10.0**(-float(decades))
+    for name, coordinate, density in particle_series:
+        coordinate = np.asarray(coordinate, dtype=float)
+        density = np.asarray(density, dtype=float)
+        expected = (len(times), len(coordinate))
+        if coordinate.ndim != 1 or density.shape != expected:
+            raise ValueError(
+                f"{name} marginal shape mismatch: {density.shape} != {expected}"
+            )
+        if not np.all(np.isfinite(density)) or np.any(density < 0.0):
+            raise ValueError(f"{name} marginal must be finite and nonnegative")
+        peak = np.maximum(np.max(density, axis=1), 1.0e-300)
+        relative = density/peak[:, None]
+        log_relative = np.log10(np.maximum(relative, relative_floor))
+        prepared.append((name, coordinate, log_relative, peak))
+    if not prepared:
+        raise ValueError("at least one particle marginal is required")
+
+    frames = selected_frames(len(times), min(max_frames, len(times)))
+    first = int(frames[0])
+    fig, axis = plt.subplots(figsize=(14.8, 6.5), constrained_layout=True)
+    lines = []
+    for name, coordinate, log_relative, _peak in prepared:
+        line, = axis.plot(
+            coordinate, log_relative[first],
+            color=PARTICLE_COLORS.get(name), lw=2.15, label=name,
+        )
+        lines.append(line)
+
+    add_fixed_center_markers(axis, options)
+    available_min = min(float(coordinate[0]) for _, coordinate, *_ in prepared)
+    available_max = max(float(coordinate[-1]) for _, coordinate, *_ in prepared)
+    axis.set(
+        xlim=(max(available_min, -float(x_abs_max)),
+              min(available_max, float(x_abs_max))),
+        ylim=(-float(decades), 0.08),
+        xlabel=r"common position coordinate ($a_0$)",
+        ylabel=r"$\log_{10}[\rho/\rho_{\max}(t)]$",
+    )
+    axis.set_title(
+        "Electron, proton and heavy-nucleus marginal shapes | relative log scale",
+        loc="left", fontweight="semibold",
+    )
+    for level in (-1.0, -2.0, -3.0):
+        if level >= -decades:
+            axis.axhline(level, color="0.78", lw=0.65, ls=":", zorder=0)
+    axis.grid(alpha=0.18, linewidth=0.7)
+    axis.tick_params(direction="in")
+    axis.legend(frameon=False, ncol=max(1, len(prepared)), loc="lower left")
+    peak_text = axis.text(
+        0.995, 0.965, "", transform=axis.transAxes,
+        ha="right", va="top", fontsize=8.4, color="0.18",
+        bbox=dict(fc="white", ec="0.85", alpha=0.86, pad=3),
+    )
+    title = fig.suptitle("")
+
+    def update(number):
+        frame = int(frames[number])
+        labels = []
+        for line, (name, _coordinate, log_relative, peak) in zip(lines, prepared):
+            line.set_ydata(log_relative[frame])
+            labels.append(rf"$\rho_{{{name},\max}}={peak[frame]:.3e}$")
+        peak_text.set_text("   |   ".join(labels))
+        title.set_text(
+            f"{title_prefix} | t={times[frame]:.4f} fs\n"
+            f"shape-only relative log display; floor=$10^{{-{decades:g}}}$ of each peak; "
+            "raw density is unchanged"
+        )
+        return *lines, peak_text, title
+
+    update(0)
+    animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    if fmt == "mp4" and shutil.which("ffmpeg"):
+        path = outdir/f"{stem}.mp4"
+        animation.save(path, writer=FFMpegWriter(fps=fps, bitrate=3000), dpi=dpi)
+    else:
+        if fmt == "mp4":
+            print(f"ffmpeg을 찾지 못해 {stem} 영상을 GIF로 저장합니다.")
+        path = outdir/f"{stem}.gif"
+        animation.save(path, writer=PillowWriter(fps=fps), dpi=min(dpi, 110))
+    plt.close(fig)
+    print(f"relative-log particle marginals 저장: {path}")
+    return path

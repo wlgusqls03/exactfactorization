@@ -92,6 +92,7 @@ class TDSEReportTests(unittest.TestCase):
                 "05_tdse_exact_factorization_fields.png",
                 "06_tdse_transport_and_drive.png",
                 "07_tdse_discrete_link_geometry.png",
+                "08_tdse_joint_density_relative_log.png",
                 "tdse_report_observables.npz",
             ):
                 self.assertTrue((report/name).is_file(), name)
@@ -115,13 +116,47 @@ class TDSEReportTests(unittest.TestCase):
             )
             for name in (
                 "tdse_dynamics_overview.gif",
+                "tdse_joint_density_relative_log.gif",
                 "particle_marginals_fixed_scale.gif",
+                "particle_marginals_relative_log.gif",
                 "tdse_exact_factorization_fields.gif",
                 "tdse_transport_and_drive.gif",
                 "heavy_coordinate_dynamics.gif",
                 "proton_coordinate_dynamics.gif",
             ):
                 self.assertTrue((report/name).is_file(), name)
+
+    def test_support_aware_phase_lift_ignores_empty_tail_winding(self):
+        spacing = 0.2
+        density = np.zeros((2, 7))
+        density[:, 3:6] = np.array([0.5, 1.0, 0.5])
+        phase = np.array([
+            [0.0, 0.0, 0.0, 0.1, 0.12, 0.14, 0.0],
+            [0.0, 2.9, -2.9, 0.11, 0.13, 0.15, 0.0],
+        ])
+        lifted, support, turns = tdse_report.support_aware_temporal_lift_1d(
+            phase/spacing, density, spacing, floor=1.0e-3,
+        )
+        self.assertTrue(np.all(support[:, 3:6]))
+        self.assertTrue(np.allclose(lifted[0, 3:6]*spacing, phase[0, 3:6]))
+        self.assertTrue(np.allclose(lifted[1, 3:6]*spacing, phase[1, 3:6]))
+        self.assertTrue(np.array_equal(turns, np.zeros(2, dtype=int)))
+        naive = np.unwrap(phase, axis=1)/spacing
+        self.assertGreater(abs(naive[1, 4]-lifted[1, 4]), 20.0)
+
+    def test_continuity_current_is_branch_free_and_finite(self):
+        coordinate = np.linspace(-2.0, 2.0, 41)
+        times = np.linspace(0.0, 1.0, 7)
+        density = np.asarray([
+            np.exp(-((coordinate-0.2*time)/0.45)**2) for time in times
+        ])
+        density /= np.sum(density, axis=1)[:, None]*(coordinate[1]-coordinate[0])
+        current = tdse_report.continuity_current_1d(
+            density, times, coordinate[1]-coordinate[0],
+        )
+        self.assertEqual(current.shape, density.shape)
+        self.assertTrue(np.all(np.isfinite(current)))
+        self.assertGreater(np.max(np.abs(current)), 0.0)
 
 
 if __name__ == "__main__":

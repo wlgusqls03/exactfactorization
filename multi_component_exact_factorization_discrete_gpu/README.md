@@ -289,8 +289,13 @@ and additionally creates
 `05_tdse_exact_factorization_fields.png`,
 `06_tdse_transport_and_drive.png`,
 `07_tdse_discrete_link_geometry.png`,
+`08_tdse_joint_density_relative_log.png`,
 `tdse_exact_factorization_fields.mp4`, and
-`tdse_transport_and_drive.mp4`.  It also creates
+`tdse_transport_and_drive.mp4`.  It also creates the shape-only
+`tdse_joint_density_relative_log.mp4` and
+`particle_marginals_relative_log.mp4`; these divide each frame by its own
+peak for display and retain the absolute linear-density figures unchanged.
+It also creates
 `heavy_coordinate_dynamics.mp4` and `proton_coordinate_dynamics.mp4`:
 each uses the existing exact-potential colors and definitions, while the
 three field panels follow the instantaneous occupied coordinate interval.
@@ -301,6 +306,15 @@ momenta, currents, and gauge-invariant drives.  Spatial derivatives and the
 saved-frame connection time derivative use the same periodic five-point and
 centered-time diagnostic convention as the existing MCEF report; they do not
 feed back into TDSE propagation.
+
+TDSE-derived one-dimensional connection profiles are lifted only inside
+connected occupied support and their integer `2*pi/h` branch is matched to
+the preceding saved frame.  Empty tails therefore cannot shift the occupied
+packet by one winding.  The q and R coordinate-focus current panels use a
+branch-free continuity reconstruction from the saved marginal densities,
+with negligible boundary flux as the integration constant.  This current is
+a saved-frame diagnostic; an exact five-point bond-current audit additionally
+requires both the `+1` and `+2` native links.
 
 All continuum-MCEF, discrete-MCEF and TDSE 2D momentum/current/drive maps use
 a trajectory-wide robust color range computed only on occupied support.

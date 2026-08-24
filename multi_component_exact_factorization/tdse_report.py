@@ -34,7 +34,10 @@ from .report_plot_style import (
     masked_cmap,
 )
 from .visualize import NUMBER_FORMATTER, selected_frames
-from .marginal_movie import make_fixed_scale_marginal_animation
+from .marginal_movie import (
+    make_fixed_scale_marginal_animation,
+    make_relative_log_marginal_animation,
+)
 from .coordinate_focus_movie import make_coordinate_focus_animation
 
 
@@ -281,6 +284,58 @@ def plot_joint_snapshots(obs, outdir, dpi, snapshot_count=6):
     return path
 
 
+def _relative_log_density(density, decades=6.0):
+    density = np.asarray(density, dtype=float)
+    axes = tuple(range(1, density.ndim))
+    peak = np.maximum(np.max(density, axis=axes), 1.0e-300)
+    reshape = (len(peak),)+(1,)*(density.ndim-1)
+    relative = density/peak.reshape(reshape)
+    return np.log10(np.maximum(relative, 10.0**(-float(decades)))), peak
+
+
+def plot_joint_log_snapshots(obs, outdir, dpi, snapshot_count=6, decades=6.0):
+    """Plot wavepacket shape without changing the stored joint density."""
+    times, q, R = obs["times_fs"], obs["q"], obs["R"]
+    log_density, peaks = _relative_log_density(obs["joint_density"], decades)
+    frames = selected_frames(len(times), min(snapshot_count, len(times)))
+    columns = 3
+    rows = int(np.ceil(len(frames)/columns))
+    fig, axes = plt.subplots(
+        rows, columns, figsize=(14.5, 4.0*rows), constrained_layout=True,
+        squeeze=False,
+    )
+    image = None
+    for ax, frame in zip(axes.flat, frames):
+        frame = int(frame)
+        image = ax.imshow(
+            log_density[frame].T,
+            origin="lower", aspect="auto", interpolation="nearest",
+            extent=[q[0], q[-1], R[0], R[-1]], cmap=JOINT_CMAP,
+            vmin=-float(decades), vmax=0.0,
+        )
+        ax.set_title(
+            f"t={times[frame]:.3f} fs | peak={peaks[frame]:.3e}", loc="left",
+        )
+        ax.set_xlabel(r"proton $q$ ($a_0$)")
+        ax.set_ylabel(r"heavy $R$ ($a_0$)")
+    for ax in axes.flat[len(frames):]:
+        ax.set_visible(False)
+    if image is not None:
+        fig.colorbar(
+            image, ax=list(axes.flat[:len(frames)]), pad=0.01,
+            label=r"$\log_{10}[\rho_{qR}/\rho_{qR,\max}(t)]$",
+        )
+    fig.suptitle(
+        "Direct TDSE | relative-log joint-density shape | raw density unchanged",
+        fontweight="bold",
+    )
+    path = Path(outdir)/"08_tdse_joint_density_relative_log.png"
+    fig.savefig(path, dpi=dpi)
+    plt.close(fig)
+    print(f"TDSE relative-log joint density 저장: {path}")
+    return path
+
+
 def _sample_energies_on_mean_path(obs):
     energies = obs.get("bo_energies")
     if energies is None:
@@ -457,6 +512,49 @@ def _save_animation(animation, fig, outdir, stem, fps, dpi, fmt):
     return path
 
 
+def make_joint_log_animation(
+    obs, outdir, fps, max_frames, dpi, fmt, decades=6.0,
+):
+    """Animate frame-relative log joint density as a shape diagnostic."""
+    times, q, R = obs["times_fs"], obs["q"], obs["R"]
+    log_density, peaks = _relative_log_density(obs["joint_density"], decades)
+    frames = selected_frames(len(times), min(max_frames, len(times)))
+    first = int(frames[0])
+    fig, axis = plt.subplots(figsize=(10.6, 7.2), constrained_layout=True)
+    image = axis.imshow(
+        log_density[first].T,
+        origin="lower", aspect="auto", interpolation="nearest",
+        extent=[q[0], q[-1], R[0], R[-1]], cmap=JOINT_CMAP,
+        vmin=-float(decades), vmax=0.0,
+    )
+    for position in _fixed_positions(obs["options"]):
+        axis.axvline(position, color="white", lw=0.75, ls=":", alpha=0.68)
+        axis.axhline(position, color="white", lw=0.75, ls=":", alpha=0.68)
+    axis.set(xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)")
+    fig.colorbar(
+        image, ax=axis, pad=0.01,
+        label=r"$\log_{10}[\rho_{qR}/\rho_{qR,\max}(t)]$",
+    )
+    title = fig.suptitle("")
+
+    def update(number):
+        frame = int(frames[number])
+        image.set_data(log_density[frame].T)
+        title.set_text(
+            f"Direct TDSE joint-density shape | t={times[frame]:.4f} fs | "
+            f"raw peak={peaks[frame]:.3e} $a_0^{{-2}}$\n"
+            f"relative log floor=$10^{{-{decades:g}}}$; no density values modified"
+        )
+        return image, title
+
+    update(0)
+    animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
+    return _save_animation(
+        animation, fig, outdir, "tdse_joint_density_relative_log",
+        fps, dpi, fmt,
+    )
+
+
 def make_dynamics_animation(obs, outdir, fps, max_frames, dpi, fmt):
     """Animate raw TDSE marginals, joint density, populations and mean motion."""
     times, q, R = obs["times_fs"], obs["q"], obs["R"]
@@ -587,9 +685,128 @@ def _load_ef_fields(obs):
     return result
 
 
+def support_aware_temporal_lift_1d(connection, density, spacing, floor=1.0e-3):
+    """Lift a principal link phase only on connected occupied support.
+
+    ``connection`` is ``Arg(S)/spacing``.  A full-domain, frame-independent
+    ``np.unwrap`` can inherit an arbitrary winding number from an empty tail
+    and shift the occupied packet by ``2*pi/spacing``.  Here every connected
+    occupied segment is spatially unwrapped and its integer branch is chosen
+    to remain closest to the previous frame on their overlap.  Outside support
+    the native principal value is retained for faint contextual plotting.
+    """
+    connection = np.asarray(connection, dtype=float)
+    density = np.asarray(density, dtype=float)
+    if connection.ndim != 2 or density.shape != connection.shape:
+        raise ValueError("1D connection/density trajectory shape mismatch")
+    if not np.isfinite(spacing) or spacing == 0.0:
+        raise ValueError("connection spacing must be finite and nonzero")
+    if not np.isfinite(floor) or floor <= 0.0:
+        raise ValueError("support floor must be finite and positive")
+
+    principal_phase = connection*float(spacing)
+    lifted_phase = principal_phase.copy()
+    peak = np.maximum(np.max(density, axis=1), 1.0e-300)
+    support = density >= floor*peak[:, None]
+    previous = np.full(connection.shape[1], np.nan, dtype=float)
+    previous_density = np.zeros(connection.shape[1], dtype=float)
+    branch_turns = np.zeros(connection.shape[0], dtype=int)
+
+    for frame in range(connection.shape[0]):
+        active = support[frame]
+        padded = np.pad(active.astype(np.int8), (1, 1))
+        changes = np.diff(padded)
+        starts = np.flatnonzero(changes == 1)
+        stops = np.flatnonzero(changes == -1)
+        for start, stop in zip(starts, stops):
+            segment = np.unwrap(principal_phase[frame, start:stop])
+            overlap = np.isfinite(previous[start:stop])
+            if np.any(overlap):
+                weights = np.maximum(
+                    density[frame, start:stop][overlap]
+                    +previous_density[start:stop][overlap],
+                    1.0e-300,
+                )
+                delta = previous[start:stop][overlap]-segment[overlap]
+                turns = int(np.rint(np.sum(weights*delta)/np.sum(weights)/(2.0*np.pi)))
+            else:
+                local_peak = int(np.argmax(density[frame, start:stop]))
+                turns = int(np.rint(
+                    (principal_phase[frame, start+local_peak]-segment[local_peak])
+                    /(2.0*np.pi)
+                ))
+            segment = segment+turns*(2.0*np.pi)
+            lifted_phase[frame, start:stop] = segment
+        global_peak = int(np.argmax(density[frame]))
+        branch_turns[frame] = int(np.rint(
+            (lifted_phase[frame, global_peak]-principal_phase[frame, global_peak])
+            /(2.0*np.pi)
+        ))
+        previous = np.where(active, lifted_phase[frame], np.nan)
+        previous_density = np.where(active, density[frame], 0.0)
+    return lifted_phase/float(spacing), support, branch_turns
+
+
+def continuity_current_1d(density, times_fs, spacing):
+    """Reconstruct branch-free 1D current from the discrete continuity law.
+
+    The current at cell centres is obtained from the cumulative flux through
+    cell boundaries, with negligible left-boundary flux as the integration
+    constant.  This is appropriate for the reported trajectories whose edge
+    probability is explicitly diagnosed.  Its temporal accuracy is limited
+    by the saved-frame spacing, but it cannot inherit a link-phase branch.
+    """
+    density = np.asarray(density, dtype=float)
+    times_au = np.asarray(times_fs, dtype=float)*AU_PER_FS
+    if density.ndim != 2 or density.shape[0] != len(times_au):
+        raise ValueError("continuity density/time shape mismatch")
+    if len(times_au) < 2:
+        return np.zeros_like(density)
+    edge_order = 2 if len(times_au) >= 3 else 1
+    density_rate = np.gradient(
+        density, times_au, axis=0, edge_order=edge_order,
+    )
+    edge_current = np.zeros(
+        (density.shape[0], density.shape[1]+1), dtype=float,
+    )
+    edge_current[:, 1:] = -float(spacing)*np.cumsum(density_rate, axis=1)
+    return 0.5*(edge_current[:, :-1]+edge_current[:, 1:])
+
+
+def _prepared_ef_geometry(obs, ef, floor=1.0e-3):
+    cached = ef.get("_prepared_geometry")
+    if cached is not None:
+        return cached
+    alpha, heavy_support, branch_turns = support_aware_temporal_lift_1d(
+        ef["alpha"], obs["heavy_density"], obs["dR"], floor,
+    )
+    times_au = np.asarray(obs["times_fs"], dtype=float)*AU_PER_FS
+    edge_order = 2 if len(times_au) >= 3 else 1
+    dalpha_dt = (
+        np.gradient(alpha, times_au, axis=0, edge_order=edge_order)
+        if len(times_au) >= 2 else np.zeros_like(alpha)
+    )
+    cached = {
+        "alpha": alpha,
+        "dalpha_dt": dalpha_dt,
+        "heavy_support": heavy_support,
+        "alpha_branch_turns": branch_turns,
+        "heavy_continuity_current": continuity_current_1d(
+            obs["heavy_density"], obs["times_fs"], obs["dR"],
+        ),
+        "proton_continuity_current": continuity_current_1d(
+            obs["proton_density"], obs["times_fs"], obs["dq"],
+        ),
+    }
+    ef["_prepared_geometry"] = cached
+    return cached
+
+
 def _connection(ef, key, frame, spacing, spatial_axis):
-    phase = np.asarray(ef[key][frame], float)*spacing
-    return np.unwrap(phase, axis=spatial_axis)/spacing
+    del spacing, spatial_axis
+    # ``a``, ``b`` and ``alpha`` are already native principal Arg(S)/h
+    # values.  Do not spatially unwrap them through empty tails.
+    return np.asarray(ef[key][frame], float)
 
 
 def _connection_time_derivative(ef, key, frame, spacing, spatial_axis, times_au):
@@ -606,7 +823,9 @@ def _connection_time_derivative(ef, key, frame, spacing, spatial_axis, times_au)
         indices = np.array([frame-1, frame, frame+1])
         local = 1
     phase = np.asarray(ef[key][indices], float)*spacing
-    phase = np.unwrap(phase, axis=spatial_axis+1)
+    del spatial_axis
+    # Track the same bond through adjacent saved times.  Spatial unwrapping
+    # across empty tails is intentionally forbidden.
     phase = np.unwrap(phase, axis=0)
     edge_order = 2 if len(indices) >= 3 else 1
     return np.gradient(
@@ -625,7 +844,8 @@ def _ef_frame(obs, ef, frame, floor=1.0e-3):
     eps2_full = density_weighted_shift(ef["epsilon_2"][frame], heavy, floor)
     a_full = _connection(ef, "a", frame, obs["dq"], 0)
     b_full = _connection(ef, "b", frame, obs["dR"], 1)
-    alpha_full = _connection(ef, "alpha", frame, obs["dR"], 0)
+    prepared = _prepared_ef_geometry(obs, ef, floor)
+    alpha_full = prepared["alpha"][frame]
     times_au = obs["times_fs"]*AU_PER_FS
     da_dt = _connection_time_derivative(
         ef, "a", frame, obs["dq"], 0, times_au
@@ -633,9 +853,7 @@ def _ef_frame(obs, ef, frame, floor=1.0e-3):
     db_dt = _connection_time_derivative(
         ef, "b", frame, obs["dR"], 1, times_au
     )
-    dalpha_dt = _connection_time_derivative(
-        ef, "alpha", frame, obs["dR"], 0, times_au
-    )
+    dalpha_dt = prepared["dalpha_dt"][frame]
     force_q_full = -derivative(eps1_full, obs["dq"], axis=0)+da_dt
     force_R_first_full = -derivative(eps1_full, obs["dR"], axis=1)+db_dt
     force_R_full = -derivative(eps2_full, obs["dR"], axis=0)+dalpha_dt
@@ -647,7 +865,7 @@ def _ef_frame(obs, ef, frame, floor=1.0e-3):
     momentum_R_full = alpha_full
     proton_current_full = density*momentum_q_full/proton_mass
     first_heavy_current_full = density*momentum_R_first_full/heavy_mass
-    heavy_current_full = heavy*momentum_R_full/heavy_mass
+    heavy_current_full = prepared["heavy_continuity_current"][frame]
 
     def map_support(values):
         return np.where(support, values, np.nan)
@@ -683,6 +901,7 @@ def _ef_frame(obs, ef, frame, floor=1.0e-3):
         "first_heavy_current": map_support(first_heavy_current_full),
         "heavy_current_full": heavy_current_full,
         "heavy_current": line_support(heavy_current_full),
+        "heavy_current_kind": "continuity_reconstructed",
         "force_q_full": force_q_full,
         "force_q": map_support(force_q_full),
         "force_R_first_full": force_R_first_full,
@@ -836,10 +1055,10 @@ def plot_exact_factorization_fields(obs, ef, outdir, dpi, frame=-1):
     axes[1, 1].legend(handles=[alpha_line, momentum_line], frameon=False, fontsize=8)
     current_line, _ = _support_tail_lines(
         axes[1, 2], R, item["heavy_current"], item["heavy_current_full"], item["heavy_support"],
-        color=CURRENT_COLOR, label=r"$j_R^{(\chi)}$", linewidth=2.0,
+        color=CURRENT_COLOR, label=r"$j_R^{(\chi)}$ (continuity)", linewidth=2.0,
     )
     axes[1, 2].set_ylim(limits["current_R"])
-    color_y_axis(axes[1, 2], CURRENT_COLOR, "heavy probability current")
+    color_y_axis(axes[1, 2], CURRENT_COLOR, "continuity-reconstructed current")
     force_axis = axes[1, 2].twinx()
     force_line, _ = _support_tail_lines(
         force_axis, R, item["force_R"], item["force_R_full"], item["heavy_support"],
@@ -997,10 +1216,10 @@ def make_exact_field_animation(obs, ef, outdir, fps, max_frames, dpi, fmt):
     axes[1, 1].legend(frameon=False, fontsize=8)
     current_line, current_tail = _support_tail_lines(
         axes[1, 2], R, first_item["heavy_current"], first_item["heavy_current_full"], first_item["heavy_support"],
-        color=CURRENT_COLOR, label=r"$j_R^{(\chi)}$", linewidth=2.0,
+        color=CURRENT_COLOR, label=r"$j_R^{(\chi)}$ (continuity)", linewidth=2.0,
     )
     axes[1, 2].set_ylim(limits["current_R"])
-    color_y_axis(axes[1, 2], CURRENT_COLOR, "heavy probability current")
+    color_y_axis(axes[1, 2], CURRENT_COLOR, "continuity-reconstructed current")
     force_axis = axes[1, 2].twinx()
     force_line, force_tail = _support_tail_lines(
         force_axis, R, first_item["force_R"], first_item["force_R_full"], first_item["heavy_support"],
@@ -1114,6 +1333,7 @@ def make_coordinate_focus_animations(
     epsilon_R = np.zeros_like(heavy)
     momentum_R = np.zeros_like(heavy)
     current_R = np.zeros_like(heavy)
+    prepared_geometry = _prepared_ef_geometry(obs, ef)
     for frame in range(len(times)):
         item = _ef_frame(obs, ef, frame)
         denominator = np.maximum(proton[frame], 1.0e-300)
@@ -1125,9 +1345,7 @@ def make_coordinate_focus_animations(
             np.sum(joint[frame]*item["momentum_q_full"], axis=1)
             *obs["dR"]/denominator
         )
-        current_q[frame] = (
-            np.sum(item["proton_current_full"], axis=1)*obs["dR"]
-        )
+        current_q[frame] = prepared_geometry["proton_continuity_current"][frame]
         epsilon_R[frame] = item["eps2_full"]
         momentum_R[frame] = item["momentum_R_full"]
         current_R[frame] = item["heavy_current_full"]
@@ -1139,8 +1357,8 @@ def make_coordinate_focus_animations(
              "shifted energy (Hartree)", epsilon_R, COLORS[0], False),
             (r"Heavy mechanical momentum $K_R^{(\chi)}$",
              r"momentum ($a_0^{-1}$)", momentum_R, "black", True),
-            (r"Heavy probability transport $j_R^{(\chi)}$",
-             "heavy probability current", current_R, CURRENT_COLOR, True),
+            (r"Heavy probability transport $j_R^{(\chi)}$ (continuity)",
+             "continuity-reconstructed current", current_R, CURRENT_COLOR, True),
         ),
         options=obs["options"], outdir=outdir, fps=fps,
         max_frames=max_frames, dpi=dpi, fmt=fmt,
@@ -1155,8 +1373,8 @@ def make_coordinate_focus_animations(
              "shifted energy (Hartree)", epsilon_q, COLORS[0], False),
             (r"Density-conditioned mechanical momentum $\bar K_q$",
              r"momentum ($a_0^{-1}$)", momentum_q, "black", True),
-            (r"Integrated probability transport $J_q$",
-             "proton probability current", current_q, CURRENT_COLOR, True),
+            (r"Integrated probability transport $J_q$ (continuity)",
+             "continuity-reconstructed current", current_q, CURRENT_COLOR, True),
         ),
         options=obs["options"], outdir=outdir, fps=fps,
         max_frames=max_frames, dpi=dpi, fmt=fmt,
@@ -1189,6 +1407,7 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
         obs["x"] = ef.get("x", obs["x"])
     plot_particle_motion(obs, outdir, dpi, snapshot_count=snapshot_count)
     plot_joint_snapshots(obs, outdir, dpi, snapshot_count=snapshot_count)
+    plot_joint_log_snapshots(obs, outdir, dpi, snapshot_count=snapshot_count)
     plot_electronic_dynamics(obs, outdir, dpi, ef=ef)
     plot_numerical_reliability(obs, outdir, dpi)
     if ef is not None:
@@ -1204,6 +1423,7 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
         )
     if not no_animation:
         make_dynamics_animation(obs, outdir, fps, max_frames, animation_dpi, fmt)
+        make_joint_log_animation(obs, outdir, fps, max_frames, animation_dpi, fmt)
         if obs["electron_density"] is not None and obs["x"] is not None:
             make_fixed_scale_marginal_animation(
                 times_fs=obs["times_fs"],
@@ -1215,6 +1435,18 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
                 options=obs["options"], outdir=outdir, fps=fps,
                 max_frames=max_frames, dpi=animation_dpi, fmt=fmt,
                 y_max=marginal_ymax, x_abs_max=marginal_xmax,
+                title_prefix="Direct TDSE dynamics",
+            )
+            make_relative_log_marginal_animation(
+                times_fs=obs["times_fs"],
+                particle_series=(
+                    ("electron", obs["x"], obs["electron_density"]),
+                    ("proton", obs["q"], obs["proton_density"]),
+                    ("heavy", obs["R"], obs["heavy_density"]),
+                ),
+                options=obs["options"], outdir=outdir, fps=fps,
+                max_frames=max_frames, dpi=animation_dpi, fmt=fmt,
+                decades=6.0, x_abs_max=marginal_xmax,
                 title_prefix="Direct TDSE dynamics",
             )
         else:
@@ -1243,6 +1475,21 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
     if obs["electron_density"] is not None:
         report_payload.update(
             x=obs["x"], electron_density=obs["electron_density"]
+        )
+    if ef is not None:
+        geometry = _prepared_ef_geometry(obs, ef)
+        report_payload.update(
+            alpha_support_temporal_lift=geometry["alpha"],
+            alpha_branch_turns=geometry["alpha_branch_turns"],
+            heavy_continuity_current=geometry["heavy_continuity_current"],
+            proton_continuity_current=geometry["proton_continuity_current"],
+        )
+        print(
+            "TDSE branch/continuity audit: "
+            f"alpha turns=[{np.min(geometry['alpha_branch_turns'])},"
+            f"{np.max(geometry['alpha_branch_turns'])}], "
+            f"max|j_R|={np.max(np.abs(geometry['heavy_continuity_current'])):.3e}, "
+            f"max|J_q|={np.max(np.abs(geometry['proton_continuity_current'])):.3e}"
         )
     np.savez_compressed(
         outdir/"tdse_report_observables.npz", **report_payload
