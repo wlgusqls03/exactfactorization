@@ -1262,6 +1262,220 @@ def make_exact_field_animation(obs, ef, outdir, fps, max_frames, dpi, fmt):
     return _save_animation(animation, fig, outdir, "tdse_exact_factorization_fields", fps, dpi, fmt)
 
 
+def make_all_exact_potentials_animation(
+    obs, ef, outdir, fps, max_frames, dpi, fmt,
+):
+    """Animate every native nested-EF potential/link in six outer panels.
+
+    The complex first-level link has q and R components.  Its single outer
+    panel therefore contains four compact, fixed-scale views: magnitude
+    defect and principal phase for each direction.  No archived link is
+    unwrapped, clipped, or otherwise changed for this display.
+    """
+    required = ("sphi_q1", "sphi_R1", "sgamma_R1")
+    if any(key not in ef for key in required):
+        print(
+            "TDSE all-potential 영상 생략: nearest overlap links가 없습니다. "
+            "postprocess_tdse_ef --link-output nearest 또는 full을 실행하세요."
+        )
+        return None
+
+    frames = selected_frames(
+        len(obs["times_fs"]), min(max_frames, len(obs["times_fs"]))
+    )
+    limits = _trajectory_ef_limits(obs, ef, max_frames)
+    q, R = obs["q"], obs["R"]
+    extent = [q[0], q[-1], R[0], R[-1]]
+
+    def magnitude_defect(link):
+        return 1.0-np.abs(np.asarray(link, complex))
+
+    def robust_link_limit(key):
+        maxima = []
+        for frame in frames:
+            values = magnitude_defect(ef[key][int(frame)])
+            finite = np.abs(values[np.isfinite(values)])
+            if finite.size:
+                maxima.append(float(np.nanpercentile(finite, 99.5)))
+        return max(max(maxima or [0.0]), 1.0e-14)
+
+    q_defect_limit = robust_link_limit("sphi_q1")
+    R_defect_limit = robust_link_limit("sphi_R1")
+    gamma_defect_limit = robust_link_limit("sgamma_R1")
+    first = int(frames[0])
+    item = _ef_frame(obs, ef, first)
+
+    fig, axes = plt.subplots(
+        2, 3, figsize=(16.4, 9.2), constrained_layout=True,
+    )
+    map_images = _draw_ef_maps(fig, axes, item, obs, limits)
+
+    # epsilon^(2) and alpha share R but not units, so use colored twin axes.
+    eps_axis = axes[1, 0]
+    alpha_axis = eps_axis.twinx()
+    eps_line, = eps_axis.plot(
+        R, item["eps2"], color=COLORS[0], lw=2.0,
+        label=r"$\epsilon^{(2)}$",
+    )
+    eps_tail, = eps_axis.plot(
+        R, np.where(~item["heavy_support"], item["eps2_full"], np.nan),
+        color=COLORS[0], lw=0.55, ls=":", alpha=0.22,
+    )
+    alpha_line, = alpha_axis.plot(
+        R, item["alpha"], color=COLORS[3], lw=1.8, ls="--",
+        label=r"$\alpha_R$",
+    )
+    alpha_tail, = alpha_axis.plot(
+        R, np.where(~item["heavy_support"], item["alpha_full"], np.nan),
+        color=COLORS[3], lw=0.55, ls=":", alpha=0.22,
+    )
+    _scaled_heavy_density(eps_axis, R, item["heavy"])
+    eps_axis.set(xlabel=r"heavy $R$ ($a_0$)", xlim=(R[0], R[-1]))
+    eps_axis.set_ylim(limits["eps2"])
+    alpha_axis.set_ylim(limits["momentum_R"])
+    color_y_axis(eps_axis, COLORS[0], "shifted energy (Hartree)")
+    color_y_axis(alpha_axis, COLORS[3], r"connection ($a_0^{-1}$)")
+    eps_axis.set_title(
+        r"Second level: $\epsilon^{(2)}(R)$ and $\alpha_R(R)$",
+        loc="left", fontweight="semibold",
+    )
+    eps_axis.legend(
+        handles=[eps_line, alpha_line], frameon=False, fontsize=8,
+        loc="upper left",
+    )
+    _style_axis(eps_axis)
+
+    # One S^Phi outer panel, with both coordinate directions and both pieces
+    # of each complex link.  Insets avoid pretending that phase and magnitude
+    # share one scalar color scale.
+    sphi_axis = axes[1, 1]
+    sphi_axis.set_axis_off()
+    sphi_axis.set_title(
+        r"First-level overlap $S^\Phi$ (native +1 links)",
+        loc="left", fontweight="semibold", pad=7,
+    )
+    inset_specs = (
+        ("sphi_q1", "defect", [0.02, 0.54, 0.46, 0.39],
+         r"$1-|S^\Phi_{q,+1}|$", q_defect_limit),
+        ("sphi_q1", "phase", [0.52, 0.54, 0.46, 0.39],
+         r"$\arg S^\Phi_{q,+1}$", np.pi),
+        ("sphi_R1", "defect", [0.02, 0.06, 0.46, 0.39],
+         r"$1-|S^\Phi_{R,+1}|$", R_defect_limit),
+        ("sphi_R1", "phase", [0.52, 0.06, 0.46, 0.39],
+         r"$\arg S^\Phi_{R,+1}$", np.pi),
+    )
+    sphi_images = []
+    density_alpha = density_display_alpha(obs["joint_density"][first], 1.0e-3)
+    for key, component, bounds, title_text, scale in inset_specs:
+        inset = sphi_axis.inset_axes(bounds)
+        link = np.asarray(ef[key][first], complex)
+        values = magnitude_defect(link) if component == "defect" else np.angle(link)
+        if component == "defect":
+            vmin, vmax, cmap = 0.0, scale, LINK_CMAP
+        else:
+            vmin, vmax, cmap = -np.pi, np.pi, SIGNED_CMAP
+        image = inset.imshow(
+            values.T, origin="lower", aspect="auto", interpolation="nearest",
+            extent=extent, cmap=masked_cmap(cmap), vmin=vmin, vmax=vmax,
+            alpha=density_alpha.T,
+        )
+        inset.set_title(title_text, fontsize=7.5, pad=2)
+        inset.tick_params(labelsize=6, direction="in")
+        inset.set_xticks([])
+        inset.set_yticks([])
+        sphi_images.append((image, key, component))
+
+    # S^Gamma is one-dimensional: show its invariant magnitude defect and
+    # principal phase on separate colored y axes.
+    gamma_axis = axes[1, 2]
+    gamma_phase_axis = gamma_axis.twinx()
+    gamma_link = np.asarray(ef["sgamma_R1"][first], complex)
+    gamma_support = item["heavy_support"]
+    gamma_defect = magnitude_defect(gamma_link)
+    gamma_phase = np.angle(gamma_link)
+    gamma_defect_line, = gamma_axis.plot(
+        R, np.where(gamma_support, gamma_defect, np.nan),
+        color=COLORS[2], lw=2.0, label=r"$1-|S^\Gamma_{R,+1}|$",
+    )
+    gamma_defect_tail, = gamma_axis.plot(
+        R, np.where(~gamma_support, gamma_defect, np.nan),
+        color=COLORS[2], lw=0.55, ls=":", alpha=0.22,
+    )
+    gamma_phase_line, = gamma_phase_axis.plot(
+        R, np.where(gamma_support, gamma_phase, np.nan),
+        color=COLORS[3], lw=1.7, ls="--",
+        label=r"$\arg S^\Gamma_{R,+1}$",
+    )
+    gamma_phase_tail, = gamma_phase_axis.plot(
+        R, np.where(~gamma_support, gamma_phase, np.nan),
+        color=COLORS[3], lw=0.55, ls=":", alpha=0.22,
+    )
+    gamma_axis.set(
+        xlabel=r"heavy $R$ ($a_0$)", xlim=(R[0], R[-1]),
+        ylim=(-0.05*gamma_defect_limit, gamma_defect_limit),
+    )
+    gamma_phase_axis.set_ylim(-np.pi, np.pi)
+    color_y_axis(gamma_axis, COLORS[2], "magnitude defect")
+    color_y_axis(gamma_phase_axis, COLORS[3], "principal phase (rad)")
+    gamma_axis.set_title(
+        r"Second-level overlap $S^\Gamma_{R,+1}$",
+        loc="left", fontweight="semibold",
+    )
+    gamma_axis.legend(
+        handles=[gamma_defect_line, gamma_phase_line], frameon=False,
+        fontsize=8, loc="upper left",
+    )
+    _style_axis(gamma_axis)
+    title = fig.suptitle("")
+
+    def update(number):
+        frame = int(frames[number])
+        current = _ef_frame(obs, ef, frame)
+        for image, key in map_images:
+            image.set_data(current[f"{key}_full"].T)
+            image.set_alpha(current["density_alpha"].T)
+        eps_line.set_ydata(current["eps2"])
+        eps_tail.set_ydata(np.where(
+            ~current["heavy_support"], current["eps2_full"], np.nan
+        ))
+        alpha_line.set_ydata(current["alpha"])
+        alpha_tail.set_ydata(np.where(
+            ~current["heavy_support"], current["alpha_full"], np.nan
+        ))
+        opacity = density_display_alpha(obs["joint_density"][frame], 1.0e-3)
+        for image, key, component in sphi_images:
+            link = np.asarray(ef[key][frame], complex)
+            values = magnitude_defect(link) if component == "defect" else np.angle(link)
+            image.set_data(values.T)
+            image.set_alpha(opacity.T)
+        link = np.asarray(ef["sgamma_R1"][frame], complex)
+        support = current["heavy_support"]
+        defect = magnitude_defect(link)
+        phase = np.angle(link)
+        gamma_defect_line.set_ydata(np.where(support, defect, np.nan))
+        gamma_defect_tail.set_ydata(np.where(~support, defect, np.nan))
+        gamma_phase_line.set_ydata(np.where(support, phase, np.nan))
+        gamma_phase_tail.set_ydata(np.where(~support, phase, np.nan))
+        title.set_text(
+            f"TDSE-derived complete nested exact potentials | "
+            f"t={obs['times_fs'][frame]:.4f} fs\n"
+            "density gauge; fixed trajectory-wide scales; "
+            "solid=occupied, dotted=low density"
+        )
+        return (
+            *(entry[0] for entry in map_images), eps_line, eps_tail,
+            alpha_line, alpha_tail, *(entry[0] for entry in sphi_images),
+            gamma_defect_line, gamma_defect_tail,
+            gamma_phase_line, gamma_phase_tail, title,
+        )
+
+    update(0)
+    animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
+    return _save_animation(
+        animation, fig, outdir, "tdse_all_exact_potentials", fps, dpi, fmt
+    )
+
+
 def make_transport_animation(obs, ef, outdir, fps, max_frames, dpi, fmt):
     frames = selected_frames(len(obs["times_fs"]), min(max_frames, len(obs["times_fs"])))
     limits = _trajectory_ef_limits(obs, ef, max_frames)
@@ -1456,6 +1670,9 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
             )
         if ef is not None:
             make_exact_field_animation(
+                obs, ef, outdir, fps, max_frames, animation_dpi, fmt
+            )
+            make_all_exact_potentials_animation(
                 obs, ef, outdir, fps, max_frames, animation_dpi, fmt
             )
             make_transport_animation(

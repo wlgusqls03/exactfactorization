@@ -291,6 +291,9 @@ and additionally creates
 `07_tdse_discrete_link_geometry.png`,
 `08_tdse_joint_density_relative_log.png`,
 `tdse_exact_factorization_fields.mp4`, and
+`tdse_all_exact_potentials.mp4` (six outer panels containing
+`epsilon_1`, `a`, `b`, overlaid `epsilon_2`/`alpha`, the q/R magnitude and
+phase of `S^Phi`, and the magnitude/phase of `S^Gamma`), and
 `tdse_transport_and_drive.mp4`.  It also creates the shape-only
 `tdse_joint_density_relative_log.mp4` and
 `particle_marginals_relative_log.mp4`; these divide each frame by its own

@@ -120,6 +120,7 @@ class TDSEReportTests(unittest.TestCase):
                 "particle_marginals_fixed_scale.gif",
                 "particle_marginals_relative_log.gif",
                 "tdse_exact_factorization_fields.gif",
+                "tdse_all_exact_potentials.gif",
                 "tdse_transport_and_drive.gif",
                 "heavy_coordinate_dynamics.gif",
                 "proton_coordinate_dynamics.gif",
