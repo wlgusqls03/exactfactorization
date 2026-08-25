@@ -156,7 +156,11 @@ def run_split_operator(args, cpu_model, outdir: Path):
         # unused cached blocks before allocating densities and H Psi.
         cp.get_default_memory_pool().free_all_blocks()
         norm = _scalar(energies["norm"])
-        density = cp.real(wavefunction*cp.conj(wavefunction))
+        # ``conj(Psi)*Psi`` creates two full complex128 temporaries.  A
+        # complex absolute-value ufunc followed by an in-place square needs
+        # only one full float64 density array (half the bytes of Psi).
+        density = cp.abs(wavefunction)
+        cp.square(density, out=density)
         joint = cp.sum(density, axis=0, dtype=cp.float64)*cpu_model.dx/norm
         q_density = cp.sum(joint, axis=1, dtype=cp.float64)*cpu_model.dR
         R_density = cp.sum(joint, axis=0, dtype=cp.float64)*cpu_model.dq
@@ -172,8 +176,12 @@ def run_split_operator(args, cpu_model, outdir: Path):
         )
         coefficient_stage[frame_index] = y
         full_action = solver.action(wavefunction)
-        action_expectation = cp.sum(
-            cp.conj(wavefunction)*full_action, dtype=cp.complex128
+        # BLAS dotc performs the conjugation and reduction directly.  The
+        # previous elementwise expression allocated conj(Psi) and their
+        # product (2*Psi.nbytes), which OOMed an 11-GiB RTX 2080 Ti at the
+        # production (300,600,800) grid before the first time step.
+        action_expectation = cp.vdot(
+            wavefunction, full_action
         )*cpu_model.dx*cpu_model.dq*cpu_model.dR
         action_y = project_full_wavefunction_to_bo(
             full_action, basis.states, cpu_model.dx,
@@ -268,10 +276,9 @@ def run_split_operator(args, cpu_model, outdir: Path):
                     failure = f"step {step}: non-finite full TDSE wavefunction"
                     print(f"전파 중단: {failure}")
                     break
-                norm = cp.sum(
-                    cp.real(wavefunction*cp.conj(wavefunction)),
-                    dtype=cp.float64,
-                )*cpu_model.dx*cpu_model.dq*cpu_model.dR
+                norm = cp.real(cp.vdot(
+                    wavefunction, wavefunction
+                ))*cpu_model.dx*cpu_model.dq*cpu_model.dR
                 drift = _scalar(cp.abs(norm-1.0))
                 if args.max_norm_drift > 0.0 and drift > args.max_norm_drift:
                     failure = (

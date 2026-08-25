@@ -153,11 +153,15 @@ class SpectralTDSEGPU:
         """Real Parseval energy without constructing ``H Psi``."""
         model = self.model
         cell = model.dx*model.dq*model.dR
-        density = cp.real(wavefunction*cp.conj(wavefunction))
+        # Keep one float64 work array instead of materializing full-size
+        # complex conj(Psi) and conj(Psi)*Psi temporaries.
+        density = cp.abs(wavefunction)
+        cp.square(density, out=density)
         norm = cp.sum(density, dtype=cp.float64)*cell
-        potential = cp.sum(
-            density*self.potential, dtype=cp.float64
-        )*cell
+        # Norm has already been reduced, so reuse the density buffer for V*rho
+        # rather than allocating a second full float64 product.
+        cp.multiply(density, self.potential, out=density)
+        potential = cp.sum(density, dtype=cp.float64)*cell
         del density
         tx = cp.asarray(0.0, dtype=cp.float64)
         tq = cp.asarray(0.0, dtype=cp.float64)
@@ -227,7 +231,10 @@ class SpectralTDSEGPU:
             action[start:stop] += cp.fft.ifft(
                 modes, axis=2, norm="ortho"
             )
-        return cp.ascontiguousarray(action)
+        del modes
+        # ``action`` is constructed C-contiguous above; avoid even a
+        # defensive full-grid copy at this peak-memory point.
+        return action
 
 
 def initialize_full_wavefunction_gpu(basis, excitation, marginal, block_R=8):

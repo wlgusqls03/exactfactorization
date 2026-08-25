@@ -19,6 +19,7 @@ from multi_component_exact_factorization.core import (
 )
 from multi_component_exact_factorization.spectral_tdse import (
     spectral_action_numpy,
+    spectral_energy_numpy,
     split_step_numpy,
 )
 from multi_component_exact_factorization_discrete.core import (
@@ -212,6 +213,21 @@ def run(args):
         f"  H_spectral Psi: max_abs={absolute:.6e}, "
         f"max_relative={relative:.6e}"
     )
+    expected_energy = spectral_energy_numpy(psi, model)
+    actual_energy_gpu = split_solver.energy(
+        cp.ascontiguousarray(cp.asarray(psi, dtype=cp.complex128))
+    )
+    energy_errors = []
+    for name in (
+        "norm", "kinetic_x", "kinetic_q", "kinetic_R",
+        "potential", "energy",
+    ):
+        actual = float(actual_energy_gpu[name].get())
+        scale = max(abs(expected_energy[name]), 1.0)
+        energy_errors.append(abs(actual-expected_energy[name])/scale)
+    energy_relative = max(energy_errors)
+    worst = max(worst, energy_relative)
+    print(f"  spectral energy: max_relative={energy_relative:.6e}")
     print("[checkpoint round-trip + resumed RK4 step]")
     fused_step = stepped["fused"]
     checkpoint_metadata = {
