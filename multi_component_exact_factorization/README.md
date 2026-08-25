@@ -239,9 +239,13 @@ Heavy는 `V_trap=alpha*(R-9.5)^2`로 결합된다. `alpha`는 수치 안정화 �
 물리 parameter다. 과거 archive 재렌더링만을 위해
 `--interaction-model legacy-soft-coulomb` 호환 경로를 남겨 두었다.
 
-여기서 `R_lx`, `R_qx`, `R_Rx`, `R_qR`, `alpha`는 Hamiltonian을 바꾸므로
-BO surface와 nonadiabatic gap도 바뀐다. 반면 `--proton-force-constant`와
-`--heavy-force-constant`는 초기 Gaussian 폭
+여기서 `R_lx`, `R_qx`, `R_Rx`는 전자 Hamiltonian을 바꾸므로 BO
+eigenstate, nonadiabatic coupling과 surface gap이 바뀐다. `R_qR`과
+`alpha`도 total Hamiltonian과 nuclear force를 바꾸지만 두 항 모두 x에
+무관하므로 fixed `(q,R)`에서는 모든 electronic BO surface를 같은 만큼
+이동시키며 surface 사이 gap과 electronic eigenstate는 바꾸지 않는다.
+반면 `--proton-force-constant`와 `--heavy-force-constant`는 Hamiltonian에
+들어가지 않고 초기 Gaussian 폭
 `sigma=(4 M k)^(-1/4)`만 정하며 BO eigenvalue 자체는 바꾸지 않는다.
 원 논문의 움직이는 proton Gaussian
 `exp[-(q+4)^2/(2 sigma_paper^2)]`, `sigma_paper=1/sqrt(2.85)`를 현재

@@ -95,6 +95,10 @@ electronic coupling ranges: they set the density width
 paper Gaussian to the present proton coordinate gives
 `--q0 -4 --proton-force-constant 0.004424019607843137` for `m_p=1836`.
 There is no corresponding literature `R_qR`, `alpha`, or moving-heavy width.
+`R_qR` and `alpha` are nuclear-only, x-independent terms: they change the
+common BO-surface landscape and nuclear force, but shift every electronic
+surface equally at fixed `(q,R)` and therefore do not change the electronic
+gap or eigenvectors there.
 
 Method/parameter reference: Agostini et al., *Mixed quantum-classical
 dynamics on the exact time-dependent potential energy surface: a fresh look
