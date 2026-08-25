@@ -302,6 +302,9 @@ It also creates
 `heavy_coordinate_dynamics.mp4` and `proton_coordinate_dynamics.mp4`:
 each uses the existing exact-potential colors and definitions, while the
 three field panels follow the instantaneous occupied coordinate interval.
+Derived momentum, probability-transport and gauge-invariant-drive panels
+carry their defining one-line equations in the title; primitive
+`epsilon`, connection and overlap-link panels retain their shorter labels.
 The marginal panel remains on the requested fixed display window.  The
 proton panels label the density-conditioned R reduction of the first TDPES
 and momentum, and the R-integrated proton current.  The latter fields include mechanical

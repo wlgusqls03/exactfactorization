@@ -628,7 +628,11 @@ def plot_exact_potentials(data, obs, diagnostics, outdir, dpi, frame=-1):
     )
     force_axis.set_ylim(limits["force_R"])
     color_y_axis(force_axis, FORCE_COLOR, r"heavy drive (Hartree/$a_0$)")
-    axes[1, 2].set_title(r"Heavy transport $j_R^{(\chi)}$ and drive $F_R^{GI}$", loc="left", fontweight="semibold")
+    axes[1, 2].set_title(
+        r"$j_R^{(\chi)}=\rho_RK_R^{(\chi)}/M_H$; "
+        r"$F_R^{GI}=-\partial_R\epsilon^{(2)}+\partial_t\alpha$",
+        loc="left", fontweight="semibold", fontsize=8.8,
+    )
     axes[1, 2].legend(
         handles=[current_line, force_line], frameon=False, fontsize=8,
         loc="upper left",
@@ -791,15 +795,15 @@ def make_overview_animation(data, obs, diagnostics, outdir, fps, max_frames, dpi
     sampled = [int(frame) for frame in frames]
     field_specs = (
         (
-            "momentum_q", r"Mechanical proton momentum $K_q$",
+            "momentum_q", r"$K_q=\partial_qT_{qR}+a_q$",
             r"momentum ($a_0^{-1}$)", "linear",
         ),
         (
-            "proton_current", r"Probability transport $j_q$",
+            "proton_current", r"$j_q=\rho_{qR}K_q/m_p$",
             "proton probability current", "linear",
         ),
         (
-            "force_q", r"Gauge-invariant drive $E_q$",
+            "force_q", r"$F_q^{GI}=-\partial_q\epsilon^{(1)}+\partial_ta_q$",
             r"drive (Hartree/$a_0$)", "symlog",
         ),
     )
@@ -1016,7 +1020,11 @@ def make_potential_animation(data, obs, outdir, fps, max_frames, dpi, fmt):
     force_ax.set_ylim(plot_limits["force_R"])
     color_y_axis(axes[1, 2], CURRENT_COLOR, "heavy probability current")
     color_y_axis(force_ax, FORCE_COLOR, r"heavy drive (Hartree/$a_0$)")
-    axes[1, 2].set_title(r"Transport $j_R^{(\chi)}$ and drive $F_R^{GI}$", loc="left", fontweight="semibold")
+    axes[1, 2].set_title(
+        r"$j_R^{(\chi)}=\rho_RK_R^{(\chi)}/M_H$; "
+        r"$F_R^{GI}=-\partial_R\epsilon^{(2)}+\partial_t\alpha$",
+        loc="left", fontweight="semibold", fontsize=8.8,
+    )
     axes[1, 2].legend(
         handles=[current_line, force_line], frameon=False, fontsize=8,
         loc="upper left",
@@ -1177,10 +1185,10 @@ def make_coordinate_focus_animations(
         profiles=(
             (r"Proton-heavy level $\epsilon^{(2)}(R)$",
              "shifted energy (Hartree)", epsilon_R, COLORS[0], False),
-            (r"Heavy mechanical momentum $K_R^{(\chi)}$",
+            (r"$K_R^{(\chi)}=\partial_RS_\chi+\alpha$",
              r"momentum ($a_0^{-1}$)",
              diagnostics["momentum_R_outer"], "black", True),
-            (r"Heavy probability transport $j_R^{(\chi)}$",
+            (r"$j_R^{(\chi)}=\rho_RK_R^{(\chi)}/M_H$",
              "heavy probability current",
              diagnostics["heavy_current"], CURRENT_COLOR, True),
         ),
@@ -1192,11 +1200,11 @@ def make_coordinate_focus_animations(
     make_coordinate_focus_animation(
         times_fs=times, coordinate=q, marginal=proton,
         profiles=(
-            (r"Density-conditioned $\bar\epsilon^{(1)}(q)$",
+            (r"$\bar\epsilon^{(1)}=\int dR\,\rho_{qR}\epsilon^{(1)}/\rho_q$",
              "shifted energy (Hartree)", epsilon_q, COLORS[0], False),
-            (r"Density-conditioned mechanical momentum $\bar K_q$",
+            (r"$\bar K_q=\int dR\,\rho_{qR}K_q/\rho_q$",
              r"momentum ($a_0^{-1}$)", momentum_q, "black", True),
-            (r"Integrated probability transport $J_q$",
+            (r"$J_q=\int dR\,j_q=\rho_q\bar K_q/m_p$",
              "proton probability current", current_q, CURRENT_COLOR, True),
         ),
         options=options, outdir=outdir, fps=fps, max_frames=max_frames,
