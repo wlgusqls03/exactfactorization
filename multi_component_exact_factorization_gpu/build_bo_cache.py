@@ -11,6 +11,7 @@ from multi_component_exact_factorization.born_huang import (
 from multi_component_exact_factorization.core import (
     add_model_arguments,
     build_model,
+    print_model_geometry,
 )
 
 
@@ -32,6 +33,7 @@ def main(argv=None):
     if args.bo_states < 1:
         raise ValueError("--bo-states는 1 이상이어야 합니다.")
     model = build_model(args)
+    print_model_geometry(model, args)
     basis, info = load_or_build_born_huang_basis(
         model, args.bo_states,
         cache_dir=Path(args.bo_basis_cache_dir),

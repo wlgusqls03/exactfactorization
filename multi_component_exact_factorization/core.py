@@ -34,6 +34,16 @@ from scipy.special import erf
 AU_PER_FS = 41.3413745758
 
 
+# Agostini, Min, and Gross, Ann. Phys. (Berlin) 527, 546 (2015),
+# Eq. (21) and the paragraph following Fig. 2.  Our names map the paper's
+# moving-ion range R_f to R_qx, its left-fixed-ion range R_l to R_lx, and its
+# right-site range R_r to the moving heavy ion R_Rx.
+ERF_COUPLING_PRESETS = {
+    "strong": {"erf_r_lx": 3.1, "erf_r_qx": 5.0, "erf_r_Rx": 4.0},
+    "weak": {"erf_r_lx": 2.9, "erf_r_qx": 3.8, "erf_r_Rx": 5.5},
+}
+
+
 @dataclass
 class Model:
     """격자와 Hamiltonian parameter를 한데 모은 자료구조."""
@@ -51,6 +61,7 @@ class Model:
     fft_workers: int             # 전자 DST에 사용할 CPU worker 수
     potential: np.ndarray         # (nx,nq,nR)
     interaction_model: str = "erf_shin_metiu"
+    coupling_regime: str = "strong"
     fixed_ion_separation: float = 19.0
     erf_r_lx: float = 3.1
     erf_r_qx: float = 5.0
@@ -137,7 +148,8 @@ def print_model_geometry(model: Model, args) -> None:
     """Print the physical centers and heavy trap used by a propagation."""
     if model.interaction_model == "erf_shin_metiu":
         print(
-            "interaction: erf Shin--Metiu strong-coupling form; "
+            "interaction: erf Shin--Metiu; "
+            f"coupling parameters={model.coupling_regime}; "
             f"L={model.fixed_ion_separation:.6g}, "
             f"R_lx={model.erf_r_lx:.6g}, R_qx={model.erf_r_qx:.6g}, "
             f"R_Rx={model.erf_r_Rx:.6g}, R_qR={model.erf_r_qR:.6g} a0"
@@ -243,9 +255,50 @@ def build_model(args) -> Model:
         args.right_position = 0.5*L
         args.right_charge = 0.0
         args.heavy_trap_center = 0.5*L
-        args.erf_r_lx = float(getattr(args, "erf_r_lx", 3.1))
-        args.erf_r_qx = float(getattr(args, "erf_r_qx", 5.0))
-        args.erf_r_Rx = float(getattr(args, "erf_r_Rx", 4.0))
+        requested_regime = str(
+            getattr(args, "coupling_regime", "strong") or "strong"
+        ).lower()
+        if requested_regime not in {"strong", "weak", "custom"}:
+            raise ValueError(
+                "--coupling-regime은 strong, weak, custom 중 하나여야 합니다."
+            )
+        supplied_ranges = {
+            "erf_r_lx": getattr(args, "erf_r_lx", None),
+            "erf_r_qx": getattr(args, "erf_r_qx", None),
+            "erf_r_Rx": getattr(args, "erf_r_Rx", None),
+        }
+        if requested_regime == "custom":
+            missing = [
+                name for name, value in supplied_ranges.items()
+                if value is None
+            ]
+            if missing:
+                options = ", ".join(
+                    "--"+name.replace("_", "-").replace("-Rx", "-rx")
+                    for name in missing
+                )
+                raise ValueError(
+                    "--coupling-regime custom에는 세 erf 전자 상호작용 "
+                    f"범위를 모두 명시해야 합니다. 누락: {options}"
+                )
+            resolved_ranges = supplied_ranges
+            effective_regime = "custom"
+        else:
+            resolved_ranges = dict(ERF_COUPLING_PRESETS[requested_regime])
+            explicit_override = False
+            for name, value in supplied_ranges.items():
+                if value is not None:
+                    resolved_ranges[name] = value
+                    explicit_override = True
+            effective_regime = (
+                f"{requested_regime}+override"
+                if explicit_override else requested_regime
+            )
+        args.coupling_regime = requested_regime
+        args.coupling_parameter_source = effective_regime
+        args.erf_r_lx = float(resolved_ranges["erf_r_lx"])
+        args.erf_r_qx = float(resolved_ranges["erf_r_qx"])
+        args.erf_r_Rx = float(resolved_ranges["erf_r_Rx"])
         raw_qR = getattr(args, "erf_r_qR", None)
         if raw_qR is None:
             raise ValueError(
@@ -262,12 +315,18 @@ def build_model(args) -> Model:
             if not np.isfinite(value) or value <= 0.0:
                 raise ValueError(f"{option}는 유한한 양수여야 합니다.")
     else:
+        args.coupling_regime = str(
+            getattr(args, "coupling_regime", "strong") or "strong"
+        )
+        args.coupling_parameter_source = getattr(
+            args, "coupling_parameter_source", "not-used-by-legacy"
+        )
         args.fixed_ion_separation = float(
             getattr(args, "fixed_ion_separation", 19.0)
         )
-        args.erf_r_lx = float(getattr(args, "erf_r_lx", 3.1))
-        args.erf_r_qx = float(getattr(args, "erf_r_qx", 5.0))
-        args.erf_r_Rx = float(getattr(args, "erf_r_Rx", 4.0))
+        args.erf_r_lx = float(getattr(args, "erf_r_lx", None) or 3.1)
+        args.erf_r_qx = float(getattr(args, "erf_r_qx", None) or 5.0)
+        args.erf_r_Rx = float(getattr(args, "erf_r_Rx", None) or 4.0)
         args.erf_r_qR = float(getattr(args, "erf_r_qR", np.nan) or np.nan)
 
     # 실제로 사용한 전자 box, 선택적 오른쪽 고정 중심과 heavy trap을
@@ -366,6 +425,7 @@ def build_model(args) -> Model:
         fft_workers=getattr(args, "fft_workers", -1),
         potential=np.asarray(potential),
         interaction_model=interaction_model,
+        coupling_regime=args.coupling_parameter_source,
         fixed_ion_separation=args.fixed_ion_separation,
         erf_r_lx=args.erf_r_lx,
         erf_r_qx=args.erf_r_qx,
@@ -1869,11 +1929,26 @@ def add_model_arguments(parser):
         "--fixed-ion-separation", type=float, default=19.0,
         help="L (a0); fixed left ion=-L/2, heavy trap center=+L/2",
     )
-    potential.add_argument("--erf-r-lx", type=float, default=3.1)
-    potential.add_argument("--erf-r-qx", type=float, default=5.0)
+    potential.add_argument(
+        "--coupling-regime", choices=("strong", "weak", "custom"),
+        default="strong",
+        help=(
+            "문헌 erf 범위 preset: strong=(R_lx,R_qx,R_Rx)=(3.1,5.0,4.0), "
+            "weak=(2.9,3.8,5.5); 개별 --erf-r-*가 preset을 override"
+        ),
+    )
+    potential.add_argument(
+        "--erf-r-lx", type=float, default=None,
+        help="electron-left-fixed erf range R_lx (a0); 기본은 coupling preset",
+    )
+    potential.add_argument(
+        "--erf-r-qx", type=float, default=None,
+        help="electron-proton erf range R_qx (a0); 기본은 coupling preset",
+    )
     potential.add_argument(
         "--erf-r-rx", "--erf-r-Rx", dest="erf_r_Rx",
-        type=float, default=4.0,
+        type=float, default=None,
+        help="electron-heavy/right-site erf range R_Rx (a0); 기본은 preset",
     )
     potential.add_argument(
         "--erf-r-qr", "--erf-r-qR", dest="erf_r_qR",

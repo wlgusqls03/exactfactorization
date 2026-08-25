@@ -49,7 +49,7 @@ CUDA_VISIBLE_DEVICES=0 python -m \
   --flat-top-transition-decades 3 \
   --deep-tail-zero-threshold 1e-12 \
   --fixed-ion-separation 19 \
-  --erf-r-lx 3.1 --erf-r-qx 5.0 --erf-r-rx 4.0 \
+  --coupling-regime strong \
   --erf-r-qr 4.5 \
   --heavy-trap-alpha 0.05 \
   --proton-force-constant 0.19245621776826924 \
@@ -81,6 +81,20 @@ Hamiltonian, so every production run must explicitly pass `--erf-r-qr` and
 `--heavy-trap-alpha`.  The example values `4.5` and `0.05` above are smoke-test
 placeholders, not literature values.  Choose `alpha=M_R*omega^2/2` for the
 intended heavy bond and converge `R_qR` physically.
+
+`--coupling-regime weak` selects the second published set
+`(R_lx,R_qx,R_Rx)=(2.9,3.8,5.5) a0`.  Any explicitly supplied
+`--erf-r-lx`, `--erf-r-qx`, or `--erf-r-rx` overrides only that member of the
+selected preset.  Use `--coupling-regime custom` with all three options for a
+fully independent scan.  The resolved values are archived and enter the BO
+cache fingerprint, so distinct Hamiltonians cannot silently share a cache.
+
+The two `--*-force-constant` options are initial-state parameters rather than
+electronic coupling ranges: they set the density width
+`sigma=(4 M k)^(-1/4)` and do not alter a BO surface.  Mapping the original
+paper Gaussian to the present proton coordinate gives
+`--q0 -4 --proton-force-constant 0.004424019607843137` for `m_p=1836`.
+There is no corresponding literature `R_qR`, `alpha`, or moving-heavy width.
 
 Method/parameter reference: Agostini et al., *Mixed quantum-classical
 dynamics on the exact time-dependent potential energy surface: a fresh look

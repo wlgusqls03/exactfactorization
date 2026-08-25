@@ -215,10 +215,19 @@ V = 1/|L/2+q| - erf(|L/2+x|/R_lx)/|L/2+x|
 --x-min -22.0          # 전자 왼쪽 Dirichlet 경계
 --x-max 22.0           # 전자 오른쪽 Dirichlet 경계
 --fixed-ion-separation 19
---erf-r-lx 3.1 --erf-r-qx 5.0 --erf-r-rx 4.0
+--coupling-regime strong # 기본: (R_lx,R_qx,R_Rx)=(3.1,5.0,4.0)
 --erf-r-qr R_QR          # 반드시 명시
 --heavy-trap-alpha ALPHA # 반드시 명시
 ```
+
+문헌의 weak-coupling 비교값은 `--coupling-regime weak` 하나로 선택한다.
+이때 `(R_lx,R_qx,R_Rx)=(2.9,3.8,5.5) a0`가 사용된다. 세 범위 중 일부만
+바꾸려면 preset과 개별 option을 함께 쓸 수 있다. 예를 들어
+`--coupling-regime strong --erf-r-qx 4.6`은 나머지 두 strong 값을
+유지하고 `R_qx`만 바꾼다. 세 값을 모두 독립적으로 정의하는 scan은
+`--coupling-regime custom --erf-r-lx ... --erf-r-qx ... --erf-r-rx ...`를
+사용한다. 최종 적용값은 실행 로그와 archive metadata에 저장되며,
+Hamiltonian이 달라지므로 BO cache key도 자동으로 달라진다.
 
 현재 기본 초기 중심은 `q0=0`, `R0=10`이다. 왼쪽 `x=-9.5`의 고정 `+1`
 전하와 움직이는 proton/heavy만 존재하며 오른쪽 fixed ion은 없다.
@@ -229,6 +238,16 @@ Heavy는 `V_trap=alpha*(R-9.5)^2`로 결합된다. `alpha`는 수치 안정화 �
 추가된 moving proton-heavy pair의 `R_qR`은 별도 convergence가 필요한 새
 물리 parameter다. 과거 archive 재렌더링만을 위해
 `--interaction-model legacy-soft-coulomb` 호환 경로를 남겨 두었다.
+
+여기서 `R_lx`, `R_qx`, `R_Rx`, `R_qR`, `alpha`는 Hamiltonian을 바꾸므로
+BO surface와 nonadiabatic gap도 바뀐다. 반면 `--proton-force-constant`와
+`--heavy-force-constant`는 초기 Gaussian 폭
+`sigma=(4 M k)^(-1/4)`만 정하며 BO eigenvalue 자체는 바꾸지 않는다.
+원 논문의 움직이는 proton Gaussian
+`exp[-(q+4)^2/(2 sigma_paper^2)]`, `sigma_paper=1/sqrt(2.85)`를 현재
+확률밀도 표준편차 convention으로 재현하려면 `m_p=1836`에서
+`--proton-force-constant 0.004424019607843137`이다. 원 논문에는 움직이는
+heavy ion이 없으므로 `R_qR`, `alpha`, heavy 초기 폭의 문헌 기본값은 없다.
 
 이 수치 box는 현재 project의 경계 convergence를 위한 설정이며,
 strong-coupling 문헌에서 보고한 box 크기라고 해석하지 않는다. 기본 151점은

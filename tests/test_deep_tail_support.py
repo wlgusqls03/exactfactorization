@@ -222,6 +222,51 @@ class DeepTailSupportTests(unittest.TestCase):
             model.potential, expected, rtol=2.0e-15, atol=2.0e-15,
         ))
 
+    def test_literature_coupling_presets_and_explicit_overrides(self):
+        base = [
+            "propagate", "--nx", "5", "--nq", "6", "--nR", "7",
+            "--heavy-trap-alpha", "0", "--erf-r-qr", "4.5",
+        ]
+        with patch("sys.argv", base):
+            strong_args = parse_args()
+        strong = build_model(strong_args)
+        self.assertEqual(strong.coupling_regime, "strong")
+        self.assertEqual(
+            (strong.erf_r_lx, strong.erf_r_qx, strong.erf_r_Rx),
+            (3.1, 5.0, 4.0),
+        )
+
+        with patch("sys.argv", base + ["--coupling-regime", "weak"]):
+            weak_args = parse_args()
+        weak = build_model(weak_args)
+        self.assertEqual(weak.coupling_regime, "weak")
+        self.assertEqual(
+            (weak.erf_r_lx, weak.erf_r_qx, weak.erf_r_Rx),
+            (2.9, 3.8, 5.5),
+        )
+
+        with patch("sys.argv", base + [
+            "--coupling-regime", "weak", "--erf-r-qx", "4.2",
+        ]):
+            override_args = parse_args()
+        override = build_model(override_args)
+        self.assertEqual(override.coupling_regime, "weak+override")
+        self.assertEqual(
+            (override.erf_r_lx, override.erf_r_qx, override.erf_r_Rx),
+            (2.9, 4.2, 5.5),
+        )
+
+    def test_custom_coupling_regime_requires_all_three_ranges(self):
+        argv = [
+            "propagate", "--nx", "5", "--nq", "6", "--nR", "7",
+            "--heavy-trap-alpha", "0", "--erf-r-qr", "4.5",
+            "--coupling-regime", "custom", "--erf-r-lx", "3.0",
+        ]
+        with patch("sys.argv", argv):
+            args = parse_args()
+        with self.assertRaisesRegex(ValueError, "모두 명시"):
+            build_model(args)
+
 
 if __name__ == "__main__":
     unittest.main()
