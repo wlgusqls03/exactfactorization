@@ -26,8 +26,7 @@ kernels) with the NumPy discrete algebra on a small physical Shin--Metiu grid:
 ```bash
 CUDA_VISIBLE_DEVICES=0 python -m \
   multi_component_exact_factorization_discrete_gpu.validate \
-  --device 0 \
-  --heavy-trap-alpha 0.05
+  --device 0
 ```
 
 This checks `dC`, `dLambda`, `dChi`, both discrete scalars, exact marginal
@@ -49,6 +48,9 @@ CUDA_VISIBLE_DEVICES=0 python -m \
   --flat-top-budget-lam 1e-10 \
   --flat-top-transition-decades 3 \
   --deep-tail-zero-threshold 1e-12 \
+  --fixed-ion-separation 19 \
+  --erf-r-lx 3.1 --erf-r-qx 5.0 --erf-r-rx 4.0 \
+  --erf-r-qr 4.5 \
   --heavy-trap-alpha 0.05 \
   --proton-force-constant 0.19245621776826924 \
   --heavy-force-constant 0.19168954579929773 \
@@ -65,14 +67,27 @@ CUDA_VISIBLE_DEVICES=0 python -m \
   --outdir results/discrete_mcef_bh10_01fs
 ```
 
-The current model defaults are the electronic Dirichlet box `x in (-22,22)`,
-periodic nuclear grids `q in [-12,12)` and `R in [2,18)`, one fixed charge at
-`X_L=-10`, and initial centers `q0=0,R0=10`.  The old right fixed ion is
-disabled (`right_charge=0`) and the moving heavy ion is bound by
-`V_trap=alpha*(R-10)^2`.  Because `alpha` fixes a physical vibrational
-frequency rather than a numerical tolerance, every new propagation must pass
-`--heavy-trap-alpha` explicitly.  The example value `0.05 Ha/a0^2` is only a
-trial value; choose it from `alpha=M_R*omega^2/2` for the intended bond.
+The default physical interaction is now the strong-coupling erf Shin--Metiu
+form.  `L=19` fixes the sole fixed ion at `X_L=-L/2=-9.5` and the moving-heavy
+trap at `R_c=+L/2=+9.5`; there is no right fixed ion.  The current numerical
+boxes remain the electronic Dirichlet box `x in (-22,22)` and periodic nuclear
+grids `q in [-12,12)`, `R in [2,18)`.  These box sizes are existing project
+settings, not values claimed from the cited paper.
+
+The paper strong-coupling ranges are `R_lx=3.1`, `R_qx=5.0`, and `R_Rx=4.0`
+bohr.  Both the added moving-proton/heavy range `R_qR` and the harmonic
+coefficient `alpha` are model choices absent from that original one-moving-ion
+Hamiltonian, so every production run must explicitly pass `--erf-r-qr` and
+`--heavy-trap-alpha`.  The example values `4.5` and `0.05` above are smoke-test
+placeholders, not literature values.  Choose `alpha=M_R*omega^2/2` for the
+intended heavy bond and converge `R_qR` physically.
+
+Method/parameter reference: Agostini et al., *Mixed quantum-classical
+dynamics on the exact time-dependent potential energy surface: a fresh look
+at non-adiabatic processes*,
+https://www-old.mpi-halle.mpg.de/mpi/publi/pdf/11752_13.pdf .  The paper reports
+the interaction ranges and `dt=0.1 au`; it does not specify the numerical box
+used here, so the existing project grids remain a separate convergence choice.
 
 For a thermally constrained GPU, add (for example)
 `--step-sleep-ms 20`.  A positive value synchronizes the active CUDA stream
@@ -128,14 +143,32 @@ Checkpoint overhead and write count are printed and stored as
 `checkpoint_seconds` and `checkpoint_writes`. An interval of 5000 steps is
 normally a very small wall-time cost because only one state file is replaced.
 
-## Direct TDSE reference in the identical BO space
+## Full-grid spectral TDSE reference
 
-`propagate_tdse` evolves the unfactorized coefficient wavefunction
-`Y_j(q,R)` with the same BO cache, overlap-link Hamiltonian, complex128
-precision, nuclear grids, time step and classical RK4 method as the discrete
-MCEF solver.  It contains no mask, PNC projection or factor retraction.  The
-validation command above checks both `H_h Y` and one TDSE RK4 step against the
-NumPy oracle for the reference and fused link kernels.
+The default `propagate_tdse` path evolves the untruncated full wavefunction
+`Psi(x,q,R)`, not `Y_j(q,R)`.  It applies the time-reversible second-order
+Feit--Fleck--Steiger/Strang product
+
+`exp(-i V dt/2) exp[-i(T_x+T_q+T_R)dt] exp(-i V dt/2)`.
+
+`T_x` is diagonal in the DST-I sine basis of the existing electronic
+hard-wall interior grid; `T_q,T_R` are diagonal in FFT bases of the existing
+periodic endpoint-free grids.  Thus the TDSE uses continuum spectral kinetic
+eigenvalues and no five-point stencil.  The continuous/discrete coupled MCEF
+solvers deliberately retain their existing five-point/RK implementations.
+
+The requested BO states are used only to create the initial local BO state and
+to project saved frames into the compact archive expected by the existing
+positive-density-gauge postprocessor.  They do not truncate TDSE propagation.
+The initialization/analysis basis intentionally remains the shared
+Dirichlet five-point BO basis: this makes the initial full wavefunction
+identical to the coupled MCEF runs.  From the first time step onward the TDSE
+Hamiltonian action is entirely spectral.  Thus increasing the analysis BO
+count changes only the saved projection and reconstructed EF fields, not the
+propagated full-grid trajectory.
+Each archive reports `bo_truncation_loss`; it must remain converged as the
+analysis BO count is increased.  `--tdse-propagator bo_rk4` retains the old
+BO-link/RK4 reference for controlled legacy comparisons.
 
 Run a short smoke test first:
 
@@ -146,9 +179,13 @@ CUDA_VISIBLE_DEVICES=1 python -m \
   --bo-states 10 \
   --bo-link-kernel fused \
   --bo-basis-cache-dir results/bo_basis_cache \
+  --fixed-ion-separation 19 \
+  --erf-r-lx 3.1 --erf-r-qx 5.0 --erf-r-rx 4.0 \
+  --erf-r-qr 4.5 \
+  --heavy-trap-alpha 0.05 \
   --electron-excitation 1 \
-  --nx 300 --nq 450 --nR 900 \
-  --dt-au 0.025 \
+  --nx 300 --nq 600 --nR 800 \
+  --dt-au 0.1 \
   --t-final-fs 0.1 \
   --save-every 20 \
   --progress-every 50 \
@@ -165,20 +202,29 @@ CUDA_VISIBLE_DEVICES=1 python -m \
   --bo-states 10 \
   --bo-link-kernel fused \
   --bo-basis-cache-dir results/bo_basis_cache \
+  --fixed-ion-separation 19 \
+  --erf-r-lx 3.1 --erf-r-qx 5.0 --erf-r-rx 4.0 \
+  --erf-r-qr 4.5 \
+  --heavy-trap-alpha 0.05 \
   --electron-excitation 1 \
-  --nx 300 --nq 450 --nR 900 \
-  --dt-au 0.025 \
+  --nx 300 --nq 600 --nR 800 \
+  --dt-au 0.1 \
   --t-final-fs 50.0 \
-  --save-every 1000 \
-  --progress-every 2000 \
+  --save-every 200 \
+  --progress-every 1000 \
   --check-every 20 \
   --step-sleep-ms 20 \
   --outdir results/discrete_tdse_bh10_50fs
 ```
 
-One saved BO10 `(450,900)` complex128 coefficient frame is about 61.8 MiB.
-`--save-every 1000` stores about 84 coefficient frames (roughly 5.1 GiB
-before compression) over 50 fs.  Choose a TDSE save interval that is an
+One saved BO10 `(600,800)` complex128 analysis frame is about 73.2 MiB.
+The archive stores both `<BO|Psi>` and the exact instantaneous
+`<BO|H_spectral Psi>` required by positive-density-gauge scalar potentials,
+so the two large members total about 146.5 MiB per frame. `--save-every 200`
+at `dt=0.1 au` stores about 105 frames (roughly 15 GiB before compression)
+over 50 fs. Disk-backed staging arrays prevent these
+frames from accumulating in host RAM; final NPZ creation temporarily needs
+space for both staging and compressed archive. Choose a TDSE save interval that is an
 integer multiple of the MCEF save interval so every TDSE frame has an exact
 MCEF counterpart.
 
@@ -260,10 +306,15 @@ CUDA_VISIBLE_DEVICES=0 python -m \
   --progress-every 5
 ```
 
-The postprocessor sequentially decompresses one `Y_j(q,R)` frame, applies the
-same discrete TDSE Hamiltonian, and factorizes it in the positive-density
-gauge.  The instantaneous action `dY/dt=-i*H_h*Y` supplies the temporal terms
-of both scalar potentials, avoiding a finite difference across saved frames.
+The postprocessor sequentially decompresses one `Y_j(q,R)` frame and
+factorizes it in the unchanged positive-density gauge.  New spectral archives
+also stream the saved exact projection `<BO|H_spectral Psi>`; this supplies
+`dY/dt=-i<BO|H_spectral Psi>` without a finite difference across saved frames.
+The conditional electronic energy is evaluated with the DST-I kinetic and the
+conditional proton kinetic with an FFT after reconstructing the electronic
+grid in bounded R blocks.  Thus neither scalar silently falls back to the
+five-point BO Hamiltonian. Legacy BO-RK4 archives still reconstruct their own
+instantaneous BO-link action as before.
 It saves `tdse_exact_factorization_fields.npz` beside the TDSE archive with
 
 - the two scalar/TDPES fields `epsilon_1(q,R)` and `epsilon_2(R)`;

@@ -230,12 +230,13 @@ q와 R box가 좁아서 생기는 boundary/vector-potential noise를 분리해 �
 작은 점 수와 짧은 시간으로 boundary 진단만 수행한 뒤 production에 사용한다.
 
 전자 box 자체를 대칭인 ``[-L,+L]``로 바꾸려면
-``--symmetric-box-half-width L``을 쓴다. 이 option은 ``--left-position``과
-``--right-position``을 움직이지 않는다. 기본 extended Shin--Metiu geometry는
-두 고정 중심 ``X_L=-10``, ``X_R=10``과 ``Z_L=Z_R=1``을 사용한다. 이 전하는 전자 attraction과
-proton/heavy repulsion 및 좌우 고정 중심 상호작용을 Hamiltonian에 추가하므로
-수치적인 absorbing boundary가 아니다. 단일 고정 중심 모델은 명시적으로
-``--right-charge 0``을 사용한다.
+``--symmetric-box-half-width L``을 쓴다. 이 option은 물리적 이온 위치를
+움직이지 않는다. 새 기본 erf Shin--Metiu geometry는 ``L=19``에서
+왼쪽 fixed ion ``X_L=-9.5``와 ``R_c=+9.5`` 주변에 trap된 moving heavy
+ion을 사용하며 오른쪽 fixed ion은 없다. 이들은 수치 absorbing
+boundary가 아니라 Hamiltonian의 물리적 항이다. 예전 two-fixed-ion
+soft-Coulomb archive를 재현할 때만 ``--interaction-model legacy-soft-coulomb``를
+명시한다.
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python -m \

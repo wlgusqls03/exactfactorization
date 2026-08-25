@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Direct GPU TDSE reference in the same local Born--Huang basis as MCEF."""
+"""GPU TDSE references: full spectral split operator or legacy BO-link RK4."""
 
 from __future__ import annotations
 
@@ -36,6 +36,7 @@ from .gpu_core import (
     full_step_discrete_tdse_gpu,
     make_discrete_gpu_model,
 )
+from .propagate_tdse_split import run_split_operator
 
 
 class _Tee:
@@ -68,6 +69,8 @@ def run(args):
     print(f"GPU {args.device}: {gpu_name}; precision=complex128/float64")
 
     cpu_model = build_model(args)
+    if args.tdse_propagator == "spectral_split":
+        return run_split_operator(args, cpu_model, outdir)
     print_model_geometry(cpu_model, args)
     n_states = int(args.bo_states)
     if n_states <= int(args.electron_excitation):
@@ -376,7 +379,19 @@ def parse_args(argv=None):
         help="results/YYYYMMDD 아래의 run folder",
     )
     parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--dt-au", type=float, default=0.025)
+    parser.add_argument(
+        "--tdse-propagator",
+        choices=("spectral_split", "bo_rk4"),
+        default="spectral_split",
+        help=(
+            "spectral_split: full Psi의 2차 DST/FFT split operator (기본); "
+            "bo_rk4: 이전 BO-link 5점/RK4 reference"
+        ),
+    )
+    parser.add_argument(
+        "--dt-au", type=float, default=0.1,
+        help="TDSE time step; cited split-operator calculation used 0.1 au",
+    )
     parser.add_argument("--t-final-fs", type=float, default=0.1)
     parser.add_argument("--save-every", type=int, default=0)
     parser.add_argument("--progress-every", type=int, default=0)
@@ -402,6 +417,10 @@ def parse_args(argv=None):
         help="저장 frame의 exact electron marginal 복원을 생략",
     )
     parser.add_argument("--electron-density-R-block", type=int, default=24)
+    parser.add_argument("--tdse-projection-R-block", type=int, default=8)
+    parser.add_argument("--tdse-q-fft-R-block", type=int, default=64)
+    parser.add_argument("--tdse-R-fft-x-block", type=int, default=32)
+    parser.add_argument("--tdse-x-dst-R-block", type=int, default=64)
     add_model_arguments(parser)
     args = parser.parse_args(argv)
     if args.dt_au <= 0.0 or args.t_final_fs < 0.0:
@@ -410,6 +429,12 @@ def parse_args(argv=None):
         parser.error("--step-sleep-ms must be a finite nonnegative number")
     if args.electron_density_R_block <= 0:
         parser.error("--electron-density-R-block must be positive")
+    for name in (
+        "tdse_projection_R_block", "tdse_q_fft_R_block",
+        "tdse_R_fft_x_block", "tdse_x_dst_R_block",
+    ):
+        if getattr(args, name) <= 0:
+            parser.error(f"--{name.replace('_', '-')} must be positive")
     return args
 
 

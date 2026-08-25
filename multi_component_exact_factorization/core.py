@@ -28,6 +28,7 @@ import warnings
 import numpy as np
 from scipy.fft import dst, idst
 from scipy.linalg import eigh_tridiagonal
+from scipy.special import erf
 
 
 AU_PER_FS = 41.3413745758
@@ -49,6 +50,12 @@ class Model:
     heavy_mass: float
     fft_workers: int             # 전자 DST에 사용할 CPU worker 수
     potential: np.ndarray         # (nx,nq,nR)
+    interaction_model: str = "erf_shin_metiu"
+    fixed_ion_separation: float = 19.0
+    erf_r_lx: float = 3.1
+    erf_r_qx: float = 5.0
+    erf_r_Rx: float = 4.0
+    erf_r_qR: float = np.nan
     heavy_trap_center: float = 10.0
     heavy_trap_alpha: float = 0.0
     log_derivative_backend: str = "pointwise"
@@ -73,6 +80,46 @@ def soft_inverse(distance: np.ndarray, softening: float) -> np.ndarray:
     return 1.0 / np.sqrt(distance**2 + softening**2)
 
 
+def erf_inverse(distance: np.ndarray, radius: float) -> np.ndarray:
+    """Return the finite interaction ``erf(|d|/radius)/|d|``.
+
+    The removable value at ``d=0`` is evaluated analytically as
+    ``2/(sqrt(pi)*radius)``.  This avoids both NaNs and a grid-dependent
+    replacement epsilon while preserving the interaction used in the
+    strong-coupling Shin--Metiu reference.
+    """
+    radius = float(radius)
+    if not np.isfinite(radius) or radius <= 0.0:
+        raise ValueError("erf Coulomb range parameter는 유한한 양수여야 합니다.")
+    distance = np.asarray(distance, dtype=float)
+    magnitude = np.abs(distance)
+    result = np.empty_like(magnitude, dtype=float)
+    nonzero = magnitude > 0.0
+    np.divide(
+        erf(magnitude/radius), magnitude,
+        out=result, where=nonzero,
+    )
+    result[~nonzero] = 2.0/(np.sqrt(np.pi)*radius)
+    return result
+
+
+def bare_inverse(distance: np.ndarray, *, label: str) -> np.ndarray:
+    """Return the requested bare ``1/|d|`` and reject an exact grid pole.
+
+    The paper Hamiltonian contains bare nuclear repulsions.  Silently
+    softening an exact grid collision would change that Hamiltonian, so a
+    grid that samples the pole is rejected with a useful error instead.
+    """
+    magnitude = np.abs(np.asarray(distance, dtype=float))
+    if np.any(magnitude == 0.0):
+        raise ValueError(
+            f"{label} bare Coulomb pole가 grid point와 정확히 겹칩니다. "
+            "grid point 수/범위를 조금 조정해 singular point를 직접 "
+            "sampling하지 마세요."
+        )
+    return 1.0/magnitude
+
+
 def heavy_trap_frequency(model: Model) -> tuple[float, float]:
     """Return ``(omega_au, period_fs)`` for ``alpha*(R-Rc)^2``.
 
@@ -88,6 +135,13 @@ def heavy_trap_frequency(model: Model) -> tuple[float, float]:
 
 def print_model_geometry(model: Model, args) -> None:
     """Print the physical centers and heavy trap used by a propagation."""
+    if model.interaction_model == "erf_shin_metiu":
+        print(
+            "interaction: erf Shin--Metiu strong-coupling form; "
+            f"L={model.fixed_ion_separation:.6g}, "
+            f"R_lx={model.erf_r_lx:.6g}, R_qx={model.erf_r_qx:.6g}, "
+            f"R_Rx={model.erf_r_Rx:.6g}, R_qR={model.erf_r_qR:.6g} a0"
+        )
     right_status = (
         f"active at {float(args.right_position):.6g}, "
         f"Z_R={float(args.right_charge):.6g}"
@@ -155,6 +209,67 @@ def build_model(args) -> Model:
     dq = float(q[1] - q[0])
     dR = float(R[1] - R[0])
 
+    # New commands explicitly carry ``interaction_model``.  Historical NPZ
+    # metadata predates it but contains the old softening parameters; retain
+    # that reconstruction path so old plots remain reproducible.
+    interaction_model = getattr(args, "interaction_model", None)
+    if interaction_model is None:
+        interaction_model = (
+            "legacy_soft_coulomb"
+            if hasattr(args, "soft_e_left") else "erf_shin_metiu"
+        )
+    interaction_model = str(interaction_model).replace("-", "_")
+    if interaction_model not in {"erf_shin_metiu", "legacy_soft_coulomb"}:
+        raise ValueError(f"지원하지 않는 interaction model: {interaction_model}")
+    args.interaction_model = interaction_model
+
+    if interaction_model == "erf_shin_metiu":
+        L = float(getattr(args, "fixed_ion_separation", 19.0))
+        if not np.isfinite(L) or L <= 0.0:
+            raise ValueError("--fixed-ion-separation L은 유한한 양수여야 합니다.")
+        requested_right_charge = float(getattr(args, "right_charge", 0.0))
+        if requested_right_charge != 0.0:
+            raise ValueError(
+                "erf Shin--Metiu model은 오른쪽 fixed ion을 moving heavy "
+                "ion으로 대체합니다. --right-charge는 0이어야 하며, "
+                "과거 two-fixed-ion 계산은 --interaction-model "
+                "legacy-soft-coulomb를 사용하세요."
+            )
+        args.fixed_ion_separation = L
+        # The only fixed ion is the left ion.  The right fixed ion of the
+        # two-fixed-ion model is replaced by the trapped moving heavy ion.
+        args.left_position = -0.5*L
+        args.left_charge = 1.0
+        args.right_position = 0.5*L
+        args.right_charge = 0.0
+        args.heavy_trap_center = 0.5*L
+        args.erf_r_lx = float(getattr(args, "erf_r_lx", 3.1))
+        args.erf_r_qx = float(getattr(args, "erf_r_qx", 5.0))
+        args.erf_r_Rx = float(getattr(args, "erf_r_Rx", 4.0))
+        raw_qR = getattr(args, "erf_r_qR", None)
+        if raw_qR is None:
+            raise ValueError(
+                "새 erf Shin--Metiu Hamiltonian에는 --erf-r-qr 값을 "
+                "명시해야 합니다."
+            )
+        args.erf_r_qR = float(raw_qR)
+        for option, value in (
+            ("--erf-r-lx", args.erf_r_lx),
+            ("--erf-r-qx", args.erf_r_qx),
+            ("--erf-r-rx", args.erf_r_Rx),
+            ("--erf-r-qr", args.erf_r_qR),
+        ):
+            if not np.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{option}는 유한한 양수여야 합니다.")
+    else:
+        args.fixed_ion_separation = float(
+            getattr(args, "fixed_ion_separation", 19.0)
+        )
+        args.erf_r_lx = float(getattr(args, "erf_r_lx", 3.1))
+        args.erf_r_qx = float(getattr(args, "erf_r_qx", 5.0))
+        args.erf_r_Rx = float(getattr(args, "erf_r_Rx", 4.0))
+        args.erf_r_qR = float(getattr(args, "erf_r_qR", np.nan) or np.nan)
+
     # 실제로 사용한 전자 box, 선택적 오른쪽 고정 중심과 heavy trap을
     # metadata에 남긴다.  이전 archive에는 trap option이 없으므로 0으로
     # fallback하여 원래 Hamiltonian을 그대로 재구성한다.
@@ -170,9 +285,15 @@ def build_model(args) -> Model:
     args.heavy_trap_center = float(
         getattr(args, "heavy_trap_center", 10.0)
     )
-    args.heavy_trap_alpha = float(
-        getattr(args, "heavy_trap_alpha", 0.0)
-    )
+    raw_trap_alpha = getattr(args, "heavy_trap_alpha", None)
+    if raw_trap_alpha is None:
+        if interaction_model == "erf_shin_metiu":
+            raise ValueError(
+                "새 erf Shin--Metiu Hamiltonian에는 --heavy-trap-alpha를 "
+                "명시해야 합니다."
+            )
+        raw_trap_alpha = 0.0
+    args.heavy_trap_alpha = float(raw_trap_alpha)
     if not np.isfinite(args.heavy_trap_center):
         raise ValueError("--heavy-trap-center는 유한한 값이어야 합니다.")
     if not np.isfinite(args.heavy_trap_alpha) or args.heavy_trap_alpha < 0.0:
@@ -196,33 +317,46 @@ def build_model(args) -> Model:
     qq = q[None, :, None]       # (1,nq,1)
     RR = R[None, None, :]       # (1,1,nR)
 
-    # 전자(-1)는 움직이는 두 핵과 선택적인 좌/우 고정 중심에 끌리고,
-    # 양전하끼리는 서로 밀어낸다. 새 기본 geometry에서는 right_charge=0으로
-    # 오른쪽 fixed ion을 제거하고, R~heavy_trap_center인 moving heavy가 그
-    # 역할을 대신한다. 마지막 real diagonal term은 heavy에만 작용한다.
-    # 모든 항은 broadcasting되어 최종 shape (nx,nq,nR)가 된다.
-    potential = (
-        -args.left_charge * soft_inverse(xx - args.left_position, args.soft_e_left)
-        -soft_inverse(xx - qq, args.soft_e_proton)
-        -args.heavy_charge * soft_inverse(xx - RR, args.soft_e_heavy)
-        +args.left_charge * soft_inverse(qq - args.left_position, args.soft_p_left)
-        +args.heavy_charge * soft_inverse(qq - RR, args.soft_p_heavy)
-        +args.left_charge * args.heavy_charge
-        * soft_inverse(RR - args.left_position, args.soft_left_heavy)
-        -args.right_charge * soft_inverse(
-            xx - args.right_position, args.soft_e_right
+    if interaction_model == "erf_shin_metiu":
+        half_L = 0.5*args.fixed_ion_separation
+        # Exact requested modified Shin--Metiu interaction.  The two bare
+        # positive-positive terms retain their singular Coulomb form; all
+        # other pair interactions use the finite erf kernels.
+        potential = (
+            +bare_inverse(half_L+qq, label="left-fixed/proton")
+            -erf_inverse(half_L+xx, args.erf_r_lx)
+            +args.heavy_charge
+            * bare_inverse(half_L+RR, label="left-fixed/heavy")
+            -erf_inverse(qq-xx, args.erf_r_qx)
+            -erf_inverse(RR-xx, args.erf_r_Rx)
+            +erf_inverse(qq-RR, args.erf_r_qR)
+            +args.heavy_trap_alpha*(RR-half_L)**2
         )
-        +args.right_charge * soft_inverse(
-            qq - args.right_position, args.soft_p_right
+    else:
+        # Historical soft-Coulomb model, retained only for reconstructing old
+        # archives and explicit legacy convergence checks.
+        potential = (
+            -args.left_charge * soft_inverse(xx - args.left_position, args.soft_e_left)
+            -soft_inverse(xx - qq, args.soft_e_proton)
+            -args.heavy_charge * soft_inverse(xx - RR, args.soft_e_heavy)
+            +args.left_charge * soft_inverse(qq - args.left_position, args.soft_p_left)
+            +args.heavy_charge * soft_inverse(qq - RR, args.soft_p_heavy)
+            +args.left_charge * args.heavy_charge
+            * soft_inverse(RR - args.left_position, args.soft_left_heavy)
+            -args.right_charge * soft_inverse(
+                xx - args.right_position, args.soft_e_right
+            )
+            +args.right_charge * soft_inverse(
+                qq - args.right_position, args.soft_p_right
+            )
+            +args.right_charge * args.heavy_charge
+            * soft_inverse(RR - args.right_position, args.soft_right_heavy)
+            +args.left_charge * args.right_charge
+            * soft_inverse(
+                args.right_position - args.left_position, args.soft_left_right
+            )
+            +args.heavy_trap_alpha*(RR-args.heavy_trap_center)**2
         )
-        +args.right_charge * args.heavy_charge
-        * soft_inverse(RR - args.right_position, args.soft_right_heavy)
-        +args.left_charge * args.right_charge
-        * soft_inverse(
-            args.right_position - args.left_position, args.soft_left_right
-        )
-        + args.heavy_trap_alpha*(RR-args.heavy_trap_center)**2
-    )
 
     return Model(
         x=x, q=q, R=R, dx=dx, dq=dq, dR=dR,
@@ -231,6 +365,12 @@ def build_model(args) -> Model:
         # 예전 archive metadata에는 이 option이 없으므로 재분석 시 fallback한다.
         fft_workers=getattr(args, "fft_workers", -1),
         potential=np.asarray(potential),
+        interaction_model=interaction_model,
+        fixed_ion_separation=args.fixed_ion_separation,
+        erf_r_lx=args.erf_r_lx,
+        erf_r_qx=args.erf_r_qx,
+        erf_r_Rx=args.erf_r_Rx,
+        erf_r_qR=args.erf_r_qR,
         heavy_trap_center=args.heavy_trap_center,
         heavy_trap_alpha=args.heavy_trap_alpha,
         log_derivative_backend=getattr(
@@ -1718,20 +1858,42 @@ def add_model_arguments(parser):
         help="초기 local H_BO 전자상태의 0-based index",
     )
 
-    potential = parser.add_argument_group("soft-Coulomb potential")
+    potential = parser.add_argument_group("modified Shin--Metiu potential")
     potential.add_argument(
+        "--interaction-model",
+        choices=("erf-shin-metiu", "legacy-soft-coulomb"),
+        default="erf-shin-metiu",
+        help="새 계산의 기본은 논문형 erf Shin--Metiu interaction",
+    )
+    potential.add_argument(
+        "--fixed-ion-separation", type=float, default=19.0,
+        help="L (a0); fixed left ion=-L/2, heavy trap center=+L/2",
+    )
+    potential.add_argument("--erf-r-lx", type=float, default=3.1)
+    potential.add_argument("--erf-r-qx", type=float, default=5.0)
+    potential.add_argument(
+        "--erf-r-rx", "--erf-r-Rx", dest="erf_r_Rx",
+        type=float, default=4.0,
+    )
+    potential.add_argument(
+        "--erf-r-qr", "--erf-r-qR", dest="erf_r_qR",
+        type=float, default=None,
+        help="moving proton-heavy erf repulsion range R_qR (a0); 필수 지정",
+    )
+    legacy = parser.add_argument_group("legacy soft-Coulomb archive compatibility")
+    legacy.add_argument(
         "--left-position", type=float, default=-10.0,
         help="왼쪽 고정 중심의 물리적 위치(전자 hard wall과 독립)",
     )
-    potential.add_argument(
+    legacy.add_argument(
         "--left-charge", type=float, default=1.0,
         help="왼쪽 고정 중심의 전하 Z_L",
     )
-    potential.add_argument(
+    legacy.add_argument(
         "--right-position", type=float, default=10.0,
         help="선택적인 오른쪽 고정 중심의 물리적 위치",
     )
-    potential.add_argument(
+    legacy.add_argument(
         "--right-charge", type=float, default=0.0,
         help=(
             "선택적인 오른쪽 고정 중심 전하 Z_R; 새 기본 모델에서는 "
@@ -1743,21 +1905,21 @@ def add_model_arguments(parser):
         help="움직이는 heavy ion harmonic 결합의 중심 R_c",
     )
     potential.add_argument(
-        "--heavy-trap-alpha", type=float, required=True,
+        "--heavy-trap-alpha", type=float, default=None,
         help=(
             "V_trap=alpha*(R-R_c)^2의 alpha (Hartree/a0^2); "
             "물리적 결합 진동수에 맞춰 명시적으로 지정"
         ),
     )
     potential.add_argument("--heavy-charge", type=float, default=1.0)
-    potential.add_argument("--soft-e-left", type=float, default=1.0)
-    potential.add_argument("--soft-e-right", type=float, default=1.0)
-    potential.add_argument("--soft-e-proton", type=float, default=0.8)
-    potential.add_argument("--soft-e-heavy", type=float, default=1.0)
-    potential.add_argument("--soft-p-left", type=float, default=0.8)
-    potential.add_argument("--soft-p-right", type=float, default=0.8)
-    potential.add_argument("--soft-p-heavy", type=float, default=0.8)
-    potential.add_argument("--soft-left-heavy", type=float, default=0.8)
-    potential.add_argument("--soft-right-heavy", type=float, default=0.8)
-    potential.add_argument("--soft-left-right", type=float, default=0.8)
+    legacy.add_argument("--soft-e-left", type=float, default=1.0)
+    legacy.add_argument("--soft-e-right", type=float, default=1.0)
+    legacy.add_argument("--soft-e-proton", type=float, default=0.8)
+    legacy.add_argument("--soft-e-heavy", type=float, default=1.0)
+    legacy.add_argument("--soft-p-left", type=float, default=0.8)
+    legacy.add_argument("--soft-p-right", type=float, default=0.8)
+    legacy.add_argument("--soft-p-heavy", type=float, default=0.8)
+    legacy.add_argument("--soft-left-heavy", type=float, default=0.8)
+    legacy.add_argument("--soft-right-heavy", type=float, default=0.8)
+    legacy.add_argument("--soft-left-right", type=float, default=0.8)
     return parser

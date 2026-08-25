@@ -40,6 +40,7 @@ class SmoothGaugeIntegrationTests(unittest.TestCase):
         with patch.object(sys, "argv", [
             "test", "--electron-excitation", "1",
             "--heavy-trap-alpha", "0",
+            "--erf-r-qr", "4.5",
             "--proton-force-constant", "0.1",
             "--heavy-force-constant", "0.1",
         ]):

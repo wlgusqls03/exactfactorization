@@ -17,6 +17,10 @@ from multi_component_exact_factorization.core import (
     add_model_arguments,
     build_model,
 )
+from multi_component_exact_factorization.spectral_tdse import (
+    spectral_action_numpy,
+    split_step_numpy,
+)
 from multi_component_exact_factorization_discrete.core import (
     discrete_born_huang_rhs,
     discrete_tdse_action,
@@ -36,6 +40,7 @@ from .gpu_core import (
     make_discrete_gpu_model,
 )
 from .checkpoint import load_checkpoint, write_checkpoint_atomic
+from .spectral_tdse import SpectralTDSEGPU
 
 
 def _normalized_problem(model, states, seed):
@@ -171,6 +176,42 @@ def run(args):
             f"  step {name:6s}: max_abs={absolute:.6e}, "
             f"max_relative={relative:.6e}"
         )
+    print("[full-grid spectral TDSE one step]")
+    rng = np.random.default_rng(args.seed+17)
+    psi = rng.normal(
+        size=(len(model.x), len(model.q), len(model.R))
+    )+1j*rng.normal(size=(len(model.x), len(model.q), len(model.R)))
+    psi /= np.sqrt(
+        np.sum(np.abs(psi)**2)*model.dx*model.dq*model.dR
+    )
+    expected_split = split_step_numpy(psi, args.step_dt, model)
+    split_solver = SpectralTDSEGPU(
+        model, q_block_R=3, R_block_x=4, x_block_R=2
+    )
+    psi_gpu = cp.ascontiguousarray(cp.asarray(psi, dtype=cp.complex128))
+    split_solver.step(psi_gpu, args.step_dt)
+    actual_split = cp.asnumpy(psi_gpu)
+    absolute, relative = _relative_error(expected_split, actual_split)
+    worst = max(worst, relative)
+    norm_error = abs(
+        np.sum(np.abs(actual_split)**2)*model.dx*model.dq*model.dR-1.0
+    )
+    worst = max(worst, norm_error)
+    print(
+        f"  CPU/GPU step: max_abs={absolute:.6e}, "
+        f"max_relative={relative:.6e}"
+    )
+    print(f"  one-step norm error={norm_error:.6e}")
+    expected_action = spectral_action_numpy(psi, model)
+    actual_action = cp.asnumpy(split_solver.action(
+        cp.ascontiguousarray(cp.asarray(psi, dtype=cp.complex128))
+    ))
+    absolute, relative = _relative_error(expected_action, actual_action)
+    worst = max(worst, relative)
+    print(
+        f"  H_spectral Psi: max_abs={absolute:.6e}, "
+        f"max_relative={relative:.6e}"
+    )
     print("[checkpoint round-trip + resumed RK4 step]")
     fused_step = stepped["fused"]
     checkpoint_metadata = {
@@ -244,6 +285,9 @@ def parse_args(argv=None):
     parser.add_argument("--flat-top-on-lam", type=float, default=1.0e-3)
     parser.add_argument("--flat-top-transition-decades", type=float, default=3.0)
     add_model_arguments(parser)
+    # Structural validation has self-contained harmless values; production
+    # propagation still requires both physical parameters explicitly.
+    parser.set_defaults(heavy_trap_alpha=0.005, erf_r_qR=5.0)
     return parser.parse_args(argv)
 
 

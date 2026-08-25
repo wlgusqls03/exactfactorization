@@ -204,6 +204,7 @@ class BornHuangOperatorTests(unittest.TestCase):
         with patch.object(sys, "argv", [
             "test", "--nx", "18", "--nq", "7", "--nR", "6",
             "--electron-excitation", "1", "--heavy-trap-alpha", "0",
+            "--erf-r-qr", "4.5",
         ]):
             args = parse_args()
         model = build_model(args)
@@ -220,6 +221,7 @@ class BornHuangOperatorTests(unittest.TestCase):
         with patch.object(sys, "argv", [
             "test", "--nx", "12", "--nq", "5", "--nR", "5",
             "--electron-excitation", "1", "--heavy-trap-alpha", "0",
+            "--erf-r-qr", "4.5",
         ]):
             args = parse_args()
         model = build_model(args)
@@ -257,6 +259,7 @@ class BornHuangOperatorTests(unittest.TestCase):
         with patch.object(sys, "argv", [
             "test", "--nx", "12", "--nq", "5", "--nR", "5",
             "--electron-excitation", "1", "--heavy-trap-alpha", "0",
+            "--erf-r-qr", "4.5",
         ]):
             args = parse_args()
         model = build_model(args)

@@ -64,7 +64,9 @@ class DiscreteMCEFTests(unittest.TestCase):
     def test_real_shin_metiu_overlap_links_recombine(self):
         parser = argparse.ArgumentParser()
         add_model_arguments(parser)
-        args = parser.parse_args(["--heavy-trap-alpha", "0"])
+        args = parser.parse_args([
+            "--heavy-trap-alpha", "0", "--erf-r-qr", "4.5",
+        ])
         args.nx, args.nq, args.nR = 32, 7, 8
         args.q_min, args.q_max = -3.0, 3.0
         args.R_min, args.R_max = -1.0, 5.0

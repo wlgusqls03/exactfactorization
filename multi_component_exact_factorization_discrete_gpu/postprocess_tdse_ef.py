@@ -42,6 +42,7 @@ from multi_component_exact_factorization_gpu.gpu_core import cp
 
 from .compare_tdse import _stream_arrays
 from .gpu_core import discrete_tdse_action_gpu, make_discrete_gpu_model
+from .spectral_tdse import SpectralConditionalAnalysisGPU
 
 
 OUTPUT_NAME = "tdse_exact_factorization_fields.npz"
@@ -63,6 +64,13 @@ def _metadata(archive):
             "bo_states": int(np.asarray(data["bo_states_count"]).item()),
             "bo_link_kernel": str(np.asarray(data.get("bo_link_kernel", "fused")).item()),
             "source_kind": str(np.asarray(data.get("kind", "")).item()),
+            "has_instantaneous_action": (
+                "tdse_action_coefficients" in data.files
+            ),
+            "electron_density": (
+                np.asarray(data["electron_density"], float)
+                if "electron_density" in data.files else None
+            ),
         }
 
 
@@ -100,9 +108,16 @@ def _safe_density_gauge_factorization(y, action, model):
     return c, lam, chi, dc, dlam, dchi
 
 
-def _frame_fields(y_cpu, model, basis, link_keys=()):
+def _frame_fields(
+    y_cpu, model, basis, link_keys=(), action_cpu=None,
+    spectral_analyzer=None,
+):
     y = cp.ascontiguousarray(cp.asarray(y_cpu, dtype=cp.complex128))
-    action = discrete_tdse_action_gpu(y, model, basis)
+    action = (
+        cp.ascontiguousarray(cp.asarray(action_cpu, dtype=cp.complex128))
+        if action_cpu is not None
+        else discrete_tdse_action_gpu(y, model, basis)
+    )
     state_probability = cp.real(y*cp.conj(y))
     total_probability = cp.maximum(
         cp.sum(state_probability, dtype=model.reduction_real_dtype)
@@ -123,10 +138,16 @@ def _frame_fields(y_cpu, model, basis, link_keys=()):
     )*model.dq
     lam_norm_safe = cp.maximum(lam_norm, tiny)
 
-    electronic = cp.sum(
-        cp.conj(c)*basis.energies*c, axis=0,
-        dtype=model.reduction_complex_dtype,
-    )/c_norm_safe
+    if spectral_analyzer is None:
+        electronic = cp.sum(
+            cp.conj(c)*basis.energies*c, axis=0,
+            dtype=model.reduction_complex_dtype,
+        )/c_norm_safe
+        spectral_q_kinetic = None
+    else:
+        electronic, spectral_q_kinetic = spectral_analyzer.energies(
+            c, lam, c_norm, lam_norm
+        )
     temporal_1 = -1j*cp.sum(
         cp.conj(c)*dc, axis=0, dtype=model.reduction_complex_dtype,
     )/c_norm_safe
@@ -155,15 +176,24 @@ def _frame_fields(y_cpu, model, basis, link_keys=()):
         if offset in (1, 2):
             sphi_q[int(offset)] = overlap
 
-    hpr_local = epsilon_1_complex*lam+q_action_lam
     temporal_2 = -1j*cp.sum(
         cp.conj(lam)*dlam, axis=0,
         dtype=model.reduction_complex_dtype,
     )*model.dq/lam_norm_safe
-    epsilon_2_complex = cp.sum(
-        cp.conj(lam)*hpr_local, axis=0,
-        dtype=model.reduction_complex_dtype,
-    )*model.dq/lam_norm_safe+temporal_2
+    if spectral_q_kinetic is None:
+        hpr_local = epsilon_1_complex*lam+q_action_lam
+        epsilon_2_complex = cp.sum(
+            cp.conj(lam)*hpr_local, axis=0,
+            dtype=model.reduction_complex_dtype,
+        )*model.dq/lam_norm_safe+temporal_2
+    else:
+        epsilon_2_complex = (
+            cp.sum(
+                cp.real(lam*cp.conj(lam))*epsilon_1_complex, axis=0,
+                dtype=model.reduction_complex_dtype,
+            )*model.dq/lam_norm_safe
+            +spectral_q_kinetic+temporal_2
+        )
 
     R_transports = neighbor_transports(c, basis, 2)
     sphi_R = {}
@@ -280,10 +310,23 @@ def run(args):
         cpu_model, metadata["bo_states"], cache_dir=cache_dir,
     )
     model = make_discrete_gpu_model(cpu_model)
-    compact_states = basis_cpu.states if args.electron_density else None
+    spectral_source = "spectral_split" in metadata["source_kind"]
+    compact_states = (
+        basis_cpu.states if args.electron_density or spectral_source else None
+    )
     link_kernel = args.bo_link_kernel or metadata["bo_link_kernel"]
     basis = to_gpu_basis(basis_cpu, model, link_kernel)
-    if compact_states is None:
+    spectral_analyzer = None
+    if spectral_source:
+        spectral_analyzer = SpectralConditionalAnalysisGPU(
+            cpu_model, basis_cpu.states,
+            block_R=args.spectral_analysis_R_block,
+        )
+        print(
+            "spectral conditional energies: H_e는 DST-I, T_q는 FFT로 "
+            "full electronic grid에서 blockwise 평가"
+        )
+    if compact_states is None and spectral_analyzer is None:
         basis_cpu.states = np.empty((0,), dtype=float)
     print(
         f"TDSE -> exact factorization fields: frames={len(metadata['times_fs'])}, "
@@ -313,7 +356,7 @@ def run(args):
     for key in link_keys:
         shape = (nt, nq, nR) if key.startswith("sphi_") else (nt, nR)
         fields[key] = np.empty(shape, dtype=np.complex128)
-    if compact_states is not None:
+    if args.electron_density:
         fields["electron_density"] = np.empty(
             (nt, len(metadata["x"])), dtype=np.float64
         )
@@ -321,20 +364,49 @@ def run(args):
             "TDSE electron marginal도 정확히 복원합니다. BO states를 "
             f"R-block={args.electron_density_R_block}으로 순차 읽습니다."
         )
-    with _stream_arrays(archive, ("tdse_coefficients",)) as readers:
+    stream_keys = ["tdse_coefficients"]
+    if metadata["has_instantaneous_action"]:
+        stream_keys.append("tdse_action_coefficients")
+        print(
+            "scalar temporal terms: saved instantaneous full-spectral "
+            "projection <BO|H Psi> 사용"
+        )
+    else:
+        print(
+            "scalar temporal terms: archive Hamiltonian action을 현재 "
+            "BO-link backend에서 재계산"
+        )
+    with _stream_arrays(archive, tuple(stream_keys)) as readers:
         reader = readers["tdse_coefficients"]
         if reader.shape != (nt, metadata["bo_states"], nq, nR):
             raise ValueError(
                 f"tdse_coefficients shape mismatch: {reader.shape}"
             )
+        if metadata["has_instantaneous_action"]:
+            action_reader = readers["tdse_action_coefficients"]
+            if action_reader.shape != reader.shape:
+                raise ValueError(
+                    "tdse_action_coefficients shape mismatch: "
+                    f"{action_reader.shape} != {reader.shape}"
+                )
         for frame in range(nt):
             y_frame = reader.read(frame)
-            current = _frame_fields(y_frame, model, basis, link_keys)
-            if compact_states is not None:
-                current["electron_density"] = electron_marginal_from_bo(
-                    y_frame, compact_states, model.dq, model.dR,
-                    args.electron_density_R_block,
-                )
+            action_frame = (
+                readers["tdse_action_coefficients"].read(frame)
+                if metadata["has_instantaneous_action"] else None
+            )
+            current = _frame_fields(
+                y_frame, model, basis, link_keys, action_frame,
+                spectral_analyzer,
+            )
+            if args.electron_density:
+                if metadata["electron_density"] is not None:
+                    current["electron_density"] = metadata["electron_density"][frame]
+                else:
+                    current["electron_density"] = electron_marginal_from_bo(
+                        y_frame, compact_states, model.dq, model.dR,
+                        args.electron_density_R_block,
+                    )
             for key in fields:
                 fields[key][frame] = current[key]
             if args.progress_every and (
@@ -354,7 +426,11 @@ def run(args):
         source_archive=np.array(str(archive)),
         source_kind=np.array(metadata["source_kind"]),
         gauge=np.array("positive_density_marginals"),
-        scalar_time_derivative=np.array("instantaneous_tdse_action"),
+        scalar_time_derivative=np.array(
+            "saved_instantaneous_full_spectral_action_projection"
+            if metadata["has_instantaneous_action"]
+            else "recomputed_instantaneous_bo_link_action"
+        ),
         discrete_link_output=np.array(args.link_output),
         discrete_link_convention=np.array(
             "forward S(g,g+r); backward=S(g-r,g)^dagger"
@@ -400,9 +476,12 @@ def parse_args(argv=None):
         help="전자 marginal 복원을 생략해 field 후처리를 더 빠르게 수행",
     )
     parser.add_argument("--electron-density-R-block", type=int, default=24)
+    parser.add_argument("--spectral-analysis-R-block", type=int, default=2)
     args = parser.parse_args(argv)
     if args.electron_density_R_block <= 0:
         parser.error("--electron-density-R-block must be positive")
+    if args.spectral_analysis_R_block <= 0:
+        parser.error("--spectral-analysis-R-block must be positive")
     return args
 
 

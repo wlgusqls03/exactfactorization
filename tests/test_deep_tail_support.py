@@ -6,11 +6,13 @@ import numpy as np
 
 from multi_component_exact_factorization.core import (
     build_model,
+    bare_inverse,
     crossing_reference_positions,
     deep_tail_gate,
     pnc_project,
     project_discrete_product_residual,
     reconstruct_psi,
+    erf_inverse,
     soft_inverse,
 )
 from multi_component_exact_factorization.propagate import parse_args
@@ -20,44 +22,47 @@ class DeepTailSupportTests(unittest.TestCase):
     def test_default_geometry_separates_fixed_center_and_electron_wall(self):
         with patch("sys.argv", [
             "propagate", "--heavy-trap-alpha", "0.05",
+            "--erf-r-qr", "4.5",
         ]):
             args = parse_args()
         model = build_model(args)
 
         self.assertEqual((model.x_left, model.x_right), (-22.0, 22.0))
-        self.assertEqual((args.left_position, args.left_charge), (-10.0, 1.0))
-        self.assertEqual((args.right_position, args.right_charge), (10.0, 0.0))
+        self.assertEqual((args.left_position, args.left_charge), (-9.5, 1.0))
+        self.assertEqual((args.right_position, args.right_charge), (9.5, 0.0))
         self.assertEqual((args.q_min, args.q_max, args.q0), (-12.0, 12.0, 0.0))
         self.assertEqual((args.R_min, args.R_max, args.R0), (2.0, 18.0, 10.0))
-        self.assertEqual((model.heavy_trap_center, model.heavy_trap_alpha), (10.0, 0.05))
+        self.assertEqual((model.heavy_trap_center, model.heavy_trap_alpha), (9.5, 0.05))
         self.assertEqual((args.nx, args.nq, args.nR), (151, 151, 151))
         self.assertAlmostEqual(model.dx, 44.0/152.0)
         self.assertAlmostEqual(model.dq, 24.0/151.0)
         self.assertAlmostEqual(model.dR, 16.0/151.0)
         self.assertEqual(
-            crossing_reference_positions(model, args, "q"), (-10.0, 10.0)
+            crossing_reference_positions(model, args, "q"), (-9.5, 9.5)
         )
         R_references = crossing_reference_positions(model, args, "R")
-        self.assertEqual(R_references[0], -10.0)
+        self.assertEqual(R_references[0], -9.5)
         self.assertAlmostEqual(R_references[1], 18.0)
 
     def test_harmonic_heavy_trap_is_real_diagonal_and_centered(self):
         argv = [
-            "propagate", "--nx", "5", "--nq", "5", "--nR", "8",
-            "--heavy-trap-alpha", "0",
+            "propagate", "--nx", "5", "--nq", "5", "--nR", "32",
+            "--heavy-trap-alpha", "0", "--erf-r-qr", "4.5",
         ]
         with patch("sys.argv", argv):
             args_free = parse_args()
         free = build_model(args_free)
-        with patch("sys.argv", argv[:-1] + ["0.125"]):
+        trapped_argv = list(argv)
+        trapped_argv[trapped_argv.index("--heavy-trap-alpha")+1] = "0.125"
+        with patch("sys.argv", trapped_argv):
             args_trapped = parse_args()
         trapped = build_model(args_trapped)
-        expected = 0.125*(trapped.R-10.0)**2
+        expected = 0.125*(trapped.R-9.5)**2
         difference = trapped.potential-free.potential
         self.assertTrue(np.allclose(
             difference, expected[None, None, :], atol=2.0e-14, rtol=0.0,
         ))
-        center = int(np.argmin(np.abs(trapped.R-10.0)))
+        center = int(np.argmin(np.abs(trapped.R-9.5)))
         self.assertAlmostEqual(expected[center], 0.0, places=14)
 
     def test_gate_has_exact_zero_one_and_smooth_transition(self):
@@ -119,7 +124,7 @@ class DeepTailSupportTests(unittest.TestCase):
     def test_full_nuclear_range_matches_electronic_box(self):
         with patch("sys.argv", [
             "propagate", "--full-nuclear-range",
-            "--heavy-trap-alpha", "0",
+            "--heavy-trap-alpha", "0", "--erf-r-qr", "4.5",
         ]):
             args = parse_args()
         model = build_model(args)
@@ -137,6 +142,8 @@ class DeepTailSupportTests(unittest.TestCase):
             "propagate", "--symmetric-box-half-width", "10",
             "--full-nuclear-range", "--nx", "249", "--nq", "500",
             "--nR", "1000", "--heavy-trap-alpha", "0",
+            "--erf-r-qr", "4.5",
+            "--interaction-model", "legacy-soft-coulomb",
         ]
         with patch("sys.argv", argv):
             args = parse_args()
@@ -155,6 +162,7 @@ class DeepTailSupportTests(unittest.TestCase):
             "propagate", "--nx", "5", "--nq", "5", "--nR", "5",
             "--left-charge", "0.7", "--right-charge", "0.0",
             "--heavy-trap-alpha", "0",
+            "--interaction-model", "legacy-soft-coulomb",
         ]
         with patch("sys.argv", argv):
             args_zero = parse_args()
@@ -182,6 +190,36 @@ class DeepTailSupportTests(unittest.TestCase):
         self.assertTrue(np.allclose(
             model_right.potential-model_zero.potential, expected,
             rtol=1.0e-14, atol=1.0e-14,
+        ))
+
+    def test_erf_kernel_has_analytic_origin_and_new_hamiltonian_terms(self):
+        origin = erf_inverse(np.array([0.0]), 3.1)[0]
+        self.assertAlmostEqual(origin, 2.0/(np.sqrt(np.pi)*3.1), places=15)
+        argv = [
+            "propagate", "--nx", "7", "--nq", "6", "--nR", "5",
+            "--heavy-trap-alpha", "0.02", "--erf-r-qr", "4.7",
+        ]
+        with patch("sys.argv", argv):
+            args = parse_args()
+        model = build_model(args)
+        self.assertEqual(model.interaction_model, "erf_shin_metiu")
+        self.assertEqual(model.fixed_ion_separation, 19.0)
+        self.assertTrue(np.all(np.isfinite(model.potential)))
+        self.assertEqual((args.left_position, args.heavy_trap_center), (-9.5, 9.5))
+        xx = model.x[:, None, None]
+        qq = model.q[None, :, None]
+        RR = model.R[None, None, :]
+        expected = (
+            bare_inverse(9.5+qq, label="test q-left")
+            -erf_inverse(9.5+xx, 3.1)
+            +args.heavy_charge*bare_inverse(9.5+RR, label="test R-left")
+            -erf_inverse(qq-xx, 5.0)
+            -erf_inverse(RR-xx, 4.0)
+            +erf_inverse(qq-RR, 4.7)
+            +0.02*(RR-9.5)**2
+        )
+        self.assertTrue(np.allclose(
+            model.potential, expected, rtol=2.0e-15, atol=2.0e-15,
         ))
 
 
