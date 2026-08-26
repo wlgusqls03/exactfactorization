@@ -69,7 +69,7 @@ def _profile_ylim(values, support, symmetric):
 def make_coordinate_focus_animation(
     *, times_fs, coordinate, marginal, profiles, options, outdir, fps,
     max_frames, dpi, fmt, particle_name, coordinate_symbol, color,
-    stem, marginal_ymax=1.5, marginal_xmax=12.0, support_floor=1.0e-3,
+    stem, marginal_ymax=1.5, marginal_xmax=12.0, support_floor=1.0e-4,
 ):
     """Animate one marginal plus three fields over its moving support."""
     times = np.asarray(times_fs, float)

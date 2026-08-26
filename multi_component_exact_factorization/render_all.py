@@ -269,7 +269,7 @@ def run(args):
         snapshots=snapshots,
         profile_frame=-1,
         animation_style="all",
-        potential_support_floor=getattr(args, "potential_support_floor", 1.0e-3),
+        potential_support_floor=getattr(args, "potential_support_floor", 1.0e-4),
         show_potential_tails=getattr(args, "show_potential_tails", False),
         **common_animation,
     ), data=data)
@@ -377,7 +377,7 @@ def parse_args(argv=None):
     parser.add_argument("--max-axis-points", type=int, default=24)
     parser.add_argument("--max-3d-frames", type=int, default=80)
     parser.add_argument("--surface-count", type=int, default=7)
-    parser.add_argument("--potential-support-floor", type=float, default=1.0e-3)
+    parser.add_argument("--potential-support-floor", type=float, default=1.0e-4)
     parser.add_argument("--show-potential-tails", action="store_true")
     parser.add_argument("--no-potential-analysis", action="store_true")
     return parser.parse_args(argv)

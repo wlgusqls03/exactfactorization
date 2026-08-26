@@ -399,12 +399,12 @@ def plot_energy_ladders(data, obs, outdir, dpi):
     print(f"Born--Huang energy ladder 저장: {path}")
 
 
-def _support_field(values, density, floor=1.0e-3):
+def _support_field(values, density, floor=1.0e-4):
     cutoff = floor*max(float(np.max(density)), 1.0e-300)
     return np.where(density >= cutoff, values, np.nan)
 
 
-def _potential_frame_fields(data, obs, diagnostics, frame, floor=1.0e-3):
+def _potential_frame_fields(data, obs, diagnostics, frame, floor=1.0e-4):
     """Grid-report-equivalent occupied-support exact-potential fields."""
     density = obs["nuclear_joint_density"][frame]
     heavy = obs["heavy_density"][frame]
@@ -563,7 +563,7 @@ def plot_exact_potentials(data, obs, diagnostics, outdir, dpi, frame=-1):
             alpha=item["density_alpha"].T,
         )
         ax.contour(q, R, item["density"].T,
-                   levels=[1.0e-3*np.max(item["density"])],
+                   levels=[1.0e-4*np.max(item["density"])],
                    colors="white", linewidths=1.0)
         ax.set_title(title, loc="left", fontweight="semibold")
         ax.set_xlabel(r"proton $q$ ($a_0$)")
@@ -645,7 +645,7 @@ def plot_exact_potentials(data, obs, diagnostics, outdir, dpi, frame=-1):
         ax.grid(alpha=0.18)
     fig.suptitle(
         f"3 | Exact potentials, momentum, transport and force | t={times[frame]:.3f} fs\n"
-        r"2D gray $\leq10^{-4}\rho_{\max}$, full color $\geq10^{-3}\rho_{\max}$; "
+        r"2D gray $\leq10^{-6}\rho_{\max}$, full color $\geq10^{-4}\rho_{\max}$; "
         "1D solid=occupied, dotted=tail; scalar offset only",
         fontsize=12.8, fontweight="bold",
     )
@@ -869,7 +869,7 @@ def make_overview_animation(data, obs, diagnostics, outdir, fps, max_frames, dpi
         field_images.append((image, key))
     title = fig.suptitle(
         f"Born--Huang dynamics overview | t={times[first]:.4f} fs\n"
-        r"gray below $10^{-4}\rho_{\max}$, full color above $10^{-3}\rho_{\max}$; "
+        r"gray below $10^{-6}\rho_{\max}$, full color above $10^{-4}\rho_{\max}$; "
         "all physical fields use the TDPES viridis palette; "
         "all color scales fixed over the trajectory"
     )
@@ -890,7 +890,7 @@ def make_overview_animation(data, obs, diagnostics, outdir, fps, max_frames, dpi
         title.set_text(
             f"Born--Huang dynamics overview | t={times[frame]:.4f} fs | "
             f"norm-1={obs['norm'][frame]-1:+.2e}\n"
-            r"gray below $10^{-4}\rho_{\max}$, full color above $10^{-3}\rho_{\max}$; "
+            r"gray below $10^{-6}\rho_{\max}$, full color above $10^{-4}\rho_{\max}$; "
             "all physical fields use the TDPES viridis palette; "
             "all color scales fixed over the trajectory"
         )

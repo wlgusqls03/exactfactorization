@@ -1206,7 +1206,7 @@ def make_potential_animation(
 
 
 def run(
-    data, decomposition, outdir, n_states=6, frame=-1, support_floor=1.0e-3,
+    data, decomposition, outdir, n_states=6, frame=-1, support_floor=1.0e-4,
     dpi=180, no_animation=False, fps=12, max_frames=180,
     animation_dpi=110, fmt="mp4",
 ):

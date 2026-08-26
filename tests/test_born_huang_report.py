@@ -91,6 +91,16 @@ class BornHuangReportTests(unittest.TestCase):
         self.assertEqual(float(opacity[-2]), 0.0)
         self.assertEqual(float(opacity[-1]), 0.0)
 
+    def test_default_display_support_fades_from_1e4_to_1e6_of_peak(self):
+        density = np.array([1.0, 1.0e-4, 1.0e-5, 1.0e-6, 1.0e-7])
+        opacity = density_display_alpha(density)
+        self.assertEqual(float(opacity[0]), 1.0)
+        self.assertEqual(float(opacity[1]), 1.0)
+        self.assertGreater(float(opacity[2]), 0.0)
+        self.assertLess(float(opacity[2]), 1.0)
+        self.assertEqual(float(opacity[3]), 0.0)
+        self.assertEqual(float(opacity[4]), 0.0)
+
     def test_connections_share_one_plot_scale(self):
         data = self.synthetic_data()
         obs = born_huang_report.calculate_observables(data)

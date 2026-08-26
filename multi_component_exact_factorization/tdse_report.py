@@ -880,7 +880,7 @@ def _load_ef_fields(obs):
     return result
 
 
-def support_aware_temporal_lift_1d(connection, density, spacing, floor=1.0e-3):
+def support_aware_temporal_lift_1d(connection, density, spacing, floor=1.0e-4):
     """Lift a principal link phase only on connected occupied support.
 
     ``connection`` is ``Arg(S)/spacing``.  A full-domain, frame-independent
@@ -968,7 +968,7 @@ def continuity_current_1d(density, times_fs, spacing):
     return 0.5*(edge_current[:, :-1]+edge_current[:, 1:])
 
 
-def _prepared_ef_geometry(obs, ef, floor=1.0e-3):
+def _prepared_ef_geometry(obs, ef, floor=1.0e-4):
     cached = ef.get("_prepared_geometry")
     if cached is not None:
         return cached
@@ -1028,7 +1028,7 @@ def _connection_time_derivative(ef, key, frame, spacing, spatial_axis, times_au)
     )[local]/spacing
 
 
-def _ef_frame(obs, ef, frame, floor=1.0e-3):
+def _ef_frame(obs, ef, frame, floor=1.0e-4):
     density = obs["joint_density"][frame]
     heavy = obs["heavy_density"][frame]
     density_cutoff = floor*max(float(np.max(density)), 1.0e-300)
@@ -1335,7 +1335,7 @@ def plot_discrete_link_geometry(obs, ef, outdir, dpi, frame=-1):
     q, R = obs["q"], obs["R"]
     density = np.asarray(obs["joint_density"][frame], float)
     heavy = np.asarray(obs["heavy_density"][frame], float)
-    opacity = density_display_alpha(density, 1.0e-3)
+    opacity = density_display_alpha(density, 1.0e-4)
     extent = [q[0], q[-1], R[0], R[-1]]
     q_link = np.asarray(ef["sphi_q1"][frame], complex)
     R_link = np.asarray(ef["sphi_R1"][frame], complex)
@@ -1362,7 +1362,7 @@ def plot_discrete_link_geometry(obs, ef, outdir, dpi, frame=-1):
         ax.set(xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)")
         ax.set_title(title, loc="left", fontweight="semibold")
         fig.colorbar(image, ax=ax, pad=0.01, format=NUMBER_FORMATTER)
-    support = heavy >= 1.0e-3*max(float(np.max(heavy)), 1.0e-300)
+    support = heavy >= 1.0e-4*max(float(np.max(heavy)), 1.0e-300)
     magnitude = 1.0-np.abs(gamma_link)
     phase = np.angle(gamma_link)
     _support_tail_lines(
@@ -1578,7 +1578,7 @@ def make_all_exact_potentials_animation(
          r"$\arg S^\Phi_{R,+1}$", np.pi),
     )
     sphi_images = []
-    density_alpha = density_display_alpha(obs["joint_density"][first], 1.0e-3)
+    density_alpha = density_display_alpha(obs["joint_density"][first], 1.0e-4)
     for key, component, bounds, title_text, scale in inset_specs:
         inset = sphi_axis.inset_axes(bounds)
         link = np.asarray(ef[key][first], complex)
@@ -1655,7 +1655,7 @@ def make_all_exact_potentials_animation(
         alpha_tail.set_ydata(np.where(
             ~current["heavy_support"], current["alpha_full"], np.nan
         ))
-        opacity = density_display_alpha(obs["joint_density"][frame], 1.0e-3)
+        opacity = density_display_alpha(obs["joint_density"][frame], 1.0e-4)
         for image, key, component in sphi_images:
             link = np.asarray(ef[key][frame], complex)
             values = magnitude_defect(link) if component == "defect" else np.angle(link)

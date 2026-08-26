@@ -73,7 +73,7 @@ def _joint(data):
     return values/np.maximum(norm[:, None, None], 1.0e-300)
 
 
-def _support(values, density, floor=1.0e-3, shift_peak=False):
+def _support(values, density, floor=1.0e-4, shift_peak=False):
     values = np.asarray(values, float).copy()
     if shift_peak:
         values -= values[np.unravel_index(int(np.argmax(density)), density.shape)]
@@ -251,7 +251,7 @@ def plot_consistency(data, outdir, dpi=180):
     print(f"Discrete MCEF consistency 저장: {path}")
 
 
-def _native_frame(data, joint, frame, floor=1.0e-3):
+def _native_frame(data, joint, frame, floor=1.0e-4):
     density = joint[frame]
     heavy = np.sum(density, axis=0)*float(data["q"][1]-data["q"][0])
     heavy_support = heavy >= floor*max(float(np.max(heavy)), 1.0e-300)
@@ -365,7 +365,7 @@ def plot_native_geometry(data, outdir, dpi=180, frame=-1):
         ax.grid(alpha=0.2)
     fig.suptitle(
         f"7 | Native discrete fields | t={float(data['times_fs'][frame]):.4f} fs\n"
-        r"2D gray below $10^{-4}\rho_{\max}$, fully colored above $10^{-3}\rho_{\max}$; "
+        r"2D gray below $10^{-6}\rho_{\max}$, fully colored above $10^{-4}\rho_{\max}$; "
         "1D solid = occupied, thin dotted = low-density continuation",
         fontsize=14, fontweight="bold",
     )
@@ -442,7 +442,7 @@ def make_native_animation(data, outdir, fps=12, max_frames=180, dpi=110, fmt="mp
     axes[1, 2].legend(frameon=False, fontsize=7, ncol=2)
     title = fig.suptitle(
         "Native discrete MCEF geometry\n"
-        r"2D gray below $10^{-4}\rho_{\max}$; full color above $10^{-3}\rho_{\max}$"
+        r"2D gray below $10^{-6}\rho_{\max}$; full color above $10^{-4}\rho_{\max}$"
     )
 
     def update(number):
@@ -466,7 +466,7 @@ def make_native_animation(data, outdir, fps=12, max_frames=180, dpi=110, fmt="mp
         title.set_text(
             f"Native discrete MCEF | t={times[frame]:.4f} fs | "
             f"spatial={residual:.1e}, temporal={temporal:.1e}\n"
-            r"2D gray below $10^{-4}\rho_{\max}$; full color above $10^{-3}\rho_{\max}$"
+            r"2D gray below $10^{-6}\rho_{\max}$; full color above $10^{-4}\rho_{\max}$"
         )
         return *(entry[0] for entry in images), eps_line, eps_tail, density_line, marker, title
 

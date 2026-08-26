@@ -43,12 +43,13 @@ def joint_density_limit(joint):
     return max(float(np.nanmax(np.asarray(joint, float))), 1.0e-300)
 
 
-def density_display_alpha(density, floor=1.0e-3, transition_decades=1.0):
+def density_display_alpha(density, floor=1.0e-4, transition_decades=2.0):
     """Smooth plotting opacity from gray tail to fully occupied support.
 
     Values at or above ``floor`` of the instantaneous density peak are fully
-    opaque.  Values one decade lower are gray.  A quintic smoothstep between
-    them avoids a one-frame flash when a cell barely crosses a hard cutoff.
+    opaque.  Values ``transition_decades`` lower are gray.  A quintic
+    smoothstep between them avoids a one-frame flash when a cell barely
+    crosses a hard cutoff.
     """
     density = np.asarray(density, float)
     # Opacity is a rendering attribute, not a propagated physical field.
@@ -69,7 +70,7 @@ def density_display_alpha(density, floor=1.0e-3, transition_decades=1.0):
     return np.clip(opacity, 0.0, 1.0)
 
 
-def density_weighted_shift(values, density, floor=1.0e-3):
+def density_weighted_shift(values, density, floor=1.0e-4):
     """Remove one smoothly weighted scalar offset on occupied support."""
     values = np.asarray(values, float)
     density = np.maximum(np.asarray(density, float), 0.0)
