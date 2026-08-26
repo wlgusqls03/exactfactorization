@@ -11,6 +11,7 @@ from multi_component_exact_factorization_gpu.gpu_core import cp
 
 
 _POTENTIAL_PHASE_KERNEL = None
+_COMPLEX_INNER_PRODUCT_KERNEL = None
 
 
 def _potential_phase_kernel():
@@ -48,6 +49,76 @@ def apply_real_diagonal_phase_inplace(values, diagonal, tau):
         ((size+threads-1)//threads,), (threads,),
         (values, diagonal, np.float64(tau), np.int64(size)),
     )
+
+
+def _complex_inner_product_kernel():
+    global _COMPLEX_INNER_PRODUCT_KERNEL
+    if _COMPLEX_INNER_PRODUCT_KERNEL is None:
+        _COMPLEX_INNER_PRODUCT_KERNEL = cp.RawKernel(r'''\
+extern "C" __global__ void mcef_complex_inner_product_blocks(
+    const double2* left, const double2* right, double2* partial,
+    const long long size
+) {
+    extern __shared__ double2 scratch[];
+    const long long index =
+        (long long)blockDim.x*blockIdx.x+threadIdx.x;
+    const long long stride = (long long)blockDim.x*gridDim.x;
+    double real_sum = 0.0;
+    double imag_sum = 0.0;
+    for (long long item = index; item < size; item += stride) {
+        const double2 a = left[item];
+        const double2 b = right[item];
+        // conj(a)*b
+        real_sum += a.x*b.x+a.y*b.y;
+        imag_sum += a.x*b.y-a.y*b.x;
+    }
+    scratch[threadIdx.x] = make_double2(real_sum, imag_sum);
+    __syncthreads();
+    for (unsigned int offset = blockDim.x/2; offset > 0; offset >>= 1) {
+        if (threadIdx.x < offset) {
+            scratch[threadIdx.x].x += scratch[threadIdx.x+offset].x;
+            scratch[threadIdx.x].y += scratch[threadIdx.x+offset].y;
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) partial[blockIdx.x] = scratch[0];
+}
+''', "mcef_complex_inner_product_blocks")
+    return _COMPLEX_INNER_PRODUCT_KERNEL
+
+
+def complex_inner_product_gpu(left, right, *, max_blocks=4096):
+    """Return ``sum(conj(left)*right)`` without a full-size temporary.
+
+    CuPy 11.6 implements ``vdot`` through ``tensordot_core`` and can
+    materialize an elementwise complex product.  On the production full-grid
+    TDSE shape that temporary alone is 2.146 GiB.  This two-level reduction
+    stores only at most ``max_blocks`` complex partial sums while retaining
+    complex128 arithmetic.
+    """
+    if left.dtype != cp.complex128 or right.dtype != cp.complex128:
+        raise TypeError("spectral TDSE inner product requires complex128")
+    if left.shape != right.shape:
+        raise ValueError("spectral TDSE inner-product shapes must match")
+    if not left.flags.c_contiguous or not right.flags.c_contiguous:
+        raise ValueError("spectral TDSE inner-product arrays must be contiguous")
+    size = int(left.size)
+    if size == 0:
+        return cp.asarray(0.0+0.0j, dtype=cp.complex128)
+    threads = 256
+    blocks = min(
+        max(1, int(max_blocks)),
+        max(1, (size+threads-1)//threads),
+    )
+    partial = cp.empty(blocks, dtype=cp.complex128)
+    _complex_inner_product_kernel()(
+        (blocks,), (threads,),
+        (left, right, partial, np.int64(size)),
+        shared_mem=threads*np.dtype(np.complex128).itemsize,
+    )
+    # This last reduction contains at most a few thousand values, not a
+    # wavefunction-sized elementwise product.
+    return cp.sum(partial, dtype=cp.complex128)
 
 
 def _dst1_ortho(values):

@@ -41,7 +41,7 @@ from .gpu_core import (
     make_discrete_gpu_model,
 )
 from .checkpoint import load_checkpoint, write_checkpoint_atomic
-from .spectral_tdse import SpectralTDSEGPU
+from .spectral_tdse import SpectralTDSEGPU, complex_inner_product_gpu
 
 
 def _normalized_problem(model, states, seed):
@@ -204,14 +204,27 @@ def run(args):
     )
     print(f"  one-step norm error={norm_error:.6e}")
     expected_action = spectral_action_numpy(psi, model)
-    actual_action = cp.asnumpy(split_solver.action(
-        cp.ascontiguousarray(cp.asarray(psi, dtype=cp.complex128))
-    ))
+    action_input_gpu = cp.ascontiguousarray(
+        cp.asarray(psi, dtype=cp.complex128)
+    )
+    actual_action_gpu = split_solver.action(action_input_gpu)
+    actual_action = cp.asnumpy(actual_action_gpu)
     absolute, relative = _relative_error(expected_action, actual_action)
     worst = max(worst, relative)
     print(
         f"  H_spectral Psi: max_abs={absolute:.6e}, "
         f"max_relative={relative:.6e}"
+    )
+    expected_inner = np.vdot(psi, expected_action)
+    actual_inner = complex(
+        complex_inner_product_gpu(action_input_gpu, actual_action_gpu).get()
+    )
+    inner_scale = max(abs(expected_inner), 1.0)
+    inner_relative = abs(actual_inner-expected_inner)/inner_scale
+    worst = max(worst, inner_relative)
+    print(
+        "  bounded <Psi|H|Psi> reduction: "
+        f"relative={inner_relative:.6e}"
     )
     expected_energy = spectral_energy_numpy(psi, model)
     actual_energy_gpu = split_solver.energy(

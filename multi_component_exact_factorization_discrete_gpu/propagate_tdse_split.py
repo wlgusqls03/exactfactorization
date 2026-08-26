@@ -21,6 +21,7 @@ from multi_component_exact_factorization_gpu.gpu_core import cp
 
 from .spectral_tdse import (
     SpectralTDSEGPU,
+    complex_inner_product_gpu,
     initialize_full_wavefunction_gpu,
     project_full_wavefunction_to_bo,
 )
@@ -176,11 +177,10 @@ def run_split_operator(args, cpu_model, outdir: Path):
         )
         coefficient_stage[frame_index] = y
         full_action = solver.action(wavefunction)
-        # BLAS dotc performs the conjugation and reduction directly.  The
-        # previous elementwise expression allocated conj(Psi) and their
-        # product (2*Psi.nbytes), which OOMed an 11-GiB RTX 2080 Ti at the
-        # production (300,600,800) grid before the first time step.
-        action_expectation = cp.vdot(
+        # CuPy 11.6 vdot uses tensordot_core and materializes a full complex
+        # product on this server.  The bounded custom reduction stores only
+        # <=4096 complex partial sums instead of another 2.146-GiB array.
+        action_expectation = complex_inner_product_gpu(
             wavefunction, full_action
         )*cpu_model.dx*cpu_model.dq*cpu_model.dR
         action_y = project_full_wavefunction_to_bo(
@@ -276,7 +276,7 @@ def run_split_operator(args, cpu_model, outdir: Path):
                     failure = f"step {step}: non-finite full TDSE wavefunction"
                     print(f"전파 중단: {failure}")
                     break
-                norm = cp.real(cp.vdot(
+                norm = cp.real(complex_inner_product_gpu(
                     wavefunction, wavefunction
                 ))*cpu_model.dx*cpu_model.dq*cpu_model.dR
                 drift = _scalar(cp.abs(norm-1.0))
