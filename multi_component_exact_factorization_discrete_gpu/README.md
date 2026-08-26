@@ -175,6 +175,16 @@ periodic endpoint-free grids.  Thus the TDSE uses continuum spectral kinetic
 eigenvalues and no five-point stencil.  The continuous/discrete coupled MCEF
 solvers deliberately retain their existing five-point/RK implementations.
 
+The optimized spectral path preserves the same product exactly while reducing
+GPU traffic.  Because `T_q` and `T_R` commute, their phases are applied in one
+blocked two-dimensional FFT (`--tdse-nuclear-fft-mode joint`).  Consecutive
+ending/starting half potential kicks are evaluated as one full kick between
+saved physical frames.  Saved-frame `H Psi` and Parseval energy components
+share the same transformed blocks.  These optimizations retain complex128,
+the same grid, and second-order Strang mathematics.  For controlled fallback
+tests use `--tdse-nuclear-fft-mode separate` and
+`--no-tdse-merge-potential-kicks`.
+
 The requested BO states are used only to create the initial local BO state and
 to project saved frames into the compact archive expected by the existing
 positive-density-gauge postprocessor.  They do not truncate TDSE propagation.
@@ -187,6 +197,17 @@ propagated full-grid trajectory.
 Each archive reports `bo_truncation_loss`; it must remain converged as the
 analysis BO count is increased.  `--tdse-propagator bo_rk4` retains the old
 BO-link/RK4 reference for controlled legacy comparisons.
+
+For example, the preserved finite five-point BO-link TDSE is selected with:
+
+```bash
+python -m multi_component_exact_factorization_discrete_gpu.propagate_tdse \
+  --tdse-propagator bo_rk4 \
+  --bo-link-kernel fused \
+  --bo-states 10 \
+  --dt-au 0.025 \
+  ...
+```
 
 Run a short smoke test first:
 

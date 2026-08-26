@@ -91,10 +91,18 @@ def run_split_operator(args, cpu_model, outdir: Path):
         q_block_R=args.tdse_q_fft_R_block,
         R_block_x=args.tdse_R_fft_x_block,
         x_block_R=args.tdse_x_dst_R_block,
+        nuclear_fft_mode=args.tdse_nuclear_fft_mode,
     )
     print(
         f"dynamic full-grid array: Psi={wavefunction.shape}, "
         f"{wavefunction.nbytes/1024**3:.3f} GiB complex128"
+    )
+    print(
+        "spectral GPU optimization: "
+        f"nuclear FFT={args.tdse_nuclear_fft_mode}; "
+        "saved H*Psi/energy transforms=fused; "
+        "adjacent potential half-kicks="
+        f"{'merged' if args.tdse_merge_potential_kicks else 'separate'}"
     )
 
     n_steps = int(round(args.t_final_fs*AU_PER_FS/args.dt_au))
@@ -152,16 +160,15 @@ def run_split_operator(args, cpu_model, outdir: Path):
     )
 
     def save(step, frame_index):
-        energies = solver.energy(wavefunction)
-        # Energy uses three temporary transform families.  Release their
-        # unused cached blocks before allocating densities and H Psi.
-        cp.get_default_memory_pool().free_all_blocks()
-        norm = _scalar(energies["norm"])
         # ``conj(Psi)*Psi`` creates two full complex128 temporaries.  A
         # complex absolute-value ufunc followed by an in-place square needs
         # only one full float64 density array (half the bytes of Psi).
         density = cp.abs(wavefunction)
         cp.square(density, out=density)
+        norm_gpu = cp.sum(
+            density, dtype=cp.float64
+        )*cpu_model.dx*cpu_model.dq*cpu_model.dR
+        norm = _scalar(norm_gpu)
         joint = cp.sum(density, axis=0, dtype=cp.float64)*cpu_model.dx/norm
         q_density = cp.sum(joint, axis=1, dtype=cp.float64)*cpu_model.dR
         R_density = cp.sum(joint, axis=0, dtype=cp.float64)*cpu_model.dq
@@ -170,13 +177,21 @@ def run_split_operator(args, cpu_model, outdir: Path):
             electron_density = cp.sum(
                 density, axis=(1, 2), dtype=cp.float64
             )*cpu_model.dq*cpu_model.dR/norm
+        # Reuse the full real density buffer once more before releasing it.
+        cp.multiply(density, solver.potential, out=density)
+        potential_energy_gpu = cp.sum(
+            density, dtype=cp.float64
+        )*cpu_model.dx*cpu_model.dq*cpu_model.dR
         del density
         y = project_full_wavefunction_to_bo(
             wavefunction, basis.states, cpu_model.dx,
             block_R=args.tdse_projection_R_block,
         )
         coefficient_stage[frame_index] = y
-        full_action = solver.action(wavefunction)
+        full_action, energies = solver.action_and_energy(
+            wavefunction, norm=norm_gpu,
+            potential_energy=potential_energy_gpu,
+        )
         # CuPy 11.6 vdot uses tensordot_core and materializes a full complex
         # product on this server.  The bounded custom reduction stores only
         # <=4096 complex partial sums instead of another 2.146-GiB array.
@@ -254,8 +269,15 @@ def run_split_operator(args, cpu_model, outdir: Path):
         coefficient_stage.flush()
         action_stage.flush()
 
+    def timed_save(step, frame_index):
+        cp.cuda.get_current_stream().synchronize()
+        save_started = time.perf_counter()
+        save(step, frame_index)
+        cp.cuda.get_current_stream().synchronize()
+        return time.perf_counter()-save_started
+
     saved_frames = 0
-    save(0, saved_frames)
+    initial_save_seconds = timed_save(0, saved_frames)
     saved_frames += 1
     next_frame = 1
     last_completed_step = 0
@@ -263,13 +285,29 @@ def run_split_operator(args, cpu_model, outdir: Path):
     attempted = 0
     throttle_sleep_seconds = 0.0
     throttled_steps = 0
+    save_analysis_seconds = 0.0
     started = time.perf_counter()
+    staggered = False
     try:
+        if args.tdse_merge_potential_kicks and n_steps:
+            solver.stage_for_next_step(wavefunction, args.dt_au)
+            staggered = True
         for step in range(1, n_steps+1):
             attempted = step
-            solver.step(wavefunction, args.dt_au)
+            will_save = (
+                next_frame < len(save_steps)
+                and step == save_steps[next_frame]
+            )
+            if args.tdse_merge_potential_kicks:
+                solver.advance_staggered(
+                    wavefunction, args.dt_au,
+                    return_physical=will_save or step == n_steps,
+                )
+                staggered = not (will_save or step == n_steps)
+            else:
+                solver.step(wavefunction, args.dt_au)
+                staggered = False
             last_completed_step = step
-            will_save = next_frame < len(save_steps) and step == save_steps[next_frame]
             must_check = step % args.check_every == 0 or will_save or step == n_steps
             if must_check:
                 if not bool(cp.all(cp.isfinite(wavefunction)).get()):
@@ -286,14 +324,26 @@ def run_split_operator(args, cpu_model, outdir: Path):
                         f"{args.max_norm_drift:.3e}"
                     )
                     print(f"전파 중단: {failure}")
-                    if not will_save:
-                        save(step, saved_frames)
-                        saved_frames += 1
+                    if staggered:
+                        solver.unstage_completed_step(
+                            wavefunction, args.dt_au
+                        )
+                        staggered = False
+                    save_analysis_seconds += timed_save(
+                        step, saved_frames
+                    )
+                    saved_frames += 1
                     break
             if will_save:
-                save(step, saved_frames)
+                save_analysis_seconds += timed_save(step, saved_frames)
                 saved_frames += 1
                 next_frame += 1
+            if (
+                args.tdse_merge_potential_kicks
+                and not staggered and step < n_steps
+            ):
+                solver.stage_for_next_step(wavefunction, args.dt_au)
+                staggered = True
             if step % args.progress_every == 0 or step == n_steps:
                 print(
                     f"spectral TDSE step {step:7d}/{n_steps}  "
@@ -348,6 +398,12 @@ def run_split_operator(args, cpu_model, outdir: Path):
         step_sleep_ms=np.array(args.step_sleep_ms),
         throttle_sleep_seconds=np.array(throttle_sleep_seconds),
         throttled_steps=np.array(throttled_steps),
+        spectral_nuclear_fft_mode=np.array(args.tdse_nuclear_fft_mode),
+        spectral_merged_potential_kicks=np.array(
+            args.tdse_merge_potential_kicks
+        ),
+        initial_save_analysis_seconds=np.array(initial_save_seconds),
+        propagation_save_analysis_seconds=np.array(save_analysis_seconds),
         failure_reason=np.array(failure), wall_seconds=np.array(wall_seconds),
         args=np.array([vars(args)], dtype=object),
     )
@@ -384,6 +440,20 @@ def run_split_operator(args, cpu_model, outdir: Path):
         print(
             f"의도적 GPU 휴식={throttle_sleep_seconds:.3f} s/"
             f"{throttled_steps} steps"
+        )
+    non_save_wall = max(
+        0.0, wall_seconds-save_analysis_seconds-throttle_sleep_seconds
+    )
+    print(
+        "timing decomposition: "
+        f"initial analysis={initial_save_seconds:.3f} s (wall 제외), "
+        f"saved-frame analysis={save_analysis_seconds:.3f} s, "
+        f"propagation/check={non_save_wall:.3f} s"
+    )
+    if last_completed_step:
+        print(
+            "  propagation/check average excluding save/sleep: "
+            f"{non_save_wall/last_completed_step:.6f} s/step"
         )
     print("Full spectral TDSE 핵심 진단:")
     print(f"  max |norm-1|: {np.max(np.abs(payload['norm']-1.0)):.3e}")

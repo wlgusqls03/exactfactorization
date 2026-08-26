@@ -125,7 +125,11 @@ def _dst1_ortho(values):
     """Complex orthonormal DST-I through an odd-extension complex FFT."""
     length = int(values.shape[0])
     shape = (2*(length+1),)+values.shape[1:]
-    extension = cp.zeros(shape, dtype=cp.complex128)
+    # Every non-boundary element is overwritten below.  Initializing only the
+    # two zero planes avoids a full odd-extension-sized memset per transform.
+    extension = cp.empty(shape, dtype=cp.complex128)
+    extension[0] = 0.0
+    extension[length+1] = 0.0
     extension[1:length+1] = values
     extension[length+2:] = -values[::-1]
     transformed = cp.fft.fft(extension, axis=0)
@@ -142,7 +146,10 @@ class SpectralTDSEGPU:
     of allocating several full 3D FFT temporaries.
     """
 
-    def __init__(self, cpu_model, *, q_block_R=8, R_block_x=8, x_block_R=4):
+    def __init__(
+        self, cpu_model, *, q_block_R=8, R_block_x=8, x_block_R=4,
+        nuclear_fft_mode="joint",
+    ):
         self.model = cpu_model
         self.potential = cp.ascontiguousarray(
             cp.asarray(cpu_model.potential, dtype=cp.float64)
@@ -151,9 +158,15 @@ class SpectralTDSEGPU:
         self.kinetic_x = cp.asarray(tx, dtype=cp.float64)
         self.kinetic_q = cp.asarray(tq, dtype=cp.float64)
         self.kinetic_R = cp.asarray(tR, dtype=cp.float64)
+        self.kinetic_nuclear = cp.ascontiguousarray(
+            self.kinetic_q[:, None]+self.kinetic_R[None, :]
+        )
         self.q_block_R = max(1, int(q_block_R))
         self.R_block_x = max(1, int(R_block_x))
         self.x_block_R = max(1, int(x_block_R))
+        if nuclear_fft_mode not in ("joint", "separate"):
+            raise ValueError("nuclear_fft_mode must be 'joint' or 'separate'")
+        self.nuclear_fft_mode = nuclear_fft_mode
         self._phase_cache = {}
 
     def _phase(self, axis, tau):
@@ -185,39 +198,85 @@ class SpectralTDSEGPU:
             wavefunction[:, :, start:stop] = recovered
             del transformed, recovered
 
-        # Existing q/R arrays are periodic endpoint=False grids, so FFT
-        # modes are the exact spectral representation for those grids.
-        q_phase = self._phase("q", tau)[None, :, None]
-        for start in range(0, nR, self.q_block_R):
-            stop = min(start+self.q_block_R, nR)
-            transformed = cp.fft.fft(
-                wavefunction[:, :, start:stop], axis=1, norm="ortho"
-            )
-            cp.multiply(transformed, q_phase, out=transformed)
-            recovered = cp.fft.ifft(transformed, axis=1, norm="ortho")
-            wavefunction[:, :, start:stop] = recovered
-            del transformed, recovered
+        # Existing q/R arrays are periodic endpoint=False grids.  Since T_q
+        # and T_R commute, one joint 2D transform applies exactly the same
+        # exp[-i*(T_q+T_R)*tau] while avoiding a second global transform pass.
+        if self.nuclear_fft_mode == "joint":
+            q_phase = self._phase("q", tau)[None, :, None]
+            R_phase = self._phase("R", tau)[None, None, :]
+            for start in range(0, nx, self.R_block_x):
+                stop = min(start+self.R_block_x, nx)
+                transformed = cp.fft.fftn(
+                    wavefunction[start:stop], axes=(1, 2), norm="ortho"
+                )
+                cp.multiply(transformed, q_phase, out=transformed)
+                cp.multiply(transformed, R_phase, out=transformed)
+                recovered = cp.fft.ifftn(
+                    transformed, axes=(1, 2), norm="ortho"
+                )
+                wavefunction[start:stop] = recovered
+                del transformed, recovered
+        else:
+            q_phase = self._phase("q", tau)[None, :, None]
+            for start in range(0, nR, self.q_block_R):
+                stop = min(start+self.q_block_R, nR)
+                transformed = cp.fft.fft(
+                    wavefunction[:, :, start:stop], axis=1, norm="ortho"
+                )
+                cp.multiply(transformed, q_phase, out=transformed)
+                recovered = cp.fft.ifft(
+                    transformed, axis=1, norm="ortho"
+                )
+                wavefunction[:, :, start:stop] = recovered
+                del transformed, recovered
 
-        R_phase = self._phase("R", tau)[None, None, :]
-        for start in range(0, nx, self.R_block_x):
-            stop = min(start+self.R_block_x, nx)
-            transformed = cp.fft.fft(
-                wavefunction[start:stop], axis=2, norm="ortho"
-            )
-            cp.multiply(transformed, R_phase, out=transformed)
-            recovered = cp.fft.ifft(transformed, axis=2, norm="ortho")
-            wavefunction[start:stop] = recovered
-            del transformed, recovered
+            R_phase = self._phase("R", tau)[None, None, :]
+            for start in range(0, nx, self.R_block_x):
+                stop = min(start+self.R_block_x, nx)
+                transformed = cp.fft.fft(
+                    wavefunction[start:stop], axis=2, norm="ortho"
+                )
+                cp.multiply(transformed, R_phase, out=transformed)
+                recovered = cp.fft.ifft(
+                    transformed, axis=2, norm="ortho"
+                )
+                wavefunction[start:stop] = recovered
+                del transformed, recovered
+
+    def apply_potential_inplace(self, wavefunction, tau):
+        """Apply the fixed diagonal potential phase in place."""
+        apply_real_diagonal_phase_inplace(
+            wavefunction, self.potential, tau
+        )
+
+    def stage_for_next_step(self, wavefunction, dt):
+        """Store ``exp(-i V dt/2) Psi`` between consecutive steps."""
+        self.apply_potential_inplace(wavefunction, 0.5*dt)
+        return wavefunction
+
+    def advance_staggered(self, wavefunction, dt, *, return_physical):
+        """Advance a half-potential-staged state by one exact split step.
+
+        If ``return_physical`` is false, the ending half kick and the next
+        starting half kick are evaluated once as ``exp(-i V dt)``.  If true,
+        the returned array is the ordinary completed-step wavefunction.
+        """
+        self.apply_kinetic_inplace(wavefunction, dt)
+        self.apply_potential_inplace(
+            wavefunction, (0.5 if return_physical else 1.0)*dt
+        )
+        return wavefunction
+
+    def unstage_completed_step(self, wavefunction, dt):
+        """Convert ``exp(-i V dt/2) Psi_n`` back to physical ``Psi_n``."""
+        self.apply_potential_inplace(wavefunction, -0.5*dt)
+        return wavefunction
 
     def step(self, wavefunction, dt):
         """In-place ``V/2 -> T -> V/2`` Strang split step."""
-        apply_real_diagonal_phase_inplace(
-            wavefunction, self.potential, 0.5*dt
-        )
+        self.apply_potential_inplace(wavefunction, 0.5*dt)
         self.apply_kinetic_inplace(wavefunction, dt)
-        apply_real_diagonal_phase_inplace(
-            wavefunction, self.potential, 0.5*dt
-        )
+        self.apply_potential_inplace(wavefunction, 0.5*dt)
         return wavefunction
 
     def energy(self, wavefunction):
@@ -269,42 +328,119 @@ class SpectralTDSEGPU:
             "energy": tx+tq+tR+potential,
         }
 
-    def action(self, wavefunction):
-        """Return the instantaneous full spectral ``H Psi``."""
+    def action_and_energy(
+        self, wavefunction, *, norm=None, potential_energy=None,
+    ):
+        """Return ``H Psi`` and its Parseval decomposition in one pass.
+
+        A saved frame needs both quantities.  Accumulating kinetic energies
+        from the same transformed blocks used to construct ``H Psi`` avoids
+        the three redundant forward transforms previously done by
+        ``energy()`` before ``action()``.
+        """
+        model = self.model
+        cell = model.dx*model.dq*model.dR
+        if norm is None or potential_energy is None:
+            density = cp.abs(wavefunction)
+            cp.square(density, out=density)
+            norm = cp.sum(density, dtype=cp.float64)*cell
+            cp.multiply(density, self.potential, out=density)
+            potential = cp.sum(density, dtype=cp.float64)*cell
+            del density
+        else:
+            potential = potential_energy
+
         action = self.potential*wavefunction
+        tx = cp.asarray(0.0, dtype=cp.float64)
+        tq = cp.asarray(0.0, dtype=cp.float64)
+        tR = cp.asarray(0.0, dtype=cp.float64)
         nx, _, nR = wavefunction.shape
         for start in range(0, nR, self.x_block_R):
             stop = min(start+self.x_block_R, nR)
             modes = _dst1_ortho(wavefunction[:, :, start:stop])
+            power = cp.abs(modes)
+            cp.square(power, out=power)
+            cp.multiply(
+                power, self.kinetic_x[:, None, None], out=power
+            )
+            tx += cp.sum(power, dtype=cp.float64)*cell
+            del power
             cp.multiply(
                 modes, self.kinetic_x[:, None, None], out=modes
             )
             action[:, :, start:stop] += _dst1_ortho(modes)
-        for start in range(0, nR, self.q_block_R):
-            stop = min(start+self.q_block_R, nR)
-            modes = cp.fft.fft(
-                wavefunction[:, :, start:stop], axis=1, norm="ortho"
-            )
-            cp.multiply(
-                modes, self.kinetic_q[None, :, None], out=modes
-            )
-            action[:, :, start:stop] += cp.fft.ifft(
-                modes, axis=1, norm="ortho"
-            )
-        for start in range(0, nx, self.R_block_x):
-            stop = min(start+self.R_block_x, nx)
-            modes = cp.fft.fft(
-                wavefunction[start:stop], axis=2, norm="ortho"
-            )
-            cp.multiply(
-                modes, self.kinetic_R[None, None, :], out=modes
-            )
-            action[start:stop] += cp.fft.ifft(
-                modes, axis=2, norm="ortho"
-            )
+
+        if self.nuclear_fft_mode == "joint":
+            for start in range(0, nx, self.R_block_x):
+                stop = min(start+self.R_block_x, nx)
+                modes = cp.fft.fftn(
+                    wavefunction[start:stop], axes=(1, 2), norm="ortho"
+                )
+                power = cp.abs(modes)
+                cp.square(power, out=power)
+                tq += cp.sum(
+                    power*self.kinetic_q[None, :, None], dtype=cp.float64
+                )*cell
+                tR += cp.sum(
+                    power*self.kinetic_R[None, None, :], dtype=cp.float64
+                )*cell
+                del power
+                cp.multiply(
+                    modes, self.kinetic_nuclear[None, :, :], out=modes
+                )
+                action[start:stop] += cp.fft.ifftn(
+                    modes, axes=(1, 2), norm="ortho"
+                )
+        else:
+            for start in range(0, nR, self.q_block_R):
+                stop = min(start+self.q_block_R, nR)
+                modes = cp.fft.fft(
+                    wavefunction[:, :, start:stop], axis=1, norm="ortho"
+                )
+                power = cp.abs(modes)
+                cp.square(power, out=power)
+                cp.multiply(
+                    power, self.kinetic_q[None, :, None], out=power
+                )
+                tq += cp.sum(power, dtype=cp.float64)*cell
+                del power
+                cp.multiply(
+                    modes, self.kinetic_q[None, :, None], out=modes
+                )
+                action[:, :, start:stop] += cp.fft.ifft(
+                    modes, axis=1, norm="ortho"
+                )
+            for start in range(0, nx, self.R_block_x):
+                stop = min(start+self.R_block_x, nx)
+                modes = cp.fft.fft(
+                    wavefunction[start:stop], axis=2, norm="ortho"
+                )
+                power = cp.abs(modes)
+                cp.square(power, out=power)
+                cp.multiply(
+                    power, self.kinetic_R[None, None, :], out=power
+                )
+                tR += cp.sum(power, dtype=cp.float64)*cell
+                del power
+                cp.multiply(
+                    modes, self.kinetic_R[None, None, :], out=modes
+                )
+                action[start:stop] += cp.fft.ifft(
+                    modes, axis=2, norm="ortho"
+                )
         del modes
         # ``action`` is constructed C-contiguous above; avoid even a
         # defensive full-grid copy at this peak-memory point.
+        energies = {
+            "norm": norm, "kinetic_x": tx, "kinetic_q": tq,
+            "kinetic_R": tR, "potential": potential,
+            "energy": tx+tq+tR+potential,
+        }
+        return action, energies
+
+    def action(self, wavefunction):
+        """Return the instantaneous full spectral ``H Psi``."""
+        action, _ = self.action_and_energy(wavefunction)
         return action
 
 

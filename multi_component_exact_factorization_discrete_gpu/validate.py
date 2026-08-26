@@ -203,11 +203,50 @@ def run(args):
         f"max_relative={relative:.6e}"
     )
     print(f"  one-step norm error={norm_error:.6e}")
+    separate_solver = SpectralTDSEGPU(
+        model, q_block_R=3, R_block_x=4, x_block_R=2,
+        nuclear_fft_mode="separate",
+    )
+    separate_gpu = cp.ascontiguousarray(
+        cp.asarray(psi, dtype=cp.complex128)
+    )
+    separate_solver.step(separate_gpu, args.step_dt)
+    absolute, separate_relative = _relative_error(
+        expected_split, cp.asnumpy(separate_gpu)
+    )
+    worst = max(worst, separate_relative)
+    print(
+        "  separate nuclear FFT fallback: "
+        f"max_relative={separate_relative:.6e}"
+    )
+    expected_two_steps = split_step_numpy(
+        expected_split, args.step_dt, model
+    )
+    staggered_gpu = cp.ascontiguousarray(
+        cp.asarray(psi, dtype=cp.complex128)
+    )
+    split_solver.stage_for_next_step(staggered_gpu, args.step_dt)
+    split_solver.advance_staggered(
+        staggered_gpu, args.step_dt, return_physical=False
+    )
+    split_solver.advance_staggered(
+        staggered_gpu, args.step_dt, return_physical=True
+    )
+    absolute, staggered_relative = _relative_error(
+        expected_two_steps, cp.asnumpy(staggered_gpu)
+    )
+    worst = max(worst, staggered_relative)
+    print(
+        "  merged adjacent potential half-kicks: "
+        f"max_relative={staggered_relative:.6e}"
+    )
     expected_action = spectral_action_numpy(psi, model)
     action_input_gpu = cp.ascontiguousarray(
         cp.asarray(psi, dtype=cp.complex128)
     )
-    actual_action_gpu = split_solver.action(action_input_gpu)
+    actual_action_gpu, fused_energy_gpu = split_solver.action_and_energy(
+        action_input_gpu
+    )
     actual_action = cp.asnumpy(actual_action_gpu)
     absolute, relative = _relative_error(expected_action, actual_action)
     worst = max(worst, relative)
@@ -231,16 +270,24 @@ def run(args):
         cp.ascontiguousarray(cp.asarray(psi, dtype=cp.complex128))
     )
     energy_errors = []
+    fused_energy_errors = []
     for name in (
         "norm", "kinetic_x", "kinetic_q", "kinetic_R",
         "potential", "energy",
     ):
         actual = float(actual_energy_gpu[name].get())
+        fused = float(fused_energy_gpu[name].get())
         scale = max(abs(expected_energy[name]), 1.0)
         energy_errors.append(abs(actual-expected_energy[name])/scale)
+        fused_energy_errors.append(abs(fused-expected_energy[name])/scale)
     energy_relative = max(energy_errors)
-    worst = max(worst, energy_relative)
+    fused_energy_relative = max(fused_energy_errors)
+    worst = max(worst, energy_relative, fused_energy_relative)
     print(f"  spectral energy: max_relative={energy_relative:.6e}")
+    print(
+        "  fused H_spectral Psi/energy: "
+        f"max_relative={fused_energy_relative:.6e}"
+    )
     print("[checkpoint round-trip + resumed RK4 step]")
     fused_step = stepped["fused"]
     checkpoint_metadata = {

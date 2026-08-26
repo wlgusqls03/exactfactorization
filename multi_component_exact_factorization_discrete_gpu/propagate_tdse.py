@@ -421,6 +421,20 @@ def parse_args(argv=None):
     parser.add_argument("--tdse-q-fft-R-block", type=int, default=64)
     parser.add_argument("--tdse-R-fft-x-block", type=int, default=32)
     parser.add_argument("--tdse-x-dst-R-block", type=int, default=64)
+    parser.add_argument(
+        "--tdse-nuclear-fft-mode", choices=("joint", "separate"),
+        default="joint",
+        help=(
+            "joint: commuting q/R kinetics를 한 2D FFT로 적용 (기본); "
+            "separate: 기존 q와 R 1D FFT 경로"
+        ),
+    )
+    parser.set_defaults(tdse_merge_potential_kicks=True)
+    parser.add_argument(
+        "--no-tdse-merge-potential-kicks", action="store_false",
+        dest="tdse_merge_potential_kicks",
+        help="연속 Strang step 사이의 V/2 phase 결합을 끄고 기존 경로 사용",
+    )
     add_model_arguments(parser)
     args = parser.parse_args(argv)
     if args.dt_au <= 0.0 or args.t_final_fs < 0.0:
