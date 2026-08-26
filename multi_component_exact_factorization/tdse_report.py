@@ -650,6 +650,201 @@ def make_dynamics_animation(obs, outdir, fps, max_frames, dpi, fmt):
     return _save_animation(animation, fig, outdir, "tdse_dynamics_overview", fps, dpi, fmt)
 
 
+def make_bo_surface_dynamics_animation(
+    obs, ef, outdir, fps, max_frames, dpi, fmt, *, surface_count=7,
+):
+    """Animate BO surfaces, channel wavepackets and population transfer.
+
+    The q/R surface panels are instantaneous cuts through the maximum of the
+    physical joint nuclear density.  Solid curves are raw BO energies and
+    dashed curves on the secondary axes are raw state-resolved marginal
+    densities; neither quantity is normalized per frame.
+    """
+    required = ("bo_state_density_q", "bo_state_density_R")
+    energies = obs.get("bo_energies")
+    if energies is None or any(key not in ef for key in required):
+        print(
+            "TDSE BO-surface dynamics 영상 생략: BO energies 또는 "
+            "state-resolved density가 없습니다. postprocess_tdse_ef를 "
+            "먼저 실행하세요."
+        )
+        return None
+    energies = np.asarray(energies, float)
+    density_q = np.asarray(ef["bo_state_density_q"], float)
+    density_R = np.asarray(ef["bo_state_density_R"], float)
+    populations = np.asarray(obs["bo_populations"], float)
+    n_states = min(
+        max(1, int(surface_count)), energies.shape[0],
+        density_q.shape[1], density_R.shape[1], populations.shape[1],
+    )
+    times, q, R = obs["times_fs"], obs["q"], obs["R"]
+    frames = selected_frames(len(times), min(max_frames, len(times)))
+    peak_indices = [
+        np.unravel_index(
+            int(np.argmax(obs["joint_density"][int(frame)])),
+            obs["joint_density"][int(frame)].shape,
+        )
+        for frame in frames
+    ]
+
+    def energy_limits(coordinate):
+        samples = []
+        for (_, (iq, iR)) in zip(frames, peak_indices):
+            current = energies[:n_states, :, iR] if coordinate == "q" else (
+                energies[:n_states, iq, :]
+            )
+            finite = current[np.isfinite(current)]
+            if finite.size:
+                samples.append(finite)
+        values = np.concatenate(samples) if samples else np.array([-1.0, 1.0])
+        lower, upper = np.nanpercentile(values, (1.0, 99.0))
+        span = max(float(upper-lower), 1.0e-3)
+        return float(lower-0.08*span), float(upper+0.08*span)
+
+    q_energy_limits = energy_limits("q")
+    R_energy_limits = energy_limits("R")
+    q_density_max = max(
+        float(np.nanmax(density_q[:, :n_states])), 1.0e-14
+    )
+    R_density_max = max(
+        float(np.nanmax(density_R[:, :n_states])), 1.0e-14
+    )
+    first = int(frames[0])
+    first_iq, first_iR = peak_indices[0]
+    fig, axes = plt.subplots(2, 2, figsize=(15.2, 9.2), constrained_layout=True)
+    q_axis, R_axis, joint_axis, population_axis = axes.flat
+    q_density_axis = q_axis.twinx()
+    R_density_axis = R_axis.twinx()
+    q_energy_lines, q_density_lines = [], []
+    R_energy_lines, R_density_lines = [], []
+    for state in range(n_states):
+        color = COLORS[state % len(COLORS)]
+        q_energy_line, = q_axis.plot(
+            q, energies[state, :, first_iR], color=color, lw=1.45,
+            label=rf"$E_{state}$",
+        )
+        q_density_line, = q_density_axis.plot(
+            q, density_q[first, state], color=color, lw=1.05,
+            ls="--", alpha=0.72,
+        )
+        R_energy_line, = R_axis.plot(
+            R, energies[state, first_iq, :], color=color, lw=1.45,
+            label=rf"$E_{state}$",
+        )
+        R_density_line, = R_density_axis.plot(
+            R, density_R[first, state], color=color, lw=1.05,
+            ls="--", alpha=0.72,
+        )
+        q_energy_lines.append(q_energy_line)
+        q_density_lines.append(q_density_line)
+        R_energy_lines.append(R_energy_line)
+        R_density_lines.append(R_density_line)
+        population_axis.semilogy(
+            times, np.maximum(populations[:, state], 1.0e-16),
+            color=color, lw=1.55, label=rf"$P_{state}$",
+        )
+
+    q_axis.set(
+        xlabel=r"proton $q$ ($a_0$)", ylabel="BO energy (Hartree)",
+        xlim=(q[0], q[-1]), ylim=q_energy_limits,
+    )
+    R_axis.set(
+        xlabel=r"heavy $R$ ($a_0$)", ylabel="BO energy (Hartree)",
+        xlim=(R[0], R[-1]), ylim=R_energy_limits,
+    )
+    q_density_axis.set_ylim(0.0, 1.05*q_density_max)
+    R_density_axis.set_ylim(0.0, 1.05*R_density_max)
+    q_density_axis.set_ylabel(r"raw channel density $\rho_j^q$ (dashed)")
+    R_density_axis.set_ylabel(r"raw channel density $\rho_j^R$ (dashed)")
+    q_axis.legend(frameon=False, fontsize=7, ncol=min(4, n_states))
+    R_axis.legend(frameon=False, fontsize=7, ncol=min(4, n_states))
+    q_axis.set_title(
+        rf"BO cuts and channel packets | $R_{{peak}}={R[first_iR]:.3f}$",
+        loc="left", fontweight="semibold",
+    )
+    R_axis.set_title(
+        rf"BO cuts and channel packets | $q_{{peak}}={q[first_iq]:.3f}$",
+        loc="left", fontweight="semibold",
+    )
+    _style_axis(q_axis)
+    _style_axis(R_axis)
+
+    joint_image = joint_axis.imshow(
+        obs["joint_density"][first].T, origin="lower", aspect="auto",
+        interpolation="nearest", extent=[q[0], q[-1], R[0], R[-1]],
+        cmap=JOINT_CMAP, vmin=0.0, vmax=obs["joint_vmax"],
+    )
+    joint_peak, = joint_axis.plot(
+        q[first_iq], R[first_iR], "wo", ms=4.5, mec="0.15", mew=0.6,
+    )
+    joint_axis.set(
+        xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
+    )
+    joint_axis.set_title(
+        r"Physical joint density $\rho_{qR}$", loc="left",
+        fontweight="semibold",
+    )
+    fig.colorbar(
+        joint_image, ax=joint_axis, pad=0.01, format=NUMBER_FORMATTER,
+        label=r"density ($a_0^{-2}$)",
+    )
+    population_marker = population_axis.axvline(
+        times[first], color="black", lw=1.15,
+    )
+    population_axis.set(
+        xlabel="time (fs)", ylabel=r"$P_j(t)$ (log scale)",
+        xlim=(times[0], times[-1] if times[-1] > times[0] else times[0]+1.0),
+        ylim=(1.0e-14, max(1.05, 1.05*float(np.max(populations)))),
+    )
+    population_axis.set_title(
+        "BO-channel population transfer", loc="left",
+        fontweight="semibold",
+    )
+    population_axis.legend(
+        frameon=False, fontsize=7, ncol=min(4, n_states),
+    )
+    _style_axis(population_axis)
+    title = fig.suptitle("")
+
+    def update(number):
+        frame = int(frames[number])
+        iq, iR = peak_indices[number]
+        for state in range(n_states):
+            q_energy_lines[state].set_ydata(energies[state, :, iR])
+            q_density_lines[state].set_ydata(density_q[frame, state])
+            R_energy_lines[state].set_ydata(energies[state, iq, :])
+            R_density_lines[state].set_ydata(density_R[frame, state])
+        q_axis.set_title(
+            rf"BO cuts and channel packets | $R_{{peak}}={R[iR]:.3f}$",
+            loc="left", fontweight="semibold",
+        )
+        R_axis.set_title(
+            rf"BO cuts and channel packets | $q_{{peak}}={q[iq]:.3f}$",
+            loc="left", fontweight="semibold",
+        )
+        joint_image.set_data(obs["joint_density"][frame].T)
+        joint_peak.set_data([q[iq]], [R[iR]])
+        population_marker.set_xdata([times[frame], times[frame]])
+        dominant = int(np.argmax(populations[frame]))
+        title.set_text(
+            f"Full TDSE projected onto BO channels | t={times[frame]:.4f} fs | "
+            f"dominant state={dominant}, P={populations[frame, dominant]:.6f}\n"
+            "solid=raw BO energy cut; dashed=raw channel density; "
+            "fixed trajectory-wide axes"
+        )
+        return (
+            *q_energy_lines, *q_density_lines,
+            *R_energy_lines, *R_density_lines,
+            joint_image, joint_peak, population_marker, title,
+        )
+
+    update(0)
+    animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
+    return _save_animation(
+        animation, fig, outdir, "tdse_bo_surface_dynamics", fps, dpi, fmt
+    )
+
+
 def _load_ef_fields(obs):
     path = Path(obs["archive_path"]).parent/"tdse_exact_factorization_fields.npz"
     if not path.is_file():
@@ -1618,7 +1813,7 @@ def make_coordinate_focus_animations(
 
 def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
         max_frames=180, animation_dpi=110, fmt="mp4", snapshot_count=6,
-        marginal_ymax=1.5, marginal_xmax=12.0):
+        marginal_ymax=1.5, marginal_xmax=12.0, surface_count=7):
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     data = load_observables(archive)
@@ -1656,6 +1851,11 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
     if not no_animation:
         make_dynamics_animation(obs, outdir, fps, max_frames, animation_dpi, fmt)
         make_joint_log_animation(obs, outdir, fps, max_frames, animation_dpi, fmt)
+        if ef is not None:
+            make_bo_surface_dynamics_animation(
+                obs, ef, outdir, fps, max_frames, animation_dpi, fmt,
+                surface_count=surface_count,
+            )
         if obs["electron_density"] is not None and obs["x"] is not None:
             make_fixed_scale_marginal_animation(
                 times_fs=obs["times_fs"],

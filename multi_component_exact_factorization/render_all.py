@@ -182,6 +182,7 @@ def run(args):
             fmt=args.format, snapshot_count=snapshots,
             marginal_ymax=args.marginal_ymax,
             marginal_xmax=args.marginal_xmax,
+            surface_count=surface_count,
         )
         return
 

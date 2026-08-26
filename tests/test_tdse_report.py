@@ -30,6 +30,8 @@ class TDSEReportTests(unittest.TestCase):
             np.exp(-0.5*((x-0.1*time)/0.8)**2) for time in times
         ])
         electron /= np.sum(electron, axis=1)[:, None]*(x[1]-x[0])
+        state_density_q = populations[:, :, None]*proton[:, None, :]
+        state_density_R = populations[:, :, None]*heavy[:, None, :]
         archive = root/"multi_component_discrete_tdse_gpu.npz"
         np.savez_compressed(
             archive,
@@ -70,6 +72,8 @@ class TDSEReportTests(unittest.TestCase):
             sphi_q1=np.exp(1j*np.full(shape, 0.03*dq)),
             sphi_R1=np.exp(-1j*np.full(shape, 0.02*dR)),
             sgamma_R1=np.exp(1j*np.full((len(times), len(R)), 0.01*dR)),
+            bo_state_density_q=state_density_q,
+            bo_state_density_R=state_density_R,
             factorization_residual=np.zeros(len(times)),
         )
         return archive, joint
@@ -119,6 +123,7 @@ class TDSEReportTests(unittest.TestCase):
                 "tdse_joint_density_relative_log.gif",
                 "particle_marginals_fixed_scale.gif",
                 "particle_marginals_relative_log.gif",
+                "tdse_bo_surface_dynamics.gif",
                 "tdse_exact_factorization_fields.gif",
                 "tdse_all_exact_potentials.gif",
                 "tdse_transport_and_drive.gif",
