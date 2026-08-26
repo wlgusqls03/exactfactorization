@@ -1176,7 +1176,7 @@ def _support_tail_lines(axis, coordinate, occupied, full, support, *, color,
                         label, linewidth=1.8, linestyle="-"):
     tail = np.where(~np.asarray(support, bool), np.asarray(full), np.nan)
     tail_line, = axis.plot(
-        coordinate, tail, color=color, lw=0.55, ls=":", alpha=0.22,
+        coordinate, tail, color=color, lw=0.8, ls=":", alpha=0.48,
         zorder=0.5,
     )
     support_line, = axis.plot(
@@ -1532,7 +1532,7 @@ def make_all_exact_potentials_animation(
     )
     eps_tail, = eps_axis.plot(
         R, np.where(~item["heavy_support"], item["eps2_full"], np.nan),
-        color=COLORS[0], lw=0.55, ls=":", alpha=0.22,
+        color=COLORS[0], lw=0.8, ls=":", alpha=0.48,
     )
     alpha_line, = alpha_axis.plot(
         R, item["alpha"], color=COLORS[3], lw=1.8, ls="--",
@@ -1540,7 +1540,7 @@ def make_all_exact_potentials_animation(
     )
     alpha_tail, = alpha_axis.plot(
         R, np.where(~item["heavy_support"], item["alpha_full"], np.nan),
-        color=COLORS[3], lw=0.55, ls=":", alpha=0.22,
+        color=COLORS[3], lw=0.8, ls=":", alpha=0.48,
     )
     _scaled_heavy_density(eps_axis, R, item["heavy"])
     eps_axis.set(xlabel=r"heavy $R$ ($a_0$)", xlim=(R[0], R[-1]))
@@ -1612,7 +1612,7 @@ def make_all_exact_potentials_animation(
     )
     gamma_defect_tail, = gamma_axis.plot(
         R, np.where(~gamma_support, gamma_defect, np.nan),
-        color=COLORS[2], lw=0.55, ls=":", alpha=0.22,
+        color=COLORS[2], lw=0.8, ls=":", alpha=0.48,
     )
     gamma_phase_line, = gamma_phase_axis.plot(
         R, np.where(gamma_support, gamma_phase, np.nan),
@@ -1621,7 +1621,7 @@ def make_all_exact_potentials_animation(
     )
     gamma_phase_tail, = gamma_phase_axis.plot(
         R, np.where(~gamma_support, gamma_phase, np.nan),
-        color=COLORS[3], lw=0.55, ls=":", alpha=0.22,
+        color=COLORS[3], lw=0.8, ls=":", alpha=0.48,
     )
     gamma_axis.set(
         xlabel=r"heavy $R$ ($a_0$)", xlim=(R[0], R[-1]),

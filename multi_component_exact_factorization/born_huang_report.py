@@ -528,7 +528,7 @@ def _support_tail_lines(
     support = np.asarray(support, bool)
     tail = np.where(~support & np.isfinite(full), full, np.nan)
     tail_line, = axis.plot(
-        coordinate, tail, color=color, lw=0.55, ls=":", alpha=0.22,
+        coordinate, tail, color=color, lw=0.8, ls=":", alpha=0.48,
         zorder=max(zorder-1.5, 0),
     )
     support_line, = axis.plot(
@@ -870,7 +870,7 @@ def make_overview_animation(data, obs, diagnostics, outdir, fps, max_frames, dpi
     title = fig.suptitle(
         f"Born--Huang dynamics overview | t={times[first]:.4f} fs\n"
         r"gray below $10^{-4}\rho_{\max}$, full color above $10^{-3}\rho_{\max}$; "
-        "white: signed field near zero; "
+        "all physical fields use the TDPES viridis palette; "
         "all color scales fixed over the trajectory"
     )
 
@@ -891,7 +891,7 @@ def make_overview_animation(data, obs, diagnostics, outdir, fps, max_frames, dpi
             f"Born--Huang dynamics overview | t={times[frame]:.4f} fs | "
             f"norm-1={obs['norm'][frame]-1:+.2e}\n"
             r"gray below $10^{-4}\rho_{\max}$, full color above $10^{-3}\rho_{\max}$; "
-            "white: signed field near zero; "
+            "all physical fields use the TDPES viridis palette; "
             "all color scales fixed over the trajectory"
         )
         return (

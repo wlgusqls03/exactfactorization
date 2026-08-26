@@ -23,8 +23,11 @@ FORCE_COLOR = COLORS[3]
 HEAVY_DENSITY_COLOR = "0.45"
 JOINT_CMAP = "magma"
 SCALAR_CMAP = "viridis"
-SIGNED_CMAP = "coolwarm"
-LINK_CMAP = "cividis"
+# Keep support-masked physical fields visually distinct from the gray tail.
+# Their numerical limits remain unchanged; this only changes value-to-color
+# mapping so that a near-zero signed field no longer looks like empty space.
+SIGNED_CMAP = SCALAR_CMAP
+LINK_CMAP = SCALAR_CMAP
 MASK_COLOR = "#D7DCE0"
 
 

@@ -532,7 +532,7 @@ def make_wavefunction_animation(
     axes[1, 0].set_ylabel("electron x")
 
     eps1_image = axes[1, 1].imshow(
-        eps1_arrays[0], origin="lower", aspect="auto", cmap="coolwarm",
+        eps1_arrays[0], origin="lower", aspect="auto", cmap="viridis",
         extent=[R[0], R[-1], q[0], q[-1]], vmin=eps1_lo, vmax=eps1_hi,
     )
     axes[1, 1].set_title(
@@ -668,7 +668,7 @@ def make_density_animation(
     axes[1, 0].set_ylabel("electron x")
 
     eps1_image = axes[1, 1].imshow(
-        eps1_arrays[0], origin="lower", aspect="auto", cmap="coolwarm",
+        eps1_arrays[0], origin="lower", aspect="auto", cmap="viridis",
         extent=[R[0], R[-1], q[0], q[-1]], vmin=eps1_lo, vmax=eps1_hi,
     )
     axes[1, 1].set_title(
@@ -841,15 +841,15 @@ def make_gauge_potential_animation(
     extent = [R[0], R[-1], q[0], q[-1]]
     eps1_image = axes[0, 0].imshow(
         first_fields["epsilon_1"], origin="lower", aspect="auto",
-        extent=extent, cmap="coolwarm", vmin=eps1_lim[0], vmax=eps1_lim[1],
+        extent=extent, cmap="viridis", vmin=eps1_lim[0], vmax=eps1_lim[1],
     )
     a_image = axes[0, 1].imshow(
         first_fields["a"], origin="lower", aspect="auto", extent=extent,
-        cmap="coolwarm", vmin=a_lim[0], vmax=a_lim[1],
+        cmap="viridis", vmin=a_lim[0], vmax=a_lim[1],
     )
     b_image = axes[0, 2].imshow(
         first_fields["b"], origin="lower", aspect="auto", extent=extent,
-        cmap="coolwarm", vmin=b_lim[0], vmax=b_lim[1],
+        cmap="viridis", vmin=b_lim[0], vmax=b_lim[1],
     )
     support_image = axes[0, 3].imshow(
         support, origin="lower", aspect="auto", extent=extent,

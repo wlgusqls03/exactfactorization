@@ -120,8 +120,8 @@ def make_coordinate_focus_animation(
         occupied = np.where(support[first], values[first], np.nan)
         tail = np.where(~support[first], values[first], np.nan)
         tail_line, = axis.plot(
-            coordinate, tail, color=profile_color, lw=0.55, ls=":",
-            alpha=0.22, zorder=0.5,
+            coordinate, tail, color=profile_color, lw=0.8, ls=":",
+            alpha=0.48, zorder=0.5,
         )
         support_line, = axis.plot(
             coordinate, occupied, color=profile_color, lw=2.15, zorder=2.5,

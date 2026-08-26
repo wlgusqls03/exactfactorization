@@ -360,8 +360,8 @@ def plot_exact_potentials(data, diagnostics, joint, frame, support_floor, outdir
 
     for ax, values, title, label, cmap, symmetric in (
         (axes[0, 0], eps1, r"First TDPES $\epsilon^{(1)}(q,R,t)$", "energy (Hartree)", "viridis", False),
-        (axes[0, 1], avec, r"Connection $a(q,R,t)$", r"momentum ($a_0^{-1}$)", "coolwarm", True),
-        (axes[1, 0], force, r"Combined result: $F_q=-\partial_q\epsilon^{(1)}+\partial_ta$", r"force (Hartree/$a_0$)", "coolwarm", True),
+        (axes[0, 1], avec, r"Connection $a(q,R,t)$", r"momentum ($a_0^{-1}$)", "viridis", True),
+        (axes[1, 0], force, r"Combined result: $F_q=-\partial_q\epsilon^{(1)}+\partial_ta$", r"force (Hartree/$a_0$)", "viridis", True),
     ):
         finite = values[np.isfinite(values)]
         image_kwargs = {}
@@ -771,7 +771,7 @@ def make_overview_animation(
         }
         image = ax.imshow(
             values.T, origin="lower", aspect="auto", extent=extent,
-            cmap=_masked_cmap("coolwarm"), **kwargs,
+            cmap=_masked_cmap("viridis"), **kwargs,
         )
         ax.set(xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)")
         ax.set_title(title_text, loc="left", fontweight="semibold", fontsize=9.5)
@@ -938,7 +938,7 @@ def make_physical_interpretation_animation(
 
     current_image = bottom_axes[0].imshow(
         proton_currents[0].T, origin="lower", aspect="auto", extent=extent,
-        cmap=_masked_cmap("coolwarm"),
+        cmap=_masked_cmap("viridis"),
         vmin=current_limits[0], vmax=current_limits[1],
     )
     bottom_axes[0].set(
@@ -955,7 +955,7 @@ def make_physical_interpretation_animation(
 
     drive_image = bottom_axes[1].imshow(
         proton_drives[0].T, origin="lower", aspect="auto", extent=extent,
-        cmap=_masked_cmap("coolwarm"), norm=drive_norm,
+        cmap=_masked_cmap("viridis"), norm=drive_norm,
     )
     bottom_axes[1].set(
         xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
@@ -1101,8 +1101,8 @@ def make_potential_animation(
     images = []
     for ax, values, limits, title, cmap, label in (
         (axes[0, 0], fields[0][0], eps1_lim, r"Electron level: $\epsilon^{(1)}$", "viridis", "shifted energy (Hartree)"),
-        (axes[0, 1], fields[0][1], a_lim, r"Electron connection $a$ along $q$", "coolwarm", r"$a_0^{-1}$"),
-        (axes[0, 2], fields[0][2], b_lim, r"Electron connection $b$ along $R$", "coolwarm", r"$a_0^{-1}$"),
+        (axes[0, 1], fields[0][1], a_lim, r"Electron connection $a$ along $q$", "viridis", r"$a_0^{-1}$"),
+        (axes[0, 2], fields[0][2], b_lim, r"Electron connection $b$ along $R$", "viridis", r"$a_0^{-1}$"),
     ):
         image = ax.imshow(
             values.T, origin="lower", aspect="auto", extent=extent,

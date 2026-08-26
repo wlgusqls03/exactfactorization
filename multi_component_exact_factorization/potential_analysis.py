@@ -189,7 +189,7 @@ def plot_exact_diagnostics(data, diagnostics, frame, support_floor, outdir, dpi)
         bound = max(float(np.nanmax(np.abs(shown))), 1.0e-14)
         artist = ax.imshow(
             shown, origin="lower", aspect="auto", extent=extent,
-            cmap="coolwarm", vmin=-bound, vmax=bound,
+            cmap="viridis", vmin=-bound, vmax=bound,
         )
         ax.set_title(title)
         ax.set_xlabel("heavy R")
