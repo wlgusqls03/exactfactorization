@@ -558,6 +558,9 @@ def make_joint_log_animation(
 def make_dynamics_animation(obs, outdir, fps, max_frames, dpi, fmt):
     """Animate raw TDSE marginals, joint density, populations and mean motion."""
     times, q, R = obs["times_fs"], obs["q"], obs["R"]
+    x = obs.get("x")
+    electron_density = obs.get("electron_density")
+    has_electron = x is not None and electron_density is not None
     frames = selected_frames(len(times), min(max_frames, len(times)))
     first = int(frames[0])
     fig = plt.figure(figsize=(15.8, 9.0), constrained_layout=True)
@@ -569,16 +572,34 @@ def make_dynamics_animation(obs, outdir, fps, max_frames, dpi, fmt):
 
     marginal_ax.plot(q, obs["proton_density"][0], color=PARTICLE_COLORS["proton"], ls="--", lw=1.1, alpha=0.38)
     marginal_ax.plot(R, obs["heavy_density"][0], color=PARTICLE_COLORS["heavy"], ls="--", lw=1.1, alpha=0.38)
+    electron_line = None
+    if has_electron:
+        marginal_ax.plot(
+            x, electron_density[0], color=PARTICLE_COLORS["electron"],
+            ls="--", lw=1.1, alpha=0.38,
+        )
+        electron_line, = marginal_ax.plot(
+            x, electron_density[first], color=PARTICLE_COLORS["electron"],
+            lw=2.1, label="electron",
+        )
     proton_line, = marginal_ax.plot(q, obs["proton_density"][first], color=PARTICLE_COLORS["proton"], lw=2.1, label="proton")
     heavy_line, = marginal_ax.plot(R, obs["heavy_density"][first], color=PARTICLE_COLORS["heavy"], lw=2.1, label="heavy nucleus")
     add_fixed_center_markers(marginal_ax, obs["options"])
+    position_min = min(float(q[0]), float(R[0]))
+    position_max = max(float(q[-1]), float(R[-1]))
+    if has_electron:
+        position_min = min(position_min, float(x[0]))
+        position_max = max(position_max, float(x[-1]))
     marginal_ax.set(
-        xlim=(min(float(q[0]), float(R[0])), max(float(q[-1]), float(R[-1]))),
+        xlim=(position_min, position_max),
         ylim=(0.0, 1.05*obs["marginal_ymax"]),
         xlabel=r"position coordinate ($a_0$)",
         ylabel=r"probability density ($a_0^{-1}$)",
     )
-    marginal_ax.set_title("Nuclear marginals | solid=current, faint dashed=initial", loc="left", fontweight="semibold")
+    marginal_ax.set_title(
+        "Particle marginals | solid=current, faint dashed=initial",
+        loc="left", fontweight="semibold",
+    )
     marginal_ax.legend(frameon=False, ncol=3)
     _style_axis(marginal_ax)
 
@@ -631,6 +652,8 @@ def make_dynamics_animation(obs, outdir, fps, max_frames, dpi, fmt):
 
     def update(number):
         frame = int(frames[number])
+        if electron_line is not None:
+            electron_line.set_ydata(electron_density[frame])
         proton_line.set_ydata(obs["proton_density"][frame])
         heavy_line.set_ydata(obs["heavy_density"][frame])
         joint_image.set_data(obs["joint_density"][frame].T)
@@ -643,7 +666,13 @@ def make_dynamics_animation(obs, outdir, fps, max_frames, dpi, fmt):
             f"E-E(0)={energy[frame]-energy[0]:+.2e} Ha\n"
             "stored normalized densities/populations; fixed axes and one trajectory-wide color scale"
         )
-        return proton_line, heavy_line, joint_image, joint_mean, population_time, motion_time, title
+        artists = [
+            proton_line, heavy_line, joint_image, joint_mean,
+            population_time, motion_time, title,
+        ]
+        if electron_line is not None:
+            artists.insert(0, electron_line)
+        return tuple(artists)
 
     update(0)
     animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
@@ -656,9 +685,11 @@ def make_bo_surface_dynamics_animation(
     """Animate BO surfaces, channel wavepackets and population transfer.
 
     The q/R surface panels are instantaneous cuts through the maximum of the
-    physical joint nuclear density.  Solid curves are raw BO energies and
-    dashed curves on the secondary axes are raw state-resolved marginal
-    densities; neither quantity is normalized per frame.
+    physical joint nuclear density.  Solid curves are raw BO energies.  Each
+    dashed channel packet is lifted above its own surface by an amount
+    proportional to the raw state-resolved density, using one trajectory-wide
+    scale (never a frame-wise peak normalization).  This makes the packet
+    visibly travel *on* its BO surface without changing any stored value.
     """
     required = ("bo_state_density_q", "bo_state_density_R")
     energies = obs.get("bo_energies")
@@ -687,12 +718,20 @@ def make_bo_surface_dynamics_animation(
         for frame in frames
     ]
 
+    # The bare left-ion/proton Coulomb pole at q=-L/2 is physically outside
+    # the packet trajectory shown here and otherwise compresses every useful
+    # BO cut.  Keep the underlying arrays untouched and crop only this panel.
+    q_plot_min = max(-5.0, float(q[0]))
+    q_plot_mask = np.asarray(q >= q_plot_min)
+
     def energy_limits(coordinate):
         samples = []
         for (_, (iq, iR)) in zip(frames, peak_indices):
             current = energies[:n_states, :, iR] if coordinate == "q" else (
                 energies[:n_states, iq, :]
             )
+            if coordinate == "q":
+                current = current[:, q_plot_mask]
             finite = current[np.isfinite(current)]
             if finite.size:
                 samples.append(finite)
@@ -704,17 +743,26 @@ def make_bo_surface_dynamics_animation(
     q_energy_limits = energy_limits("q")
     R_energy_limits = energy_limits("R")
     q_density_max = max(
-        float(np.nanmax(density_q[:, :n_states])), 1.0e-14
+        float(np.nanmax(density_q[:, :n_states, q_plot_mask])), 1.0e-14
     )
     R_density_max = max(
         float(np.nanmax(density_R[:, :n_states])), 1.0e-14
     )
     first = int(frames[0])
     first_iq, first_iR = peak_indices[0]
+    q_energy_span = max(q_energy_limits[1]-q_energy_limits[0], 1.0e-3)
+    R_energy_span = max(R_energy_limits[1]-R_energy_limits[0], 1.0e-3)
+    q_packet_lift = 0.16*q_energy_span
+    R_packet_lift = 0.16*R_energy_span
+    q_display_limits = (
+        q_energy_limits[0], q_energy_limits[1]+1.08*q_packet_lift,
+    )
+    R_display_limits = (
+        R_energy_limits[0], R_energy_limits[1]+1.08*R_packet_lift,
+    )
+
     fig, axes = plt.subplots(2, 2, figsize=(15.2, 9.2), constrained_layout=True)
     q_axis, R_axis, joint_axis, population_axis = axes.flat
-    q_density_axis = q_axis.twinx()
-    R_density_axis = R_axis.twinx()
     q_energy_lines, q_density_lines = [], []
     R_energy_lines, R_density_lines = [], []
     for state in range(n_states):
@@ -723,17 +771,19 @@ def make_bo_surface_dynamics_animation(
             q, energies[state, :, first_iR], color=color, lw=1.45,
             label=rf"$E_{state}$",
         )
-        q_density_line, = q_density_axis.plot(
-            q, density_q[first, state], color=color, lw=1.05,
-            ls="--", alpha=0.72,
+        q_density_line, = q_axis.plot(
+            q, energies[state, :, first_iR]
+            +q_packet_lift*density_q[first, state]/q_density_max,
+            color=color, lw=1.45, ls="--", alpha=0.90,
         )
         R_energy_line, = R_axis.plot(
             R, energies[state, first_iq, :], color=color, lw=1.45,
             label=rf"$E_{state}$",
         )
-        R_density_line, = R_density_axis.plot(
-            R, density_R[first, state], color=color, lw=1.05,
-            ls="--", alpha=0.72,
+        R_density_line, = R_axis.plot(
+            R, energies[state, first_iq, :]
+            +R_packet_lift*density_R[first, state]/R_density_max,
+            color=color, lw=1.45, ls="--", alpha=0.90,
         )
         q_energy_lines.append(q_energy_line)
         q_density_lines.append(q_density_line)
@@ -746,16 +796,12 @@ def make_bo_surface_dynamics_animation(
 
     q_axis.set(
         xlabel=r"proton $q$ ($a_0$)", ylabel="BO energy (Hartree)",
-        xlim=(q[0], q[-1]), ylim=q_energy_limits,
+        xlim=(q_plot_min, q[-1]), ylim=q_display_limits,
     )
     R_axis.set(
         xlabel=r"heavy $R$ ($a_0$)", ylabel="BO energy (Hartree)",
-        xlim=(R[0], R[-1]), ylim=R_energy_limits,
+        xlim=(R[0], R[-1]), ylim=R_display_limits,
     )
-    q_density_axis.set_ylim(0.0, 1.05*q_density_max)
-    R_density_axis.set_ylim(0.0, 1.05*R_density_max)
-    q_density_axis.set_ylabel(r"raw channel density $\rho_j^q$ (dashed)")
-    R_density_axis.set_ylabel(r"raw channel density $\rho_j^R$ (dashed)")
     q_axis.legend(frameon=False, fontsize=7, ncol=min(4, n_states))
     R_axis.legend(frameon=False, fontsize=7, ncol=min(4, n_states))
     q_axis.set_title(
@@ -810,10 +856,18 @@ def make_bo_surface_dynamics_animation(
         frame = int(frames[number])
         iq, iR = peak_indices[number]
         for state in range(n_states):
-            q_energy_lines[state].set_ydata(energies[state, :, iR])
-            q_density_lines[state].set_ydata(density_q[frame, state])
-            R_energy_lines[state].set_ydata(energies[state, iq, :])
-            R_density_lines[state].set_ydata(density_R[frame, state])
+            q_surface = energies[state, :, iR]
+            R_surface = energies[state, iq, :]
+            q_energy_lines[state].set_ydata(q_surface)
+            q_density_lines[state].set_ydata(
+                q_surface
+                +q_packet_lift*density_q[frame, state]/q_density_max
+            )
+            R_energy_lines[state].set_ydata(R_surface)
+            R_density_lines[state].set_ydata(
+                R_surface
+                +R_packet_lift*density_R[frame, state]/R_density_max
+            )
         q_axis.set_title(
             rf"BO cuts and channel packets | $R_{{peak}}={R[iR]:.3f}$",
             loc="left", fontweight="semibold",
@@ -829,7 +883,7 @@ def make_bo_surface_dynamics_animation(
         title.set_text(
             f"Full TDSE projected onto BO channels | t={times[frame]:.4f} fs | "
             f"dominant state={dominant}, P={populations[frame, dominant]:.6f}\n"
-            "solid=raw BO energy cut; dashed=raw channel density; "
+            "solid=raw BO energy; dashed=surface + fixed-scale channel density; "
             "fixed trajectory-wide axes"
         )
         return (
