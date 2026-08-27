@@ -417,6 +417,26 @@ a trajectory-wide robust color range computed only on occupied support.
 Outliers outside the plotting range saturate the end color and are marked by
 extended colorbars; the stored field values are not clipped or rescaled.
 
+The standard TDSE renderer also produces collision-coordinate diagnostics:
+`09_tdse_collision_snapshots.png`,
+`10_tdse_relative_collision_diagnostics.png`,
+`tdse_collision_dynamics.mp4`, and the small reusable
+`tdse_collision_observables.npz`.  These show the exact stored joint density
+with the `q=R` contact line, the histogrammed relative density for `s=q-R`,
+the side population `P(q>R)`, and its unsmoothed saved-frame derivative.  The
+latter is the continuity-law crossing rate, not an independently evaluated
+microscopic link current.  Render only these outputs without re-running the
+other report panels via
+
+```bash
+python -m multi_component_exact_factorization.render_tdse_collision RUN \
+  --format mp4 --fps 12 --max-frames 240 --dpi 180 --animation-dpi 110
+```
+
+A Wigner or Husimi map is intentionally not inferred from `joint_density`:
+it requires the off-diagonal relative-coordinate density matrix and therefore
+cannot be reconstructed from a probability density alone.
+
 ## Saved diagnostics
 
 Every saved frame contains:

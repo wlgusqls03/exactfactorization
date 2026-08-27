@@ -1909,6 +1909,12 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
     plot_particle_motion(obs, outdir, dpi, snapshot_count=snapshot_count)
     plot_joint_snapshots(obs, outdir, dpi, snapshot_count=snapshot_count)
     plot_joint_log_snapshots(obs, outdir, dpi, snapshot_count=snapshot_count)
+    from . import tdse_collision_report
+    collision = tdse_collision_report.run(
+        obs, outdir, dpi=dpi, no_animation=no_animation, fps=fps,
+        max_frames=max_frames, animation_dpi=animation_dpi, fmt=fmt,
+        snapshot_count=snapshot_count,
+    )
     plot_electronic_dynamics(obs, outdir, dpi, ef=ef)
     plot_numerical_reliability(obs, outdir, dpi)
     if ef is not None:
@@ -1980,6 +1986,10 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
         q_width=obs["q_width"], R_width=obs["R_width"],
         norm=obs["norm"], energy=obs["energy"],
         bo_populations=obs["bo_populations"],
+        relative_coordinate=collision["s"],
+        relative_density=collision["relative_density"],
+        crossing_probability_q_greater_R=collision["p_q_greater_R"],
+        crossing_rate_saved_frames=collision["crossing_rate_au"],
     )
     if obs["electron_density"] is not None:
         report_payload.update(

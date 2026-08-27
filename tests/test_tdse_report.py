@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from multi_component_exact_factorization import tdse_report
+from multi_component_exact_factorization import tdse_collision_report, tdse_report
 
 
 class TDSEReportTests(unittest.TestCase):
@@ -97,6 +97,9 @@ class TDSEReportTests(unittest.TestCase):
                 "06_tdse_transport_and_drive.png",
                 "07_tdse_discrete_link_geometry.png",
                 "08_tdse_joint_density_relative_log.png",
+                "09_tdse_collision_snapshots.png",
+                "10_tdse_relative_collision_diagnostics.png",
+                "tdse_collision_observables.npz",
                 "tdse_report_observables.npz",
             ):
                 self.assertTrue((report/name).is_file(), name)
@@ -129,8 +132,31 @@ class TDSEReportTests(unittest.TestCase):
                 "tdse_transport_and_drive.gif",
                 "heavy_coordinate_dynamics.gif",
                 "proton_coordinate_dynamics.gif",
+                "tdse_collision_dynamics.gif",
             ):
                 self.assertTrue((report/name).is_file(), name)
+
+    def test_relative_collision_reduction_preserves_mass_and_crossing(self):
+        q = np.array([-1.0, 0.0, 1.0])
+        R = np.array([-0.5, 0.5])
+        times = np.array([0.0, 0.5, 1.0])
+        dq, dR = 1.0, 1.0
+        joint = np.zeros((3, len(q), len(R)))
+        # Move all probability from q<R to q>R across the saved frames.
+        joint[0, 0, 1] = 1.0/(dq*dR)
+        joint[1, 1, 0] = 1.0/(dq*dR)
+        joint[2, 2, 0] = 1.0/(dq*dR)
+        collision = tdse_collision_report.relative_observables({
+            "q": q, "R": R, "times_fs": times,
+            "joint_density": joint, "dq": dq, "dR": dR,
+            "options": {"proton_mass": 1.0, "heavy_mass": 3.0},
+        })
+        self.assertTrue(np.allclose(collision["relative_norm"], 1.0))
+        self.assertTrue(np.allclose(
+            collision["p_q_greater_R"], (0.0, 1.0, 1.0)
+        ))
+        self.assertTrue(np.all(np.isfinite(collision["crossing_rate_au"])))
+        self.assertTrue(np.allclose(collision["s_mean"], (-1.5, 0.5, 1.5)))
 
     def test_support_aware_phase_lift_ignores_empty_tail_winding(self):
         spacing = 0.2
