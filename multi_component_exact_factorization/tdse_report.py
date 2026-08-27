@@ -686,7 +686,7 @@ def make_bo_surface_dynamics_animation(
 
     The q/R surface panels are instantaneous cuts through the maximum of the
     physical joint nuclear density.  Solid curves are raw BO energies.  Each
-    dashed channel packet is lifted above its own surface by an amount
+    filled channel packet is lifted above its own surface by an amount
     proportional to the raw state-resolved density, using one trajectory-wide
     scale (never a frame-wise peak normalization).  This makes the packet
     visibly travel *on* its BO surface without changing any stored value.
@@ -752,8 +752,11 @@ def make_bo_surface_dynamics_animation(
     first_iq, first_iR = peak_indices[0]
     q_energy_span = max(q_energy_limits[1]-q_energy_limits[0], 1.0e-3)
     R_energy_span = max(R_energy_limits[1]-R_energy_limits[0], 1.0e-3)
-    q_packet_lift = 0.16*q_energy_span
-    R_packet_lift = 0.16*R_energy_span
+    # A fixed trajectory-wide visual lift preserves relative packet heights
+    # across all frames while making post-NA branches clearly distinguishable
+    # from the underlying BO curves.  This affects display coordinates only.
+    q_packet_lift = 0.34*q_energy_span
+    R_packet_lift = 0.30*R_energy_span
     q_display_limits = (
         q_energy_limits[0], q_energy_limits[1]+1.08*q_packet_lift,
     )
@@ -763,32 +766,39 @@ def make_bo_surface_dynamics_animation(
 
     fig, axes = plt.subplots(2, 2, figsize=(15.2, 9.2), constrained_layout=True)
     q_axis, R_axis, joint_axis, population_axis = axes.flat
-    q_energy_lines, q_density_lines = [], []
-    R_energy_lines, R_density_lines = [], []
+    q_energy_lines, q_packet_fills = [], []
+    R_energy_lines, R_packet_fills = [], []
     for state in range(n_states):
         color = COLORS[state % len(COLORS)]
         q_energy_line, = q_axis.plot(
             q, energies[state, :, first_iR], color=color, lw=1.45,
             label=rf"$E_{state}$",
         )
-        q_density_line, = q_axis.plot(
-            q, energies[state, :, first_iR]
-            +q_packet_lift*density_q[first, state]/q_density_max,
-            color=color, lw=1.45, ls="--", alpha=0.90,
+        q_surface = energies[state, :, first_iR]
+        q_packet_top = (
+            q_surface+q_packet_lift*density_q[first, state]/q_density_max
+        )
+        q_packet_fill = q_axis.fill_between(
+            q[q_plot_mask], q_surface[q_plot_mask],
+            q_packet_top[q_plot_mask], color=color, alpha=0.58,
+            edgecolor=color, linewidth=0.45,
         )
         R_energy_line, = R_axis.plot(
             R, energies[state, first_iq, :], color=color, lw=1.45,
             label=rf"$E_{state}$",
         )
-        R_density_line, = R_axis.plot(
-            R, energies[state, first_iq, :]
-            +R_packet_lift*density_R[first, state]/R_density_max,
-            color=color, lw=1.45, ls="--", alpha=0.90,
+        R_surface = energies[state, first_iq, :]
+        R_packet_top = (
+            R_surface+R_packet_lift*density_R[first, state]/R_density_max
+        )
+        R_packet_fill = R_axis.fill_between(
+            R, R_surface, R_packet_top, color=color, alpha=0.58,
+            edgecolor=color, linewidth=0.45,
         )
         q_energy_lines.append(q_energy_line)
-        q_density_lines.append(q_density_line)
+        q_packet_fills.append(q_packet_fill)
         R_energy_lines.append(R_energy_line)
-        R_density_lines.append(R_density_line)
+        R_packet_fills.append(R_packet_fill)
         population_axis.semilogy(
             times, np.maximum(populations[:, state], 1.0e-16),
             color=color, lw=1.55, label=rf"$P_{state}$",
@@ -856,17 +866,27 @@ def make_bo_surface_dynamics_animation(
         frame = int(frames[number])
         iq, iR = peak_indices[number]
         for state in range(n_states):
+            color = COLORS[state % len(COLORS)]
             q_surface = energies[state, :, iR]
             R_surface = energies[state, iq, :]
             q_energy_lines[state].set_ydata(q_surface)
-            q_density_lines[state].set_ydata(
-                q_surface
-                +q_packet_lift*density_q[frame, state]/q_density_max
+            q_packet_fills[state].remove()
+            q_packet_top = (
+                q_surface+q_packet_lift*density_q[frame, state]/q_density_max
+            )
+            q_packet_fills[state] = q_axis.fill_between(
+                q[q_plot_mask], q_surface[q_plot_mask],
+                q_packet_top[q_plot_mask], color=color, alpha=0.58,
+                edgecolor=color, linewidth=0.45,
             )
             R_energy_lines[state].set_ydata(R_surface)
-            R_density_lines[state].set_ydata(
-                R_surface
-                +R_packet_lift*density_R[frame, state]/R_density_max
+            R_packet_fills[state].remove()
+            R_packet_top = (
+                R_surface+R_packet_lift*density_R[frame, state]/R_density_max
+            )
+            R_packet_fills[state] = R_axis.fill_between(
+                R, R_surface, R_packet_top, color=color, alpha=0.58,
+                edgecolor=color, linewidth=0.45,
             )
         q_axis.set_title(
             rf"BO cuts and channel packets | $R_{{peak}}={R[iR]:.3f}$",
@@ -883,12 +903,12 @@ def make_bo_surface_dynamics_animation(
         title.set_text(
             f"Full TDSE projected onto BO channels | t={times[frame]:.4f} fs | "
             f"dominant state={dominant}, P={populations[frame, dominant]:.6f}\n"
-            "solid=raw BO energy; dashed=surface + fixed-scale channel density; "
+            "solid=raw BO energy; filled=fixed-scale channel density on surface; "
             "fixed trajectory-wide axes"
         )
         return (
-            *q_energy_lines, *q_density_lines,
-            *R_energy_lines, *R_density_lines,
+            *q_energy_lines, *q_packet_fills,
+            *R_energy_lines, *R_packet_fills,
             joint_image, joint_peak, population_marker, title,
         )
 
