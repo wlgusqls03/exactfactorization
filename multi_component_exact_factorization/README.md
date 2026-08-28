@@ -369,6 +369,22 @@ python -m multi_component_exact_factorization.render_all \
 Archive가 너무 커서 RAM에 유지할 수 없는 서버에서만 ``--low-memory``를
 사용한다. 이 option은 같은 compressed member를 다시 읽을 수 있어 훨씬 느리다.
 
+TDSE 후처리 cache에서 total/GI/GD TDPES 6-panel 그림과 영상만 다시
+만들려면 전체 report 대신 아래 전용 명령을 사용한다. 첫 번째 level의 세
+colorbar와 두 번째 level의 세 y-axis는 각각 공통 범위를 사용하며, field 값은
+재정규화하거나 평활화하지 않는다.
+
+```bash
+python -m multi_component_exact_factorization.render_tdse_tdpes_gauges \
+  results/YYYYMMDD/RUN_NAME \
+  --format mp4 --fps 12 --max-frames 240 \
+  --dpi 180 --animation-dpi 110 --surface-count 2
+```
+
+기본적으로 positive-density/zero-potential gauge를 모두 덮어쓴다. 하나만
+필요하면 ``--gauge positive`` 또는 ``--gauge zero``를 사용하고, 정적 PNG만
+필요하면 ``--no-animation``을 추가한다.
+
 GPU 전파는 NPZ 저장이 성공한 직후 빠른 통합 렌더링을 기본 실행한다. 날짜가
 붙은 실제 저장 경로가 직접 전달되므로 동일한 폴더 이름을 검색할 필요가 없다.
 전파 함수가 반환되어 큰 저장 배열을 해제한 다음 archive를 읽으므로 계산

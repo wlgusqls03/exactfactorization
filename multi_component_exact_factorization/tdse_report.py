@@ -1765,6 +1765,22 @@ def _tdpes_decomposition_limits(
         elif limits[1] <= limits[0]:
             padding = max(abs(limits[0])*1.0e-6, 1.0e-12)
             limits[:] = (limits[0]-padding, limits[1]+padding)
+
+    # Total, GI, and GD are an additive decomposition of the same scalar
+    # potential.  Give all three panels at a given factorization level the
+    # same display normalization so their amplitudes can be compared by eye.
+    # This changes only axes/color limits; the plotted field values are not
+    # rescaled, clipped, smoothed, or otherwise modified.
+    for keys in (
+        _TDPES_COMPONENT_KEYS[:3],
+        _TDPES_COMPONENT_KEYS[3:],
+    ):
+        shared = (
+            min(extrema[key][0] for key in keys),
+            max(extrema[key][1] for key in keys),
+        )
+        for key in keys:
+            extrema[key][:] = shared
     if not np.all(np.isfinite(bo_extrema)):
         bo_extrema[:] = (-1.0, 1.0)
     elif bo_extrema[1] <= bo_extrema[0]:
@@ -1905,7 +1921,7 @@ def plot_tdpes_decomposition(
         f"TDSE-derived TDPES decomposition | {_gauge_label(ef)} | "
         f"t={obs['times_fs'][frame]:.4f} fs\n"
         f"display identity residuals: level 1={residual_1:.2e}, "
-        f"level 2={residual_2:.2e}; scalar offsets only",
+        f"level 2={residual_2:.2e}; shared level-wise scales; scalar offsets only",
         fontweight="bold",
     )
     path = Path(outdir)/"11_tdse_tdpes_gi_gd_decomposition.png"
@@ -1970,7 +1986,7 @@ def make_tdpes_decomposition_animation(
             f"TDSE-derived TDPES decomposition | {_gauge_label(ef)} | "
             f"t={obs['times_fs'][frame]:.4f} fs\n"
             f"total=GI+GD residuals: ({residual_1:.2e}, {residual_2:.2e}); "
-            "fixed scales; density changes opacity only"
+            "shared level-wise fixed scales; density changes opacity only"
         )
         return (
             *(entry[0] for entry in images), *lines, *tails,

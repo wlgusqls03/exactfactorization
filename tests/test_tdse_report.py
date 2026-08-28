@@ -4,7 +4,11 @@ import unittest
 
 import numpy as np
 
-from multi_component_exact_factorization import tdse_collision_report, tdse_report
+from multi_component_exact_factorization import (
+    render_tdse_tdpes_gauges,
+    tdse_collision_report,
+    tdse_report,
+)
 
 
 class TDSEReportTests(unittest.TestCase):
@@ -206,6 +210,40 @@ class TDSEReportTests(unittest.TestCase):
                     pieces["epsilon_2_gi"]+pieces["epsilon_2_gd"],
                     rtol=0.0, atol=2.0e-15,
                 ))
+
+    def test_tdpes_decomposition_uses_shared_level_wise_scales(self):
+        with TemporaryDirectory() as temporary:
+            archive, _ = self._write_archive(temporary)
+            obs = tdse_report.calculate_observables(
+                tdse_report.load_observables(archive)
+            )
+            ef = tdse_report._load_ef_fields(obs)
+            limits = tdse_report._tdpes_decomposition_limits(obs, ef)
+            first_level = [limits[key] for key in (
+                "epsilon_1_total", "epsilon_1_gi", "epsilon_1_gd",
+            )]
+            second_level = [limits[key] for key in (
+                "epsilon_2_total", "epsilon_2_gi", "epsilon_2_gd",
+            )]
+            self.assertTrue(all(item == first_level[0] for item in first_level))
+            self.assertTrue(all(item == second_level[0] for item in second_level))
+            self.assertNotEqual(first_level[0], second_level[0])
+
+    def test_gauge_only_renderer_writes_both_static_products(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_archive(root)
+            output = root/"gauge_only"
+            args = render_tdse_tdpes_gauges.parse_args([
+                str(root), "--outdir", str(output), "--no-animation",
+                "--dpi", "35", "--surface-count", "2",
+            ])
+            products = render_tdse_tdpes_gauges.run(args)
+            self.assertEqual(len(products), 2)
+            for gauge in ("positive_gauge", "zero_potential_gauge"):
+                self.assertTrue((
+                    output/gauge/"11_tdse_tdpes_gi_gd_decomposition.png"
+                ).is_file())
 
     def test_relative_collision_reduction_preserves_mass_and_crossing(self):
         q = np.array([-1.0, 0.0, 1.0])
