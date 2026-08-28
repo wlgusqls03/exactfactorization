@@ -156,6 +156,79 @@ def run(args):
             f"  TDSE RK4  : max_abs={absolute:.6e}, "
             f"max_relative={relative:.6e}"
         )
+    print("[TDSE density-gauge scalar GI/GD decomposition]")
+    rho = np.sum(np.abs(y)**2, axis=0)
+    rho_R = np.sum(rho, axis=0)*model.dq
+    F = np.sqrt(np.maximum(rho, 0.0))
+    chi_density = np.sqrt(np.maximum(rho_R, 0.0))
+    c_density = np.divide(
+        y, F[None, :, :], out=np.zeros_like(y),
+        where=F[None, :, :] > 0.0,
+    )
+    lam_density = np.divide(
+        F, chi_density[None, :], out=np.zeros_like(F),
+        where=chi_density[None, :] > 0.0,
+    )
+    density_reference = discrete_born_huang_rhs(
+        c_density, lam_density, chi_density, model, basis,
+        horizontal_correction=True,
+    )
+    from .postprocess_tdse_ef import _frame_fields
+    decomposed = _frame_fields(
+        y, gpu_model, gpu_bases["fused"],
+        action_cpu=tdse_action_reference,
+    )
+    dy = -1j*tdse_action_reference
+    drho = 2.0*np.real(np.sum(np.conj(y)*dy, axis=0))
+    dF = np.divide(
+        drho, 2.0*F, out=np.zeros_like(F), where=F > 0.0,
+    )
+    drho_R = np.sum(drho, axis=0)*model.dq
+    dchi = np.divide(
+        drho_R, 2.0*chi_density, out=np.zeros_like(chi_density),
+        where=chi_density > 0.0,
+    )
+    dc = np.divide(
+        dy-c_density*dF[None, :, :], F[None, :, :],
+        out=np.zeros_like(y), where=F[None, :, :] > 0.0,
+    )
+    dlam = np.divide(
+        dF-lam_density*dchi[None, :], chi_density[None, :],
+        out=np.zeros_like(F), where=chi_density[None, :] > 0.0,
+    )
+    c_norm = np.maximum(np.sum(np.abs(c_density)**2, axis=0), 1.0e-300)
+    lam_norm = np.maximum(
+        np.sum(np.abs(lam_density)**2, axis=0)*model.dq, 1.0e-300,
+    )
+    temporal_1 = -1j*np.sum(np.conj(c_density)*dc, axis=0)/c_norm
+    temporal_2 = (
+        -1j*np.sum(np.conj(lam_density)*dlam, axis=0)
+        *model.dq/lam_norm
+    )
+    epsilon_1_expected = density_reference.fields["epsilon_1"]+temporal_1.real
+    epsilon_2_expected = (
+        density_reference.fields["epsilon_2"]
+        +(
+            np.sum(np.abs(lam_density)**2*temporal_1, axis=0)
+            *model.dq/lam_norm+temporal_2
+        ).real
+    )
+    for name, expected, actual in (
+        ("epsilon_1_gi", density_reference.fields["epsilon_1"],
+         decomposed["epsilon_1_gi"]),
+        ("epsilon_2_gi", density_reference.fields["epsilon_2"],
+         decomposed["epsilon_2_gi"]),
+        ("epsilon_1_total", epsilon_1_expected,
+         decomposed["epsilon_1"]),
+        ("epsilon_2_total", epsilon_2_expected,
+         decomposed["epsilon_2"]),
+    ):
+        absolute, relative = _relative_error(expected, actual)
+        worst = max(worst, relative)
+        print(
+            f"  {name:17s}: max_abs={absolute:.6e}, "
+            f"max_relative={relative:.6e}"
+        )
     stepped = {}
     print("[one RK4 step + support-aware PNC]")
     for backend, gpu_basis in gpu_bases.items():

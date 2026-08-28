@@ -357,6 +357,8 @@ instantaneous BO-link action as before.
 It saves `tdse_exact_factorization_fields.npz` beside the TDSE archive with
 
 - the two scalar/TDPES fields `epsilon_1(q,R)` and `epsilon_2(R)`;
+- the gauge-invariant pieces `epsilon_1_gi(q,R)` and `epsilon_2_gi(R)`;
+  gauge-dependent pieces are recovered as `epsilon_total-epsilon_gi`;
 - the first vector potential's q/R components `a(q,R)` and `b(q,R)`;
 - the second vector potential `alpha(R)`;
 - native forward overlap links `S^Phi_q`, `S^Phi_R`, and `S^Gamma_R`.
@@ -375,7 +377,12 @@ electron marginal at each output frame by default; use
 `--no-bo-save-electron-density` to opt out.
 
 Run the standard renderer again.  It automatically finds this field cache
-and additionally creates
+and creates complete `report/positive_gauge/` and
+`report/zero_potential_gauge/` trees.  The latter uses the native links to
+impose q- and R-axial gauges with `a=0` and `alpha=0` on ordinary forward
+bonds; a possible PBC Wilson-loop phase remains only on the closing seam.
+Mechanical momenta, currents and native bond drives remain gauge invariant.
+Each tree additionally contains
 `05_tdse_exact_factorization_fields.png`,
 `06_tdse_transport_and_drive.png`,
 `07_tdse_discrete_link_geometry.png`,
@@ -388,6 +395,12 @@ phase of `S^Phi`, and the magnitude/phase of `S^Gamma`), and
 `tdse_joint_density_relative_log.mp4` and
 `particle_marginals_relative_log.mp4`; these divide each frame by its own
 peak for display and retain the absolute linear-density figures unchanged.
+The new `11_tdse_tdpes_gi_gd_decomposition.png` and
+`tdse_tdpes_gi_gd_decomposition.mp4` contain total/GI/GD first-level TDPES
+maps and total/GI/GD second-level TDPES curves.  The lower panels overlay the
+requested number of shifted BO surfaces at the instantaneous joint-density
+peak q coordinate.  Every frame audits `total=GI+GD`; only spatially constant
+scalar offsets are removed for display.
 It also creates
 `heavy_coordinate_dynamics.mp4` and `proton_coordinate_dynamics.mp4`:
 each uses the existing exact-potential colors and definitions, while the
@@ -397,11 +410,13 @@ carry their defining one-line equations in the title; primitive
 `epsilon`, connection and overlap-link panels retain their shorter labels.
 The marginal panel remains on the requested fixed display window.  The
 proton panels label the density-conditioned R reduction of the first TDPES
-and momentum, and the R-integrated proton current.  The latter fields include mechanical
-momenta, currents, and gauge-invariant drives.  Spatial derivatives and the
-saved-frame connection time derivative use the same periodic five-point and
-centered-time diagnostic convention as the existing MCEF report; they do not
-feed back into TDSE propagation.
+and momentum, and the R-integrated proton current.  The latter fields include
+mechanical momenta, currents, and gauge-invariant drives.  Since `a`, `b`, and
+`alpha` are forward-bond link phases, the drive uses the matching native
+expression `-D_forward epsilon + d_t A`.  This keeps gauge cancellation exact
+on the finite grid away from the closing seam; the saved-frame time derivative
+remains a temporal-resolution diagnostic and does not feed back into TDSE
+propagation.
 
 TDSE-derived one-dimensional connection profiles are lifted only inside
 connected occupied support and their integer `2*pi/h` branch is matched to

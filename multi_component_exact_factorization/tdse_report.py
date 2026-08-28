@@ -8,6 +8,7 @@ and populations are displayed without smoothing or peak normalization.
 
 from __future__ import annotations
 
+import gc
 from pathlib import Path
 import shutil
 
@@ -15,7 +16,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FFMpegWriter, FuncAnimation, PillowWriter
 import numpy as np
 
-from .core import AU_PER_FS, derivative
+from .core import AU_PER_FS
 from .report_plot_style import (
     COLORS,
     CURRENT_COLOR,
@@ -959,6 +960,8 @@ def _load_ef_fields(obs):
             "factorization_residual",
             "epsilon_1_imaginary_defect",
             "epsilon_2_imaginary_defect",
+            "epsilon_1_gi",
+            "epsilon_2_gi",
             "bo_state_density_q",
             "bo_state_density_R",
         ):
@@ -971,7 +974,202 @@ def _load_ef_fields(obs):
             if key in stored.files:
                 result[key] = np.asarray(stored[key], complex)
     result["path"] = path
+    result["gauge"] = "positive_density"
     return result
+
+
+def _add_time_derivative_in_place(target, phase, times_au):
+    """Add d(phase)/dt without allocating another trajectory-sized array."""
+    target = np.asarray(target)
+    phase = np.asarray(phase)
+    times = np.asarray(times_au, float)
+    if target.shape != phase.shape or target.shape[0] != len(times):
+        raise ValueError("gauge scalar/phase/time shape mismatch")
+    if len(times) < 2:
+        return
+    if len(times) == 2:
+        rate = (phase[1]-phase[0])/(times[1]-times[0])
+        target[0] += rate
+        target[1] += rate
+        return
+    for frame in range(len(times)):
+        if frame == 0:
+            rate = (phase[1]-phase[0])/(times[1]-times[0])
+        elif frame == len(times)-1:
+            rate = (phase[-1]-phase[-2])/(times[-1]-times[-2])
+        else:
+            h_left = times[frame]-times[frame-1]
+            h_right = times[frame+1]-times[frame]
+            rate = (
+                -h_right*phase[frame-1]/(h_left*(h_left+h_right))
+                +(h_right-h_left)*phase[frame]/(h_left*h_right)
+                +h_left*phase[frame+1]/(h_right*(h_left+h_right))
+            )
+        target[frame] += rate
+
+
+def _unwrap_gauge_phase_in_time_in_place(phase):
+    """Choose the nearest 2pi temporal branch at every grid site."""
+    for frame in range(1, phase.shape[0]):
+        turns = np.rint((phase[frame]-phase[frame-1])/(2.0*np.pi))
+        phase[frame] -= 2.0*np.pi*turns
+
+
+def _q_axial_phase(obs, ef):
+    """Construct theta1 with theta1(q_ref,R,t)=0 and q links real-positive."""
+    if "sphi_q1" not in ef:
+        raise KeyError(
+            "zero-potential gauge에는 sphi_q1이 필요합니다. "
+            "postprocess_tdse_ef --link-output nearest 이상을 사용하세요."
+        )
+    link = ef["sphi_q1"]
+    theta = np.zeros(link.shape, dtype=np.float64)
+    q = np.asarray(obs["q"], float)
+    q_reference = float(obs["options"].get("q0", 0.0))
+    anchor = int(np.argmin(np.abs(q-q_reference)))
+    for frame in range(theta.shape[0]):
+        phase = np.angle(link[frame])
+        if anchor+1 < len(q):
+            theta[frame, anchor+1:] = -np.cumsum(
+                phase[anchor:-1], axis=0,
+            )
+        if anchor > 0:
+            theta[frame, :anchor] = np.cumsum(
+                phase[:anchor][::-1], axis=0,
+            )[::-1]
+    _unwrap_gauge_phase_in_time_in_place(theta)
+    return theta, anchor
+
+
+def _R_axial_phase(obs, ef):
+    """Construct theta2 with theta2(R_ref,t)=0 and R links real-positive."""
+    if "sgamma_R1" not in ef:
+        raise KeyError(
+            "zero-potential gauge에는 sgamma_R1이 필요합니다. "
+            "postprocess_tdse_ef --link-output nearest 이상을 사용하세요."
+        )
+    link = ef["sgamma_R1"]
+    theta = np.zeros(link.shape, dtype=np.float64)
+    R = np.asarray(obs["R"], float)
+    options = obs["options"]
+    R_reference = float(
+        options.get("heavy_trap_center", options.get("R0", 0.0))
+    )
+    anchor = int(np.argmin(np.abs(R-R_reference)))
+    for frame in range(theta.shape[0]):
+        phase = np.angle(link[frame])
+        if anchor+1 < len(R):
+            theta[frame, anchor+1:] = -np.cumsum(phase[anchor:-1])
+        if anchor > 0:
+            theta[frame, :anchor] = np.cumsum(phase[:anchor][::-1])[::-1]
+    _unwrap_gauge_phase_in_time_in_place(theta)
+    return theta, anchor
+
+
+def transform_to_zero_potential_gauge(obs, ef):
+    """Transform loaded density-gauge fields to q/R axial gauges in place.
+
+    The non-periodic bonds are made real-positive.  A possible periodic
+    Wilson-loop phase is left on the closing seam, which is density-masked in
+    the reported trajectories.  Scalar potentials receive the matching
+    temporal gauge derivative; mechanical momenta are retained separately as
+    gauge-invariant diagnostics.
+    """
+    if ef.get("gauge") == "zero_potential":
+        return ef
+    theta_1, q_anchor = _q_axial_phase(obs, ef)
+    theta_2, R_anchor = _R_axial_phase(obs, ef)
+    times_au = np.asarray(obs["times_fs"], float)*AU_PER_FS
+
+    ef["mechanical_q"] = ef["a"]
+    ef["mechanical_R_first"] = ef["b"]
+    ef["mechanical_R"] = ef["alpha"]
+    _add_time_derivative_in_place(ef["epsilon_1"], theta_1, times_au)
+    _add_time_derivative_in_place(ef["epsilon_2"], theta_2, times_au)
+
+    for frame in range(len(times_au)):
+        phase_1 = theta_1[frame]
+        phase_2 = theta_2[frame]
+        for key, offset, axis in (
+            ("sphi_q1", 1, 0), ("sphi_q2", 2, 0),
+            ("sphi_R1", 1, 1), ("sphi_R2", 2, 1),
+        ):
+            if key in ef:
+                delta = np.roll(phase_1, -offset, axis=axis)-phase_1
+                ef[key][frame] *= np.exp(1j*delta)
+        for key, offset in (("sgamma_R1", 1), ("sgamma_R2", 2)):
+            if key in ef:
+                delta = np.roll(phase_2, -offset)-phase_2
+                ef[key][frame] *= np.exp(1j*delta)
+
+    # Reuse the large theta_1 buffer for the transformed q connection after
+    # its temporal derivative and all link transformations are complete.
+    theta_1[:] = np.angle(ef["sphi_q1"])/float(obs["dq"])
+    ef["a"] = theta_1
+    ef["b"] = np.angle(ef["sphi_R1"])/float(obs["dR"])
+    theta_2[:] = np.angle(ef["sgamma_R1"])/float(obs["dR"])
+    ef["alpha"] = theta_2
+    ef["gauge"] = "zero_potential"
+    ef["gauge_q_anchor_index"] = q_anchor
+    ef["gauge_R_anchor_index"] = R_anchor
+    ef.pop("_prepared_geometry", None)
+    ef.pop("plot_limits", None)
+    ef.pop("_tdpes_decomposition_limits", None)
+    return ef
+
+
+def _gauge_label(ef):
+    if ef.get("gauge") == "zero_potential":
+        return r"axial zero-potential gauge ($a_q=0$, $\alpha_R=0$ off seam)"
+    return "positive-density gauge"
+
+
+def _gauge_directory_name(gauge):
+    return {
+        "positive": "positive_gauge",
+        "zero": "zero_potential_gauge",
+    }[gauge]
+
+
+def _tdpes_components_frame(obs, ef, frame, floor=1.0e-4):
+    """Return total/GI/GD TDPES pieces with additive display shifts.
+
+    The cache stores the mathematically native total and GI terms.  GD is
+    reconstructed as their difference, so ``total == GI + GD`` holds before
+    and after a gauge transformation up to floating-point roundoff.  For
+    plotting, total and GI receive density-weighted scalar offsets and GD is
+    their difference.  Thus the standard displayed total is retained while
+    ``total == GI + GD`` remains exact.  No spatial feature or derivative is
+    smoothed, clipped, or otherwise altered.
+    """
+    if "epsilon_1_gi" not in ef or "epsilon_2_gi" not in ef:
+        raise KeyError(
+            "GI/GD TDPES 분해가 field cache에 없습니다. "
+            "postprocess_tdse_ef --overwrite를 다시 실행하세요."
+        )
+    density = np.asarray(obs["joint_density"][frame], float)
+    heavy = np.asarray(obs["heavy_density"][frame], float)
+    epsilon_1_gi = np.asarray(ef["epsilon_1_gi"][frame], float)
+    epsilon_1_total = np.asarray(ef["epsilon_1"][frame], float)
+    epsilon_2_gi = np.asarray(ef["epsilon_2_gi"][frame], float)
+    epsilon_2_total = np.asarray(ef["epsilon_2"][frame], float)
+    epsilon_1_total = density_weighted_shift(epsilon_1_total, density, floor)
+    epsilon_1_gi = density_weighted_shift(epsilon_1_gi, density, floor)
+    epsilon_1_gd = epsilon_1_total-epsilon_1_gi
+    epsilon_2_total = density_weighted_shift(epsilon_2_total, heavy, floor)
+    epsilon_2_gi = density_weighted_shift(epsilon_2_gi, heavy, floor)
+    epsilon_2_gd = epsilon_2_total-epsilon_2_gi
+    return {
+        "epsilon_1_total": epsilon_1_total,
+        "epsilon_1_gi": epsilon_1_gi,
+        "epsilon_1_gd": epsilon_1_gd,
+        "epsilon_2_total": epsilon_2_total,
+        "epsilon_2_gi": epsilon_2_gi,
+        "epsilon_2_gd": epsilon_2_gd,
+        "density_alpha": density_display_alpha(density, floor),
+        "heavy_support": heavy >= floor*max(float(np.max(heavy)), 1.0e-300),
+        "heavy": heavy,
+    }
 
 
 def support_aware_temporal_lift_1d(connection, density, spacing, floor=1.0e-4):
@@ -1069,6 +1267,10 @@ def _prepared_ef_geometry(obs, ef, floor=1.0e-4):
     alpha, heavy_support, branch_turns = support_aware_temporal_lift_1d(
         ef["alpha"], obs["heavy_density"], obs["dR"], floor,
     )
+    mechanical_R, _, mechanical_branch_turns = support_aware_temporal_lift_1d(
+        ef.get("mechanical_R", ef["alpha"]),
+        obs["heavy_density"], obs["dR"], floor,
+    )
     times_au = np.asarray(obs["times_fs"], dtype=float)*AU_PER_FS
     edge_order = 2 if len(times_au) >= 3 else 1
     dalpha_dt = (
@@ -1077,9 +1279,11 @@ def _prepared_ef_geometry(obs, ef, floor=1.0e-4):
     )
     cached = {
         "alpha": alpha,
+        "mechanical_R": mechanical_R,
         "dalpha_dt": dalpha_dt,
         "heavy_support": heavy_support,
         "alpha_branch_turns": branch_turns,
+        "mechanical_R_branch_turns": mechanical_branch_turns,
         "heavy_continuity_current": continuity_current_1d(
             obs["heavy_density"], obs["times_fs"], obs["dR"],
         ),
@@ -1122,6 +1326,11 @@ def _connection_time_derivative(ef, key, frame, spacing, spatial_axis, times_au)
     )[local]/spacing
 
 
+def _forward_bond_derivative(values, spacing, axis):
+    """Derivative on the same forward bond represented by an overlap link."""
+    return (np.roll(np.asarray(values), -1, axis=axis)-values)/float(spacing)
+
+
 def _ef_frame(obs, ef, frame, floor=1.0e-4):
     density = obs["joint_density"][frame]
     heavy = obs["heavy_density"][frame]
@@ -1143,15 +1352,34 @@ def _ef_frame(obs, ef, frame, floor=1.0e-4):
         ef, "b", frame, obs["dR"], 1, times_au
     )
     dalpha_dt = prepared["dalpha_dt"][frame]
-    force_q_full = -derivative(eps1_full, obs["dq"], axis=0)+da_dt
-    force_R_first_full = -derivative(eps1_full, obs["dR"], axis=1)+db_dt
-    force_R_full = -derivative(eps2_full, obs["dR"], axis=0)+dalpha_dt
+    # The connections live on forward bonds.  Use the matching bond
+    # difference of the site scalar; this makes
+    # -D^+epsilon+d_t A exactly gauge invariant on the finite grid (away from
+    # the periodic closing seam), instead of only in the continuum limit.
+    force_q_full = (
+        -_forward_bond_derivative(eps1_full, obs["dq"], axis=0)+da_dt
+    )
+    force_R_first_full = (
+        -_forward_bond_derivative(eps1_full, obs["dR"], axis=1)+db_dt
+    )
+    force_R_full = (
+        -_forward_bond_derivative(eps2_full, obs["dR"], axis=0)+dalpha_dt
+    )
     options = obs["options"]
     proton_mass = float(options.get("proton_mass", 1836.15267343))
     heavy_mass = float(options.get("heavy_mass", 1836.15267343))
-    momentum_q_full = a_full
-    momentum_R_first_full = b_full
-    momentum_R_full = alpha_full
+    # In the positive-density gauge the marginal phases vanish and these
+    # mechanical momenta equal the connections.  After an axial-gauge
+    # transformation the connections change, while the physical momenta must
+    # not.  ``transform_to_zero_potential_gauge`` retains the positive-gauge
+    # values under these explicit, gauge-invariant aliases.
+    momentum_q_full = np.asarray(
+        ef.get("mechanical_q", ef["a"])[frame], float,
+    )
+    momentum_R_first_full = np.asarray(
+        ef.get("mechanical_R_first", ef["b"])[frame], float,
+    )
+    momentum_R_full = prepared["mechanical_R"][frame]
     proton_current_full = density*momentum_q_full/proton_mass
     first_heavy_current_full = density*momentum_R_first_full/heavy_mass
     heavy_current_full = prepared["heavy_continuity_current"][frame]
@@ -1372,7 +1600,8 @@ def plot_exact_factorization_fields(obs, ef, outdir, dpi, frame=-1):
         _style_axis(ax)
     fig.suptitle(
         f"TDSE postprocessed nested exact factorization | t={obs['times_fs'][frame]:.4f} fs\n"
-        "density gauge; scalar offsets only; solid=occupied, dotted=low density",
+        f"{_gauge_label(ef)}; scalar offsets only; "
+        "solid=occupied, dotted=low density",
         fontweight="bold",
     )
     path = Path(outdir)/"05_tdse_exact_factorization_fields.png"
@@ -1488,6 +1717,274 @@ def plot_discrete_link_geometry(obs, ef, outdir, dpi, frame=-1):
     return path
 
 
+_TDPES_COMPONENT_KEYS = (
+    "epsilon_1_total", "epsilon_1_gi", "epsilon_1_gd",
+    "epsilon_2_total", "epsilon_2_gi", "epsilon_2_gd",
+)
+
+
+def _tdpes_decomposition_limits(
+    obs, ef, maximum_frames=180, floor=1.0e-4, surface_count=2,
+):
+    cache_key = (int(maximum_frames), float(floor), int(surface_count))
+    cached_store = ef.setdefault("_tdpes_decomposition_limits", {})
+    cached = cached_store.get(cache_key)
+    if cached is not None:
+        return cached
+    frames = selected_frames(
+        len(obs["times_fs"]), min(maximum_frames, len(obs["times_fs"]))
+    )
+    extrema = {key: [np.inf, -np.inf] for key in _TDPES_COMPONENT_KEYS}
+    bo_extrema = [np.inf, -np.inf]
+    energies = obs.get("bo_energies")
+    for index in frames:
+        frame = int(index)
+        current = _tdpes_components_frame(obs, ef, frame, floor)
+        for key in _TDPES_COMPONENT_KEYS[:3]:
+            values = current[key][current["density_alpha"] > 0.0]
+            if values.size:
+                extrema[key][0] = min(extrema[key][0], float(np.min(values)))
+                extrema[key][1] = max(extrema[key][1], float(np.max(values)))
+        for key in _TDPES_COMPONENT_KEYS[3:]:
+            values = current[key][current["heavy_support"]]
+            if values.size:
+                extrema[key][0] = min(extrema[key][0], float(np.min(values)))
+                extrema[key][1] = max(extrema[key][1], float(np.max(values)))
+        if energies is not None:
+            curves, _ = _tdpes_bo_curves(
+                obs, frame, surface_count, floor,
+            )
+            for shifted in curves:
+                selected = shifted[current["heavy_support"]]
+                if selected.size:
+                    bo_extrema[0] = min(bo_extrema[0], float(np.min(selected)))
+                    bo_extrema[1] = max(bo_extrema[1], float(np.max(selected)))
+    for key, limits in extrema.items():
+        if not np.all(np.isfinite(limits)):
+            limits[:] = (-1.0, 1.0)
+        elif limits[1] <= limits[0]:
+            padding = max(abs(limits[0])*1.0e-6, 1.0e-12)
+            limits[:] = (limits[0]-padding, limits[1]+padding)
+    if not np.all(np.isfinite(bo_extrema)):
+        bo_extrema[:] = (-1.0, 1.0)
+    elif bo_extrema[1] <= bo_extrema[0]:
+        padding = max(abs(bo_extrema[0])*1.0e-6, 1.0e-12)
+        bo_extrema[:] = (bo_extrema[0]-padding, bo_extrema[1]+padding)
+    cached = {key: tuple(value) for key, value in extrema.items()}
+    cached["bo"] = tuple(bo_extrema)
+    cached_store[cache_key] = cached
+    return cached
+
+
+def _tdpes_bo_curves(obs, frame, surface_count, floor=1.0e-4):
+    energies = obs.get("bo_energies")
+    if energies is None:
+        return [], np.nan
+    iq, _ = np.unravel_index(
+        int(np.argmax(obs["joint_density"][frame])),
+        obs["joint_density"][frame].shape,
+    )
+    raw = np.asarray(energies, float)[:surface_count, iq, :]
+    if len(raw) == 0:
+        return [], float(obs["q"][iq])
+    shifted_reference = density_weighted_shift(
+        raw[0], obs["heavy_density"][frame], floor,
+    )
+    # Use one common offset for every BO state so the plotted gaps are exact.
+    common_offset = float(np.mean(raw[0]-shifted_reference))
+    curves = [curve-common_offset for curve in raw]
+    return curves, float(obs["q"][iq])
+
+
+def _draw_tdpes_decomposition(
+    obs, ef, frame, limits, surface_count, *, figure=None, axes=None,
+):
+    current = _tdpes_components_frame(obs, ef, frame)
+    q, R = obs["q"], obs["R"]
+    extent = [q[0], q[-1], R[0], R[-1]]
+    if figure is None or axes is None:
+        figure, axes = plt.subplots(
+            2, 3, figsize=(16.4, 9.1), constrained_layout=True,
+        )
+    images = []
+    map_specs = (
+        ("epsilon_1_total", r"Total $\epsilon^{(1)}$"),
+        ("epsilon_1_gi", r"Gauge-invariant $\epsilon_{GI}^{(1)}$"),
+        ("epsilon_1_gd", r"Gauge-dependent $\epsilon_{GD}^{(1)}$"),
+    )
+    for axis, (key, title) in zip(axes[0], map_specs):
+        axis.set_facecolor(MASK_COLOR)
+        image = axis.imshow(
+            current[key].T, origin="lower", aspect="auto",
+            interpolation="nearest", extent=extent,
+            cmap=masked_cmap(SCALAR_CMAP),
+            vmin=limits[key][0], vmax=limits[key][1],
+            alpha=current["density_alpha"].T,
+        )
+        axis.set(
+            xlabel=r"proton $q$ ($a_0$)",
+            ylabel=r"heavy $R$ ($a_0$)",
+        )
+        axis.set_xlim(_clipped_q_limits(q))
+        axis.set_title(title, loc="left", fontweight="semibold")
+        figure.colorbar(
+            image, ax=axis, pad=0.01, format=NUMBER_FORMATTER,
+            extend="both", label="shifted energy (Hartree)",
+        )
+        images.append((image, key))
+
+    line_specs = (
+        ("epsilon_2_total", r"Total $\epsilon^{(2)}$"),
+        ("epsilon_2_gi", r"Gauge-invariant $\epsilon_{GI}^{(2)}$"),
+        ("epsilon_2_gd", r"Gauge-dependent $\epsilon_{GD}^{(2)}$"),
+    )
+    lines, tails, bo_axes, bo_lines = [], [], [], []
+    curves, q_peak = _tdpes_bo_curves(obs, frame, surface_count)
+    for axis, (key, title) in zip(axes[1], line_specs):
+        occupied = np.where(current["heavy_support"], current[key], np.nan)
+        line, tail = _support_tail_lines(
+            axis, R, occupied, current[key], current["heavy_support"],
+            color=COLORS[0], label=title, linewidth=2.0,
+        )
+        _scaled_heavy_density(axis, R, current["heavy"])
+        axis.set(
+            xlabel=r"heavy $R$ ($a_0$)", xlim=(R[0], R[-1]),
+            ylim=limits[key],
+        )
+        color_y_axis(axis, COLORS[0], "shifted energy (Hartree)")
+        axis.set_title(title, loc="left", fontweight="semibold")
+        _style_axis(axis)
+        bo_axis = axis.twinx()
+        local_bo_lines = []
+        for state, curve in enumerate(curves):
+            bo_line, = bo_axis.plot(
+                R, curve, color=COLORS[(state+1) % len(COLORS)],
+                lw=1.0, ls="--", alpha=0.78,
+                label=rf"$E_{state}(q_{{peak}},R)$",
+            )
+            local_bo_lines.append(bo_line)
+        bo_axis.set_ylim(limits["bo"])
+        color_y_axis(bo_axis, "0.35", "common-shifted BO energy (Hartree)")
+        if local_bo_lines:
+            bo_axis.legend(
+                handles=local_bo_lines, frameon=False, fontsize=6.5,
+                loc="lower right", ncol=min(2, len(local_bo_lines)),
+                title=rf"$q_{{peak}}={q_peak:.2f}$", title_fontsize=6.5,
+            )
+        lines.append(line)
+        tails.append(tail)
+        bo_axes.append(bo_axis)
+        bo_lines.append(local_bo_lines)
+    return figure, axes, current, images, lines, tails, bo_axes, bo_lines
+
+
+def plot_tdpes_decomposition(
+    obs, ef, outdir, dpi, frame=-1, surface_count=2,
+):
+    if "epsilon_1_gi" not in ef or "epsilon_2_gi" not in ef:
+        print(
+            "TDSE TDPES GI/GD 분해 그림 생략: 새 field cache가 필요합니다. "
+            "postprocess_tdse_ef --overwrite를 실행하세요."
+        )
+        return None
+    limits = _tdpes_decomposition_limits(
+        obs, ef, surface_count=surface_count,
+    )
+    fig, _, current, *_ = _draw_tdpes_decomposition(
+        obs, ef, frame, limits, surface_count,
+    )
+    residual_1 = np.max(np.abs(
+        current["epsilon_1_total"]
+        -current["epsilon_1_gi"]-current["epsilon_1_gd"]
+    ))
+    residual_2 = np.max(np.abs(
+        current["epsilon_2_total"]
+        -current["epsilon_2_gi"]-current["epsilon_2_gd"]
+    ))
+    fig.suptitle(
+        f"TDSE-derived TDPES decomposition | {_gauge_label(ef)} | "
+        f"t={obs['times_fs'][frame]:.4f} fs\n"
+        f"display identity residuals: level 1={residual_1:.2e}, "
+        f"level 2={residual_2:.2e}; scalar offsets only",
+        fontweight="bold",
+    )
+    path = Path(outdir)/"11_tdse_tdpes_gi_gd_decomposition.png"
+    fig.savefig(path, dpi=dpi)
+    plt.close(fig)
+    print(f"TDSE TDPES GI/GD decomposition 저장: {path}")
+    return path
+
+
+def make_tdpes_decomposition_animation(
+    obs, ef, outdir, fps, max_frames, dpi, fmt, surface_count=2,
+):
+    if "epsilon_1_gi" not in ef or "epsilon_2_gi" not in ef:
+        return None
+    frames = selected_frames(
+        len(obs["times_fs"]), min(max_frames, len(obs["times_fs"]))
+    )
+    limits = _tdpes_decomposition_limits(
+        obs, ef, max_frames, surface_count=surface_count,
+    )
+    first = int(frames[0])
+    fig, axes, _, images, lines, tails, bo_axes, bo_lines = (
+        _draw_tdpes_decomposition(
+            obs, ef, first, limits, surface_count,
+        )
+    )
+    title = fig.suptitle("")
+
+    def update(number):
+        frame = int(frames[number])
+        current = _tdpes_components_frame(obs, ef, frame)
+        for image, key in images:
+            image.set_data(current[key].T)
+            image.set_alpha(current["density_alpha"].T)
+        for line, tail, key in zip(
+            lines, tails, _TDPES_COMPONENT_KEYS[3:],
+        ):
+            line.set_ydata(np.where(
+                current["heavy_support"], current[key], np.nan,
+            ))
+            tail.set_ydata(np.where(
+                ~current["heavy_support"], current[key], np.nan,
+            ))
+        curves, q_peak = _tdpes_bo_curves(obs, frame, surface_count)
+        for axis_lines, curves_now, bo_axis in zip(
+            bo_lines, (curves, curves, curves), bo_axes,
+        ):
+            for bo_line, curve in zip(axis_lines, curves_now):
+                bo_line.set_ydata(curve)
+            legend = bo_axis.get_legend()
+            if legend is not None:
+                legend.set_title(rf"$q_{{peak}}={q_peak:.2f}$")
+        residual_1 = np.max(np.abs(
+            current["epsilon_1_total"]
+            -current["epsilon_1_gi"]-current["epsilon_1_gd"]
+        ))
+        residual_2 = np.max(np.abs(
+            current["epsilon_2_total"]
+            -current["epsilon_2_gi"]-current["epsilon_2_gd"]
+        ))
+        title.set_text(
+            f"TDSE-derived TDPES decomposition | {_gauge_label(ef)} | "
+            f"t={obs['times_fs'][frame]:.4f} fs\n"
+            f"total=GI+GD residuals: ({residual_1:.2e}, {residual_2:.2e}); "
+            "fixed scales; density changes opacity only"
+        )
+        return (
+            *(entry[0] for entry in images), *lines, *tails,
+            *(line for group in bo_lines for line in group), title,
+        )
+
+    update(0)
+    animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
+    return _save_animation(
+        animation, fig, outdir, "tdse_tdpes_gi_gd_decomposition",
+        fps, dpi, fmt,
+    )
+
+
 def make_exact_field_animation(obs, ef, outdir, fps, max_frames, dpi, fmt):
     frames = selected_frames(len(obs["times_fs"]), min(max_frames, len(obs["times_fs"])))
     limits = _trajectory_ef_limits(obs, ef, max_frames)
@@ -1563,7 +2060,8 @@ def make_exact_field_animation(obs, ef, outdir, fps, max_frames, dpi, fmt):
         force_tail.set_ydata(np.where(~item["heavy_support"], item["force_R_full"], np.nan))
         title.set_text(
             f"TDSE -> nested exact factorization | t={obs['times_fs'][frame]:.4f} fs\n"
-            "two TDPES; first vector potential (a,b); second vector potential alpha; fixed scales"
+            f"{_gauge_label(ef)}; two TDPES; first vector potential (a,b); "
+            "second vector potential alpha; fixed scales"
         )
         return *(entry[0] for entry in images), eps_line, eps_tail, density_line, alpha_line, alpha_tail, momentum_line, momentum_tail, current_line, current_tail, force_line, force_tail, title
 
@@ -1770,7 +2268,7 @@ def make_all_exact_potentials_animation(
         title.set_text(
             f"TDSE-derived complete nested exact potentials | "
             f"t={obs['times_fs'][frame]:.4f} fs\n"
-            "density gauge; fixed trajectory-wide scales; "
+            f"{_gauge_label(ef)}; fixed trajectory-wide scales; "
             "solid=occupied, dotted=low density"
         )
         return (
@@ -1912,8 +2410,31 @@ def make_coordinate_focus_animations(
 
 def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
         max_frames=180, animation_dpi=110, fmt="mp4", snapshot_count=6,
-        marginal_ymax=1.5, marginal_xmax=12.0, surface_count=2):
+        marginal_ymax=1.5, marginal_xmax=12.0, surface_count=2,
+        gauge_mode="both"):
     outdir = Path(outdir)
+    if gauge_mode == "both":
+        for selected_gauge in ("positive", "zero"):
+            gauge_outdir = outdir/_gauge_directory_name(selected_gauge)
+            print(
+                f"TDSE gauge report 시작: {selected_gauge} -> {gauge_outdir}"
+            )
+            completed = run(
+                archive, gauge_outdir, dpi=dpi,
+                no_animation=no_animation, fps=fps,
+                max_frames=max_frames, animation_dpi=animation_dpi,
+                fmt=fmt, snapshot_count=snapshot_count,
+                marginal_ymax=marginal_ymax,
+                marginal_xmax=marginal_xmax,
+                surface_count=surface_count,
+                gauge_mode=selected_gauge,
+            )
+            if selected_gauge == "positive":
+                del completed
+                gc.collect()
+        return completed
+    if gauge_mode not in ("positive", "zero"):
+        raise ValueError(f"unknown TDSE report gauge_mode={gauge_mode!r}")
     outdir.mkdir(parents=True, exist_ok=True)
     data = load_observables(archive)
     obs = calculate_observables(data)
@@ -1924,6 +2445,13 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
         f"{coefficient_note}"
     )
     ef = _load_ef_fields(obs)
+    if gauge_mode == "zero":
+        if ef is None:
+            print(
+                "zero-potential gauge report를 만들 field cache가 없습니다."
+            )
+        else:
+            transform_to_zero_potential_gauge(obs, ef)
     if (
         obs["electron_density"] is None
         and ef is not None
@@ -1947,6 +2475,9 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
         plot_exact_factorization_fields(obs, ef, outdir, dpi)
         plot_transport_fields(obs, ef, outdir, dpi)
         plot_discrete_link_geometry(obs, ef, outdir, dpi)
+        plot_tdpes_decomposition(
+            obs, ef, outdir, dpi, surface_count=surface_count,
+        )
     else:
         print(
             "TDSE exact-potential/connection 그림 생략: "
@@ -2005,6 +2536,10 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
                 obs, ef, outdir, fps, max_frames, animation_dpi, fmt,
                 marginal_ymax, marginal_xmax,
             )
+            make_tdpes_decomposition_animation(
+                obs, ef, outdir, fps, max_frames, animation_dpi, fmt,
+                surface_count=surface_count,
+            )
     report_payload = dict(
         times_fs=obs["times_fs"],
         q_mean=obs["q_mean"], R_mean=obs["R_mean"],
@@ -2023,7 +2558,9 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
     if ef is not None:
         geometry = _prepared_ef_geometry(obs, ef)
         report_payload.update(
+            report_gauge=np.array(ef.get("gauge", "positive_density")),
             alpha_support_temporal_lift=geometry["alpha"],
+            mechanical_R_support_temporal_lift=geometry["mechanical_R"],
             alpha_branch_turns=geometry["alpha_branch_turns"],
             heavy_continuity_current=geometry["heavy_continuity_current"],
             proton_continuity_current=geometry["proton_continuity_current"],
@@ -2035,6 +2572,37 @@ def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
             f"max|j_R|={np.max(np.abs(geometry['heavy_continuity_current'])):.3e}, "
             f"max|J_q|={np.max(np.abs(geometry['proton_continuity_current'])):.3e}"
         )
+        if ef.get("gauge") == "zero_potential":
+            joint_peak = np.maximum(
+                np.max(obs["joint_density"], axis=(1, 2)), 1.0e-300,
+            )
+            joint_support = (
+                obs["joint_density"] >= 1.0e-4*joint_peak[:, None, None]
+            )
+            joint_support[:, -1, :] = False
+            heavy_peak = np.maximum(
+                np.max(obs["heavy_density"], axis=1), 1.0e-300,
+            )
+            heavy_support = (
+                obs["heavy_density"] >= 1.0e-4*heavy_peak[:, None]
+            )
+            heavy_support[:, -1] = False
+            selected_a = np.abs(ef["a"][joint_support])
+            selected_alpha = np.abs(ef["alpha"][heavy_support])
+            max_a = float(np.max(selected_a)) if selected_a.size else 0.0
+            max_alpha = (
+                float(np.max(selected_alpha)) if selected_alpha.size else 0.0
+            )
+            report_payload.update(
+                zero_gauge_max_abs_a_on_support=np.array(max_a),
+                zero_gauge_max_abs_alpha_on_support=np.array(max_alpha),
+            )
+            print(
+                "TDSE zero-potential gauge audit: "
+                f"max occupied off-seam |a|={max_a:.3e}, "
+                f"max occupied off-seam |alpha|={max_alpha:.3e}; "
+                "PBC Wilson phase remains only on the closing seam"
+            )
     np.savez_compressed(
         outdir/"tdse_report_observables.npz", **report_payload
     )

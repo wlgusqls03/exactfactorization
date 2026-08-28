@@ -62,16 +62,28 @@ class TDSEReportTests(unittest.TestCase):
             }], dtype=object),
         )
         shape = (len(times), len(q), len(R))
+        epsilon_1 = np.broadcast_to(
+            q[None, :, None]+0.2*R[None, None, :], shape,
+        )
+        epsilon_2 = np.broadcast_to(R[None, :], (len(times), len(R)))
+        a = np.broadcast_to(
+            (0.03+0.004*times)[:, None, None], shape,
+        ).copy()
+        b = np.full(shape, -0.02)
+        alpha = np.broadcast_to(
+            (0.01-0.002*times)[:, None], (len(times), len(R)),
+        ).copy()
         np.savez_compressed(
             root/"tdse_exact_factorization_fields.npz",
             times_fs=times, q=q, R=R,
-            epsilon_1=np.broadcast_to(q[None, :, None]+0.2*R[None, None, :], shape),
-            epsilon_2=np.broadcast_to(R[None, :], (len(times), len(R))),
-            a=np.full(shape, 0.03), b=np.full(shape, -0.02),
-            alpha=np.full((len(times), len(R)), 0.01),
-            sphi_q1=np.exp(1j*np.full(shape, 0.03*dq)),
+            epsilon_1=epsilon_1,
+            epsilon_1_gi=0.65*epsilon_1,
+            epsilon_2=epsilon_2,
+            epsilon_2_gi=0.55*epsilon_2,
+            a=a, b=b, alpha=alpha,
+            sphi_q1=np.exp(1j*a*dq),
             sphi_R1=np.exp(-1j*np.full(shape, 0.02*dR)),
-            sgamma_R1=np.exp(1j*np.full((len(times), len(R)), 0.01*dR)),
+            sgamma_R1=np.exp(1j*alpha*dR),
             bo_state_density_q=state_density_q,
             bo_state_density_R=state_density_R,
             factorization_residual=np.zeros(len(times)),
@@ -88,21 +100,23 @@ class TDSEReportTests(unittest.TestCase):
                 snapshot_count=3,
             )
             self.assertTrue(np.array_equal(obs["joint_density"], joint))
-            for name in (
-                "01_tdse_particle_motion.png",
-                "02_tdse_joint_density.png",
-                "03_tdse_electronic_dynamics.png",
-                "04_tdse_numerical_reliability.png",
-                "05_tdse_exact_factorization_fields.png",
-                "06_tdse_transport_and_drive.png",
-                "07_tdse_discrete_link_geometry.png",
-                "08_tdse_joint_density_relative_log.png",
-                "09_tdse_collision_snapshots.png",
-                "10_tdse_relative_collision_diagnostics.png",
-                "tdse_collision_observables.npz",
-                "tdse_report_observables.npz",
-            ):
-                self.assertTrue((report/name).is_file(), name)
+            for gauge in ("positive_gauge", "zero_potential_gauge"):
+                for name in (
+                    "01_tdse_particle_motion.png",
+                    "02_tdse_joint_density.png",
+                    "03_tdse_electronic_dynamics.png",
+                    "04_tdse_numerical_reliability.png",
+                    "05_tdse_exact_factorization_fields.png",
+                    "06_tdse_transport_and_drive.png",
+                    "07_tdse_discrete_link_geometry.png",
+                    "08_tdse_joint_density_relative_log.png",
+                    "09_tdse_collision_snapshots.png",
+                    "10_tdse_relative_collision_diagnostics.png",
+                    "11_tdse_tdpes_gi_gd_decomposition.png",
+                    "tdse_collision_observables.npz",
+                    "tdse_report_observables.npz",
+                ):
+                    self.assertTrue((report/gauge/name).is_file(), (gauge, name))
 
     def test_loader_never_requires_large_tdse_coefficients(self):
         with TemporaryDirectory() as temporary:
@@ -121,20 +135,77 @@ class TDSEReportTests(unittest.TestCase):
                 snapshot_count=2, max_frames=2, animation_dpi=25,
                 fps=2, fmt="gif",
             )
-            for name in (
-                "tdse_dynamics_overview.gif",
-                "tdse_joint_density_relative_log.gif",
-                "particle_marginals_fixed_scale.gif",
-                "particle_marginals_relative_log.gif",
-                "tdse_bo_surface_dynamics.gif",
-                "tdse_exact_factorization_fields.gif",
-                "tdse_all_exact_potentials.gif",
-                "tdse_transport_and_drive.gif",
-                "heavy_coordinate_dynamics.gif",
-                "proton_coordinate_dynamics.gif",
-                "tdse_collision_dynamics.gif",
-            ):
-                self.assertTrue((report/name).is_file(), name)
+            for gauge in ("positive_gauge", "zero_potential_gauge"):
+                for name in (
+                    "tdse_dynamics_overview.gif",
+                    "tdse_joint_density_relative_log.gif",
+                    "particle_marginals_fixed_scale.gif",
+                    "particle_marginals_relative_log.gif",
+                    "tdse_bo_surface_dynamics.gif",
+                    "tdse_exact_factorization_fields.gif",
+                    "tdse_all_exact_potentials.gif",
+                    "tdse_transport_and_drive.gif",
+                    "tdse_tdpes_gi_gd_decomposition.gif",
+                    "heavy_coordinate_dynamics.gif",
+                    "proton_coordinate_dynamics.gif",
+                    "tdse_collision_dynamics.gif",
+                ):
+                    self.assertTrue((report/gauge/name).is_file(), (gauge, name))
+
+    def test_axial_gauge_preserves_transport_force_and_tdpes_identity(self):
+        with TemporaryDirectory() as temporary:
+            archive, _ = self._write_archive(temporary)
+            obs = tdse_report.calculate_observables(
+                tdse_report.load_observables(archive)
+            )
+            ef = tdse_report._load_ef_fields(obs)
+            positive = [
+                tdse_report._ef_frame(obs, ef, frame)
+                for frame in range(len(obs["times_fs"]))
+            ]
+            # Clear derived caches before changing the native links/scalars.
+            ef.pop("_prepared_geometry", None)
+            ef.pop("plot_limits", None)
+            tdse_report.transform_to_zero_potential_gauge(obs, ef)
+            zero = [
+                tdse_report._ef_frame(obs, ef, frame)
+                for frame in range(len(obs["times_fs"]))
+            ]
+            # The last index is the periodic closing seam carrying the Wilson
+            # loop; every ordinary forward bond is axial-gauge zero.
+            self.assertLess(np.max(np.abs(ef["a"][:, :-1, :])), 2.0e-15)
+            self.assertLess(np.max(np.abs(ef["alpha"][:, :-1])), 2.0e-15)
+            for before, after in zip(positive, zero):
+                for key in (
+                    "momentum_q_full", "momentum_R_first_full",
+                    "momentum_R_full", "proton_current_full",
+                    "first_heavy_current_full", "heavy_current_full",
+                ):
+                    self.assertTrue(np.allclose(
+                        before[key], after[key], rtol=0.0, atol=2.0e-14,
+                    ), key)
+                self.assertTrue(np.allclose(
+                    before["force_q_full"][:-1],
+                    after["force_q_full"][:-1],
+                    rtol=0.0, atol=2.0e-13,
+                ))
+                self.assertTrue(np.allclose(
+                    before["force_R_full"][:-1],
+                    after["force_R_full"][:-1],
+                    rtol=0.0, atol=2.0e-13,
+                ))
+            for frame in range(len(obs["times_fs"])):
+                pieces = tdse_report._tdpes_components_frame(obs, ef, frame)
+                self.assertTrue(np.allclose(
+                    pieces["epsilon_1_total"],
+                    pieces["epsilon_1_gi"]+pieces["epsilon_1_gd"],
+                    rtol=0.0, atol=2.0e-15,
+                ))
+                self.assertTrue(np.allclose(
+                    pieces["epsilon_2_total"],
+                    pieces["epsilon_2_gi"]+pieces["epsilon_2_gd"],
+                    rtol=0.0, atol=2.0e-15,
+                ))
 
     def test_relative_collision_reduction_preserves_mass_and_crossing(self):
         q = np.array([-1.0, 0.0, 1.0])

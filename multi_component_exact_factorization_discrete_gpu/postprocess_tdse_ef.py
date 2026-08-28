@@ -151,7 +151,9 @@ def _frame_fields(
     temporal_1 = -1j*cp.sum(
         cp.conj(c)*dc, axis=0, dtype=model.reduction_complex_dtype,
     )/c_norm_safe
-    epsilon_1_complex = electronic+temporal_1
+    epsilon_1_gi_complex = electronic
+    epsilon_1_gd_complex = temporal_1
+    epsilon_1_complex = epsilon_1_gi_complex+epsilon_1_gd_complex
 
     q_weights = kinetic_weights(model.dq, model.proton_mass)
     # The positive-density gauge makes ``lam=F/chi`` a real float64 array,
@@ -181,19 +183,27 @@ def _frame_fields(
         dtype=model.reduction_complex_dtype,
     )*model.dq/lam_norm_safe
     if spectral_q_kinetic is None:
-        hpr_local = epsilon_1_complex*lam+q_action_lam
-        epsilon_2_complex = cp.sum(
-            cp.conj(lam)*hpr_local, axis=0,
+        hpr_gi_local = epsilon_1_gi_complex*lam+q_action_lam
+        epsilon_2_gi_complex = cp.sum(
+            cp.conj(lam)*hpr_gi_local, axis=0,
             dtype=model.reduction_complex_dtype,
-        )*model.dq/lam_norm_safe+temporal_2
+        )*model.dq/lam_norm_safe
     else:
-        epsilon_2_complex = (
+        epsilon_2_gi_complex = (
             cp.sum(
-                cp.real(lam*cp.conj(lam))*epsilon_1_complex, axis=0,
+                cp.real(lam*cp.conj(lam))*epsilon_1_gi_complex, axis=0,
                 dtype=model.reduction_complex_dtype,
             )*model.dq/lam_norm_safe
-            +spectral_q_kinetic+temporal_2
+            +spectral_q_kinetic
         )
+    epsilon_2_gd_complex = (
+        cp.sum(
+            cp.real(lam*cp.conj(lam))*epsilon_1_gd_complex, axis=0,
+            dtype=model.reduction_complex_dtype,
+        )*model.dq/lam_norm_safe
+        +temporal_2
+    )
+    epsilon_2_complex = epsilon_2_gi_complex+epsilon_2_gd_complex
 
     R_transports = neighbor_transports(c, basis, 2)
     sphi_R = {}
@@ -219,7 +229,9 @@ def _frame_fields(
     factorization_difference = y-reconstructed
     result = {
         "epsilon_1": epsilon_1_complex.real,
+        "epsilon_1_gi": epsilon_1_gi_complex.real,
         "epsilon_2": epsilon_2_complex.real,
+        "epsilon_2_gi": epsilon_2_gi_complex.real,
         # Connections are derived diagnostics.  The complex overlap links
         # below are the native finite-grid geometry and retain both phase and
         # magnitude; no branch unwrapping or density masking is applied here.
@@ -274,7 +286,7 @@ def run(args):
     nt = len(metadata["times_fs"])
     nq, nR = len(metadata["q"]), len(metadata["R"])
     estimated_bytes = nt*(
-        3*nq*nR+2*nR+metadata["bo_states"]*(nq+nR)
+        4*nq*nR+3*nR+metadata["bo_states"]*(nq+nR)
     )*np.dtype(np.float64).itemsize
     link_keys = ()
     if args.link_output == "nearest":
@@ -339,7 +351,9 @@ def run(args):
 
     fields = {
         "epsilon_1": np.empty((nt, nq, nR), dtype=np.float64),
+        "epsilon_1_gi": np.empty((nt, nq, nR), dtype=np.float64),
         "epsilon_2": np.empty((nt, nR), dtype=np.float64),
+        "epsilon_2_gi": np.empty((nt, nR), dtype=np.float64),
         "a": np.empty((nt, nq, nR), dtype=np.float64),
         "b": np.empty((nt, nq, nR), dtype=np.float64),
         "alpha": np.empty((nt, nR), dtype=np.float64),
@@ -426,6 +440,10 @@ def run(args):
         source_archive=np.array(str(archive)),
         source_kind=np.array(metadata["source_kind"]),
         gauge=np.array("positive_density_marginals"),
+        scalar_decomposition=np.array(
+            "epsilon_total=epsilon_gi+epsilon_gd; "
+            "epsilon_gd reconstructed as total-minus-stored-gi"
+        ),
         scalar_time_derivative=np.array(
             "saved_instantaneous_full_spectral_action_projection"
             if metadata["has_instantaneous_action"]
