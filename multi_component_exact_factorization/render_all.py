@@ -376,7 +376,10 @@ def parse_args(argv=None):
     )
     parser.add_argument("--max-axis-points", type=int, default=24)
     parser.add_argument("--max-3d-frames", type=int, default=80)
-    parser.add_argument("--surface-count", type=int, default=7)
+    parser.add_argument(
+        "--surface-count", type=int, default=2,
+        help="BO surface/channel movie에 표시할 낮은 상태 수 (default: 2)",
+    )
     parser.add_argument("--potential-support-floor", type=float, default=1.0e-4)
     parser.add_argument("--show-potential-tails", action="store_true")
     parser.add_argument("--no-potential-analysis", action="store_true")

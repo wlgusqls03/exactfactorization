@@ -54,6 +54,19 @@ _REQUIRED = (
 )
 
 
+_Q_DISPLAY_LIMITS = (-12.0, 12.0)
+_BO_Q_DISPLAY_LIMITS = (-8.0, 8.0)
+_BO_PACKET_VISUAL_AMPLIFICATION = 2.0
+
+
+def _clipped_q_limits(q, requested=_Q_DISPLAY_LIMITS):
+    """Return display-only q limits clipped to the available grid."""
+    q = np.asarray(q, float)
+    lower = max(float(q[0]), float(requested[0]))
+    upper = min(float(q[-1]), float(requested[1]))
+    return (lower, upper) if lower < upper else (float(q[0]), float(q[-1]))
+
+
 def _options(data):
     if "args" not in data.files:
         return {}
@@ -251,6 +264,7 @@ def plot_joint_snapshots(obs, outdir, dpi, snapshot_count=6):
     )
     image = None
     positions = _fixed_positions(obs["options"])
+    q_limits = _clipped_q_limits(q)
     for ax, frame in zip(axes.flat, frames):
         image = ax.imshow(
             obs["joint_density"][int(frame)].T,
@@ -265,6 +279,7 @@ def plot_joint_snapshots(obs, outdir, dpi, snapshot_count=6):
         ax.set_title(f"t = {times[int(frame)]:.3f} fs", loc="left")
         ax.set_xlabel(r"proton $q$ ($a_0$)")
         ax.set_ylabel(r"heavy $R$ ($a_0$)")
+        ax.set_xlim(q_limits)
     for ax in axes.flat[len(frames):]:
         ax.set_visible(False)
     if image is not None:
@@ -305,6 +320,7 @@ def plot_joint_log_snapshots(obs, outdir, dpi, snapshot_count=6, decades=6.0):
         squeeze=False,
     )
     image = None
+    q_limits = _clipped_q_limits(q)
     for ax, frame in zip(axes.flat, frames):
         frame = int(frame)
         image = ax.imshow(
@@ -318,6 +334,7 @@ def plot_joint_log_snapshots(obs, outdir, dpi, snapshot_count=6, decades=6.0):
         )
         ax.set_xlabel(r"proton $q$ ($a_0$)")
         ax.set_ylabel(r"heavy $R$ ($a_0$)")
+        ax.set_xlim(q_limits)
     for ax in axes.flat[len(frames):]:
         ax.set_visible(False)
     if image is not None:
@@ -527,6 +544,7 @@ def make_joint_log_animation(
         extent=[q[0], q[-1], R[0], R[-1]], cmap=JOINT_CMAP,
         vmin=-float(decades), vmax=0.0,
     )
+    axis.set_xlim(_clipped_q_limits(q))
     for position in _fixed_positions(obs["options"]):
         axis.axvline(position, color="white", lw=0.75, ls=":", alpha=0.68)
         axis.axhline(position, color="white", lw=0.75, ls=":", alpha=0.68)
@@ -585,11 +603,7 @@ def make_dynamics_animation(obs, outdir, fps, max_frames, dpi, fmt):
     proton_line, = marginal_ax.plot(q, obs["proton_density"][first], color=PARTICLE_COLORS["proton"], lw=2.1, label="proton")
     heavy_line, = marginal_ax.plot(R, obs["heavy_density"][first], color=PARTICLE_COLORS["heavy"], lw=2.1, label="heavy nucleus")
     add_fixed_center_markers(marginal_ax, obs["options"])
-    position_min = min(float(q[0]), float(R[0]))
-    position_max = max(float(q[-1]), float(R[-1]))
-    if has_electron:
-        position_min = min(position_min, float(x[0]))
-        position_max = max(position_max, float(x[-1]))
+    position_min, position_max = _clipped_q_limits(q)
     marginal_ax.set(
         xlim=(position_min, position_max),
         ylim=(0.0, 1.05*obs["marginal_ymax"]),
@@ -614,6 +628,7 @@ def make_dynamics_animation(obs, outdir, fps, max_frames, dpi, fmt):
         joint_ax.axhline(position, color="white", lw=0.75, ls=":", alpha=0.68)
     joint_mean, = joint_ax.plot(obs["q_mean"][first], obs["R_mean"][first], "wo", ms=4, mec="0.15", mew=0.6)
     joint_ax.set(xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)")
+    joint_ax.set_xlim(_clipped_q_limits(q))
     joint_ax.set_title("Proton-heavy joint density", loc="left", fontweight="semibold")
     fig.colorbar(joint_image, ax=joint_ax, pad=0.01, format=NUMBER_FORMATTER, label=r"density ($a_0^{-2}$)")
 
@@ -680,7 +695,7 @@ def make_dynamics_animation(obs, outdir, fps, max_frames, dpi, fmt):
 
 
 def make_bo_surface_dynamics_animation(
-    obs, ef, outdir, fps, max_frames, dpi, fmt, *, surface_count=7,
+    obs, ef, outdir, fps, max_frames, dpi, fmt, *, surface_count=2,
 ):
     """Animate BO surfaces, channel wavepackets and population transfer.
 
@@ -718,11 +733,10 @@ def make_bo_surface_dynamics_animation(
         for frame in frames
     ]
 
-    # The bare left-ion/proton Coulomb pole at q=-L/2 is physically outside
-    # the packet trajectory shown here and otherwise compresses every useful
-    # BO cut.  Keep the underlying arrays untouched and crop only this panel.
-    q_plot_min = max(-5.0, float(q[0]))
-    q_plot_mask = np.asarray(q >= q_plot_min)
+    # Keep the underlying arrays untouched and crop only this BO panel to the
+    # dynamically relevant central window.
+    q_plot_min, q_plot_max = _clipped_q_limits(q, _BO_Q_DISPLAY_LIMITS)
+    q_plot_mask = np.asarray((q >= q_plot_min) & (q <= q_plot_max))
 
     def energy_limits(coordinate):
         samples = []
@@ -755,8 +769,8 @@ def make_bo_surface_dynamics_animation(
     # A fixed trajectory-wide visual lift preserves relative packet heights
     # across all frames while making post-NA branches clearly distinguishable
     # from the underlying BO curves.  This affects display coordinates only.
-    q_packet_lift = 0.34*q_energy_span
-    R_packet_lift = 0.30*R_energy_span
+    q_packet_lift = _BO_PACKET_VISUAL_AMPLIFICATION*0.34*q_energy_span
+    R_packet_lift = _BO_PACKET_VISUAL_AMPLIFICATION*0.30*R_energy_span
     q_display_limits = (
         q_energy_limits[0], q_energy_limits[1]+1.08*q_packet_lift,
     )
@@ -799,14 +813,18 @@ def make_bo_surface_dynamics_animation(
         q_packet_fills.append(q_packet_fill)
         R_energy_lines.append(R_energy_line)
         R_packet_fills.append(R_packet_fill)
-        population_axis.semilogy(
-            times, np.maximum(populations[:, state], 1.0e-16),
-            color=color, lw=1.55, label=rf"$P_{state}$",
+        state_name = (
+            "ground" if state == 0 else
+            "first excited" if state == 1 else f"state {state}"
+        )
+        population_axis.plot(
+            times, 100.0*populations[:, state],
+            color=color, lw=1.55, label=rf"$P_{state}$ ({state_name})",
         )
 
     q_axis.set(
         xlabel=r"proton $q$ ($a_0$)", ylabel="BO energy (Hartree)",
-        xlim=(q_plot_min, q[-1]), ylim=q_display_limits,
+        xlim=(q_plot_min, q_plot_max), ylim=q_display_limits,
     )
     R_axis.set(
         xlabel=r"heavy $R$ ($a_0$)", ylabel="BO energy (Hartree)",
@@ -836,6 +854,7 @@ def make_bo_surface_dynamics_animation(
     joint_axis.set(
         xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
     )
+    joint_axis.set_xlim(_clipped_q_limits(q))
     joint_axis.set_title(
         r"Physical joint density $\rho_{qR}$", loc="left",
         fontweight="semibold",
@@ -848,9 +867,9 @@ def make_bo_surface_dynamics_animation(
         times[first], color="black", lw=1.15,
     )
     population_axis.set(
-        xlabel="time (fs)", ylabel=r"$P_j(t)$ (log scale)",
+        xlabel="time (fs)", ylabel=r"$P_j(t)$ (%)",
         xlim=(times[0], times[-1] if times[-1] > times[0] else times[0]+1.0),
-        ylim=(1.0e-14, max(1.05, 1.05*float(np.max(populations)))),
+        ylim=(0.0, 100.0),
     )
     population_axis.set_title(
         "BO-channel population transfer", loc="left",
@@ -899,11 +918,12 @@ def make_bo_surface_dynamics_animation(
         joint_image.set_data(obs["joint_density"][frame].T)
         joint_peak.set_data([q[iq]], [R[iR]])
         population_marker.set_xdata([times[frame], times[frame]])
-        dominant = int(np.argmax(populations[frame]))
+        dominant = int(np.argmax(populations[frame, :n_states]))
         title.set_text(
             f"Full TDSE projected onto BO channels | t={times[frame]:.4f} fs | "
-            f"dominant state={dominant}, P={populations[frame, dominant]:.6f}\n"
-            "solid=raw BO energy; filled=fixed-scale channel density on surface; "
+            f"dominant displayed state={dominant}, "
+            f"P={100.0*populations[frame, dominant]:.4f}%\n"
+            "solid=raw BO energy; filled=2x display lift of fixed-scale channel density; "
             "fixed trajectory-wide axes"
         )
         return (
@@ -1286,6 +1306,7 @@ def _draw_ef_maps(fig, axes, item, obs, limits):
             alpha=item["density_alpha"].T,
         )
         ax.set(xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)")
+        ax.set_xlim(_clipped_q_limits(q))
         ax.set_title(title, loc="left", fontweight="semibold")
         fig.colorbar(
             image, ax=ax, pad=0.01, format=NUMBER_FORMATTER, extend="both"
@@ -1385,6 +1406,7 @@ def plot_transport_fields(obs, ef, outdir, dpi, frame=-1):
             alpha=item["density_alpha"].T,
         )
         ax.set(xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)")
+        ax.set_xlim(_clipped_q_limits(q))
         ax.set_title(title, loc="left", fontweight="semibold", fontsize=8.6)
         fig.colorbar(
             image, ax=ax, pad=0.01, format=NUMBER_FORMATTER, extend="both"
@@ -1434,6 +1456,7 @@ def plot_discrete_link_geometry(obs, ef, outdir, dpi, frame=-1):
             alpha=opacity.T,
         )
         ax.set(xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)")
+        ax.set_xlim(_clipped_q_limits(q))
         ax.set_title(title, loc="left", fontweight="semibold")
         fig.colorbar(image, ax=ax, pad=0.01, format=NUMBER_FORMATTER)
     support = heavy >= 1.0e-4*max(float(np.max(heavy)), 1.0e-300)
@@ -1670,6 +1693,7 @@ def make_all_exact_potentials_animation(
         inset.tick_params(labelsize=6, direction="in")
         inset.set_xticks([])
         inset.set_yticks([])
+        inset.set_xlim(_clipped_q_limits(q))
         sphi_images.append((image, key, component))
 
     # S^Gamma is one-dimensional: show its invariant magnitude defect and
@@ -1787,6 +1811,7 @@ def make_transport_animation(obs, ef, outdir, fps, max_frames, dpi, fmt):
             alpha=item["density_alpha"].T,
         )
         ax.set(xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)")
+        ax.set_xlim(_clipped_q_limits(q))
         ax.set_title(label, loc="left", fontweight="semibold")
         fig.colorbar(
             image, ax=ax, pad=0.01, format=NUMBER_FORMATTER, extend="both"
@@ -1887,7 +1912,7 @@ def make_coordinate_focus_animations(
 
 def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
         max_frames=180, animation_dpi=110, fmt="mp4", snapshot_count=6,
-        marginal_ymax=1.5, marginal_xmax=12.0, surface_count=7):
+        marginal_ymax=1.5, marginal_xmax=12.0, surface_count=2):
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     data = load_observables(archive)

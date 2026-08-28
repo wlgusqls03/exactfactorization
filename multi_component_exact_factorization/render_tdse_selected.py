@@ -56,7 +56,7 @@ def parse_args(argv=None):
     parser.add_argument("--fps", type=int, default=12)
     parser.add_argument("--max-frames", type=int, default=240)
     parser.add_argument("--animation-dpi", type=int, default=110)
-    parser.add_argument("--surface-count", type=int, default=5)
+    parser.add_argument("--surface-count", type=int, default=2)
     parser.set_defaults(overview=True, bo_surface=True)
     parser.add_argument(
         "--no-overview", action="store_false", dest="overview",

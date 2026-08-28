@@ -21,6 +21,12 @@ from .report_plot_style import COLORS, JOINT_CMAP
 from .visualize import NUMBER_FORMATTER, selected_frames
 
 
+def _q_display_limits(q):
+    q = np.asarray(q, float)
+    lower, upper = max(float(q[0]), -12.0), min(float(q[-1]), 12.0)
+    return (lower, upper) if lower < upper else (float(q[0]), float(q[-1]))
+
+
 def relative_observables(obs):
     """Reduce ``rho(q,R,t)`` to collision observables in ``s=q-R``.
 
@@ -147,6 +153,7 @@ def plot_collision_snapshots(obs, collision, outdir, dpi=180,
             xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
             title=f"t = {times[frame]:.3f} fs",
         )
+        axis.set_xlim(_q_display_limits(q))
         legend = axis.legend(loc="upper left", frameon=False, fontsize=8)
         for text in legend.get_texts():
             text.set_color("white")
@@ -290,6 +297,7 @@ def make_collision_animation(obs, collision, outdir, fps=12, max_frames=180,
         xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
         title=r"Joint density; dashed line: $q=R$",
     )
+    joint_axis.set_xlim(_q_display_limits(q))
     fig.colorbar(
         joint_image, ax=joint_axis, pad=0.01,
         label=rf"$\log_{{10}}(\rho_{{qR}}/\rho_{{qR,\max}})$",
