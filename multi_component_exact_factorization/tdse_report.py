@@ -940,11 +940,38 @@ def make_bo_surface_dynamics_animation(
     )
 
 
-def _load_ef_fields(obs):
+def _load_ef_fields(obs, *, field_keys=None, link_keys=None):
+    """Load TDSE exact-factorization fields, optionally as a light subset.
+
+    The default remains the complete report cache used by the established
+    plotting pipeline.  Dedicated visualizations can request only the native
+    arrays they actually draw, avoiding several GiB of unused overlap links.
+    """
     path = Path(obs["archive_path"]).parent/"tdse_exact_factorization_fields.npz"
     if not path.is_file():
         return None
-    required = ("epsilon_1", "epsilon_2", "a", "b", "alpha")
+    required = (
+        ("epsilon_1", "epsilon_2", "a", "b", "alpha")
+        if field_keys is None else tuple(field_keys)
+    )
+    optional = (
+        "x",
+        "electron_density",
+        "factorization_residual",
+        "epsilon_1_imaginary_defect",
+        "epsilon_2_imaginary_defect",
+        "epsilon_1_gi",
+        "epsilon_2_gi",
+        "bo_state_density_q",
+        "bo_state_density_R",
+    ) if field_keys is None else ()
+    links = (
+        (
+            "sphi_q1", "sphi_q2", "sphi_R1", "sphi_R2",
+            "sgamma_R1", "sgamma_R2",
+        )
+        if link_keys is None else tuple(link_keys)
+    )
     with np.load(path, allow_pickle=False) as stored:
         missing = [key for key in required if key not in stored.files]
         if missing:
@@ -954,23 +981,15 @@ def _load_ef_fields(obs):
         if not np.allclose(stored["times_fs"], obs["times_fs"], rtol=0.0, atol=1.0e-10):
             raise ValueError("TDSE field cache와 source archive의 저장 시각이 다릅니다")
         result = {key: np.asarray(stored[key], float) for key in required}
-        for key in (
-            "x",
-            "electron_density",
-            "factorization_residual",
-            "epsilon_1_imaginary_defect",
-            "epsilon_2_imaginary_defect",
-            "epsilon_1_gi",
-            "epsilon_2_gi",
-            "bo_state_density_q",
-            "bo_state_density_R",
-        ):
+        for key in optional:
             if key in stored.files:
                 result[key] = np.asarray(stored[key], float)
-        for key in (
-            "sphi_q1", "sphi_q2", "sphi_R1", "sphi_R2",
-            "sgamma_R1", "sgamma_R2",
-        ):
+        missing_links = [key for key in links if key not in stored.files]
+        if link_keys is not None and missing_links:
+            raise KeyError(
+                f"{path.name}에 link가 없습니다: " + ", ".join(missing_links)
+            )
+        for key in links:
             if key in stored.files:
                 result[key] = np.asarray(stored[key], complex)
     result["path"] = path
@@ -1066,6 +1085,32 @@ def _R_axial_phase(obs, ef):
     return theta, anchor
 
 
+def transform_second_level_to_zero_potential_gauge(obs, ef):
+    """Apply only the theta_2 axial gauge to second-level heavy fields."""
+    if ef.get("gauge") in ("second_level_zero_potential", "zero_potential"):
+        return ef
+    if "epsilon_2" not in ef or "alpha" not in ef:
+        raise KeyError("second-level gauge 변환에는 epsilon_2와 alpha가 필요합니다")
+    theta_2, R_anchor = _R_axial_phase(obs, ef)
+    times_au = np.asarray(obs["times_fs"], float)*AU_PER_FS
+    ef["mechanical_R"] = ef["alpha"]
+    _add_time_derivative_in_place(ef["epsilon_2"], theta_2, times_au)
+    for frame in range(len(times_au)):
+        phase_2 = theta_2[frame]
+        for key, offset in (("sgamma_R1", 1), ("sgamma_R2", 2)):
+            if key in ef:
+                delta = np.roll(phase_2, -offset)-phase_2
+                ef[key][frame] *= np.exp(1j*delta)
+    theta_2[:] = np.angle(ef["sgamma_R1"])/float(obs["dR"])
+    ef["alpha"] = theta_2
+    ef["gauge"] = "second_level_zero_potential"
+    ef["gauge_R_anchor_index"] = R_anchor
+    ef.pop("_prepared_geometry", None)
+    ef.pop("plot_limits", None)
+    ef.pop("_tdpes_decomposition_limits", None)
+    return ef
+
+
 def transform_to_zero_potential_gauge(obs, ef):
     """Transform loaded density-gauge fields to q/R axial gauges in place.
 
@@ -1078,18 +1123,14 @@ def transform_to_zero_potential_gauge(obs, ef):
     if ef.get("gauge") == "zero_potential":
         return ef
     theta_1, q_anchor = _q_axial_phase(obs, ef)
-    theta_2, R_anchor = _R_axial_phase(obs, ef)
     times_au = np.asarray(obs["times_fs"], float)*AU_PER_FS
 
     ef["mechanical_q"] = ef["a"]
     ef["mechanical_R_first"] = ef["b"]
-    ef["mechanical_R"] = ef["alpha"]
     _add_time_derivative_in_place(ef["epsilon_1"], theta_1, times_au)
-    _add_time_derivative_in_place(ef["epsilon_2"], theta_2, times_au)
 
     for frame in range(len(times_au)):
         phase_1 = theta_1[frame]
-        phase_2 = theta_2[frame]
         for key, offset, axis in (
             ("sphi_q1", 1, 0), ("sphi_q2", 2, 0),
             ("sphi_R1", 1, 1), ("sphi_R2", 2, 1),
@@ -1097,21 +1138,15 @@ def transform_to_zero_potential_gauge(obs, ef):
             if key in ef:
                 delta = np.roll(phase_1, -offset, axis=axis)-phase_1
                 ef[key][frame] *= np.exp(1j*delta)
-        for key, offset in (("sgamma_R1", 1), ("sgamma_R2", 2)):
-            if key in ef:
-                delta = np.roll(phase_2, -offset)-phase_2
-                ef[key][frame] *= np.exp(1j*delta)
 
     # Reuse the large theta_1 buffer for the transformed q connection after
     # its temporal derivative and all link transformations are complete.
     theta_1[:] = np.angle(ef["sphi_q1"])/float(obs["dq"])
     ef["a"] = theta_1
     ef["b"] = np.angle(ef["sphi_R1"])/float(obs["dR"])
-    theta_2[:] = np.angle(ef["sgamma_R1"])/float(obs["dR"])
-    ef["alpha"] = theta_2
+    transform_second_level_to_zero_potential_gauge(obs, ef)
     ef["gauge"] = "zero_potential"
     ef["gauge_q_anchor_index"] = q_anchor
-    ef["gauge_R_anchor_index"] = R_anchor
     ef.pop("_prepared_geometry", None)
     ef.pop("plot_limits", None)
     ef.pop("_tdpes_decomposition_limits", None)

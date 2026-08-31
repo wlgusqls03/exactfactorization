@@ -5,6 +5,7 @@ import unittest
 import numpy as np
 
 from multi_component_exact_factorization import (
+    render_final_visualizations,
     render_tdse_tdpes_gauges,
     tdse_collision_report,
     tdse_report,
@@ -244,6 +245,36 @@ class TDSEReportTests(unittest.TestCase):
                 self.assertTrue((
                     output/gauge/"11_tdse_tdpes_gi_gd_decomposition.png"
                 ).is_file())
+
+    def test_final_visualization_command_reuses_reduced_tdse_products(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_archive(root)
+            output = root/"final"
+            args = render_final_visualizations.parse_args([
+                str(root), "--outdir", str(output), "--no-animation",
+                "--snapshot-count", "2", "--max-frames", "2",
+                "--dpi", "30", "--heavy-min", "-3", "--heavy-max", "3",
+            ])
+            products = render_final_visualizations.run(args)
+            for name in (
+                "marginal_time_position_snapshots.png",
+                "joint_density_qR_snapshots.png",
+                "vector_potential_composite_snapshots.png",
+                "heavy_analysis_snapshots.png",
+                "bo_combined_snapshots.png",
+                "final_visualizations_manifest.txt",
+            ):
+                self.assertTrue((output/name).is_file(), name)
+            for directory in (
+                "marginal_time_position_frames",
+                "joint_density_qR_frames",
+                "vector_potential_composite_frames",
+                "heavy_analysis_frames",
+                "bo_combined_frames",
+            ):
+                self.assertEqual(len(list((output/directory).glob("*.png"))), 2)
+            self.assertGreaterEqual(len(products), 16)
 
     def test_relative_collision_reduction_preserves_mass_and_crossing(self):
         q = np.array([-1.0, 0.0, 1.0])

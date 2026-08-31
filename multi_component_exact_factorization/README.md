@@ -385,6 +385,32 @@ python -m multi_component_exact_factorization.render_tdse_tdpes_gauges \
 필요하면 ``--gauge positive`` 또는 ``--gauge zero``를 사용하고, 정적 PNG만
 필요하면 ``--no-animation``을 추가한다.
 
+### 논문용 final visualization 묶음
+
+완료된 TDSE run의 reduced density, BO 분석 배열과
+``tdse_exact_factorization_fields.npz``를 재사용해 marginal history,
+proton--heavy joint density, positive-gauge vector potentials, heavy-coordinate
+force 분해, BO cut/channel packet을 한 번에 만들 수 있다. 대형
+``tdse_coefficients``와 사용하지 않는 overlap-link 배열은 읽지 않는다.
+
+```bash
+python -m multi_component_exact_factorization.render_final_visualizations \
+  results/YYYYMMDD/RUN_NAME \
+  --outdir results/final_visualizations/RUN_NAME \
+  --format mp4 --fps 12 --max-frames 240 \
+  --snapshot-count 8 --dpi 180 --animation-dpi 110 \
+  --surface-count 2
+```
+
+``--only marginal joint vector heavy bo``로 필요한 묶음만 고를 수 있고,
+``--no-animation``을 주면 같은 plotting function으로 8개 개별 PNG와 2x4
+summary만 다시 만든다. Heavy 분석의 trap 항은 archive의 실제 Hamiltonian
+metadata를 읽어
+``V_trap=alpha_trap*(R-Rc)^2``와
+``F_harm=-2*alpha_trap*(R-Rc)``로 따로 표시한다. Driven 항은 두 번째
+zero-potential gauge TDPES에서 계산한 ``-d_R epsilon^(2)``이며 harmonic
+force와 합치지 않는다.
+
 GPU 전파는 NPZ 저장이 성공한 직후 빠른 통합 렌더링을 기본 실행한다. 날짜가
 붙은 실제 저장 경로가 직접 전달되므로 동일한 폴더 이름을 검색할 필요가 없다.
 전파 함수가 반환되어 큰 저장 배열을 해제한 다음 archive를 읽으므로 계산
