@@ -396,11 +396,13 @@ force 분해, BO cut/channel packet을 한 번에 만들 수 있다. 대형
 ```bash
 python -m multi_component_exact_factorization.render_final_visualizations \
   results/YYYYMMDD/RUN_NAME \
-  --outdir results/final_visualizations/RUN_NAME \
   --format mp4 --fps 12 --max-frames 240 \
   --snapshot-count 8 --dpi 180 --animation-dpi 110 \
   --surface-count 2
 ```
+
+기본 출력은 해당 계산 폴더의 ``report/final_visualizations/`` 아래에 모인다.
+별도 위치가 필요한 경우에만 ``--outdir PATH``를 명시한다.
 
 ``--only marginal joint vector heavy bo``로 필요한 묶음만 고를 수 있고,
 ``--no-animation``을 주면 같은 plotting function으로 8개 개별 PNG와 2x4

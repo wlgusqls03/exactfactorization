@@ -250,9 +250,9 @@ class TDSEReportTests(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             self._write_archive(root)
-            output = root/"final"
+            output = root/"report"/"final_visualizations"
             args = render_final_visualizations.parse_args([
-                str(root), "--outdir", str(output), "--no-animation",
+                str(root), "--no-animation",
                 "--snapshot-count", "2", "--max-frames", "2",
                 "--dpi", "30", "--heavy-min", "-3", "--heavy-max", "3",
             ])

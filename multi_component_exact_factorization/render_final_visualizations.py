@@ -1030,7 +1030,7 @@ def run(args):
     output = (
         Path(args.outdir).expanduser().resolve()
         if args.outdir else
-        (Path("results")/"final_visualizations"/run_dir.name).resolve()
+        (run_dir/"report"/"final_visualizations").resolve()
     )
     output.mkdir(parents=True, exist_ok=True)
     selected = tuple(args.only or FINAL_PRODUCTS)
@@ -1131,7 +1131,7 @@ def parse_args(argv=None):
     parser.add_argument("run", help="completed TDSE run directory or archive")
     parser.add_argument(
         "--outdir", default="",
-        help="default: results/final_visualizations/RUN_NAME",
+        help="default: RUN_DIRECTORY/report/final_visualizations",
     )
     parser.add_argument(
         "--only", nargs="+", choices=FINAL_PRODUCTS,
