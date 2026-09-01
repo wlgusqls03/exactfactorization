@@ -583,15 +583,27 @@ def _heavy_preparation(obs, ef_zero, alpha_positive, args):
         )
         for frame in range(len(obs["times_fs"]))
     ])
-    driven_force = -tdse_report._forward_bond_derivative(
-        epsilon_zero, obs["dR"], axis=1,
-    )
     trap_alpha = float(obs["options"].get("heavy_trap_alpha", 0.0))
     trap_center = float(obs["options"].get(
         "heavy_trap_center",
         0.5*float(obs["options"].get("fixed_ion_separation", 0.0)),
     ))
-    harmonic_force = -2.0*trap_alpha*(R-trap_center)
+    trap_potential = trap_alpha*(R-trap_center)**2
+    # All three forces live on the same forward R bond as S^Gamma.  Applying
+    # one discrete derivative to both the exact TDPES and the explicit trap
+    # makes the finite-grid decomposition an identity (including its closing
+    # PBC bond), rather than mixing a bond force with a site-centred analytic
+    # force.
+    total_force = -tdse_report._forward_bond_derivative(
+        epsilon_zero, obs["dR"], axis=1,
+    )
+    harmonic_force = -tdse_report._forward_bond_derivative(
+        trap_potential, obs["dR"], axis=0,
+    )
+    driven_force = total_force-harmonic_force[None, :]
+    force_decomposition_max_abs = float(np.max(np.abs(
+        total_force-(driven_force+harmonic_force[None, :])
+    )))
     requested = (args.heavy_min, args.heavy_max)
     R_limits = _support_limits(
         R, obs["heavy_density"], floor, padding=0.22, requested=requested,
@@ -606,16 +618,27 @@ def _heavy_preparation(obs, ef_zero, alpha_positive, args):
     if requested_limits[0] < requested_limits[1]:
         R_limits = requested_limits
     frames = _movie_frames(obs, args.max_frames)
-    driven_limits = _symmetric_support_bound(
-        [driven_force[int(frame)] for frame in frames],
-        [obs["heavy_density"][int(frame)] for frame in frames], floor,
+    dynamic_force_limits = _symmetric_support_bound(
+        [
+            values[int(frame)]
+            for frame in frames
+            for values in (total_force, driven_force)
+        ],
+        [
+            obs["heavy_density"][int(frame)]
+            for frame in frames
+            for _ in range(2)
+        ], floor,
         percentile=99.0,
     )
     view = (R >= R_limits[0]) & (R <= R_limits[1])
     harmonic_bound = (
         float(np.max(np.abs(harmonic_force[view]))) if np.any(view) else 0.0
     )
-    force_bound = 1.08*max(abs(driven_limits[0]), harmonic_bound, 1.0e-12)
+    force_bound = 1.08*max(
+        abs(dynamic_force_limits[0]), abs(dynamic_force_limits[1]),
+        harmonic_bound, 1.0e-12,
+    )
     alpha_limits = _symmetric_support_bound(
         [alpha_positive[int(frame)] for frame in frames],
         [obs["heavy_density"][int(frame)] for frame in frames], floor,
@@ -623,8 +646,11 @@ def _heavy_preparation(obs, ef_zero, alpha_positive, args):
     alpha_bound = 1.08*max(abs(alpha_limits[0]), abs(alpha_limits[1]), 1.0e-12)
     return {
         "epsilon_zero": epsilon_zero,
+        "total_force": total_force,
         "driven_force": driven_force,
         "harmonic_force": harmonic_force,
+        "trap_potential": trap_potential,
+        "force_decomposition_max_abs": force_decomposition_max_abs,
         "alpha_positive": alpha_positive,
         "heavy_support": heavy_support,
         "R_limits": R_limits,
@@ -673,15 +699,27 @@ def _draw_heavy_analysis(fig, force_axis, obs, prep, frame, args, *,
                          compact=False):
     R = obs["R"]
     support = prep["heavy_support"][frame]
+    total = prep["total_force"][frame]
     driven = prep["driven_force"][frame]
+    total_line, total_tail = tdse_report._support_tail_lines(
+        force_axis, R, np.where(support, total, np.nan), total, support,
+        color="0.10",
+        label=r"$F_{\mathrm{total}}=-D_R^+\epsilon_{\mathrm{ZP}}^{(2)}$",
+        linewidth=(1.55 if compact else 2.7), linestyle="-",
+    )
     driven_line, driven_tail = tdse_report._support_tail_lines(
         force_axis, R, np.where(support, driven, np.nan), driven, support,
-        color=FORCE_COLOR, label=r"driven $-D_R^+\epsilon_{ZP}^{(2)}$",
-        linewidth=(1.25 if compact else 2.0),
+        color=FORCE_COLOR,
+        label=(
+            r"$F_{\mathrm{driven}}="
+            r"-D_R^+[\epsilon_{\mathrm{ZP}}^{(2)}-V_{\mathrm{trap}}]$"
+        ),
+        linewidth=(1.0 if compact else 1.75), linestyle="--",
     )
     harmonic_line, = force_axis.plot(
-        R, prep["harmonic_force"], color=COLORS[4], lw=(1.0 if compact else 1.8),
-        ls="--", label=r"harmonic $-2\alpha_{trap}(R-R_c)$",
+        R, prep["harmonic_force"], color=COLORS[4],
+        lw=(1.0 if compact else 1.75), ls="--",
+        label=r"$F_{\mathrm{harm}}=-D_R^+V_{\mathrm{trap}}$",
     )
     force_axis.axhline(0.0, color="0.65", lw=0.7, zorder=0)
     force_axis.axvline(
@@ -692,24 +730,24 @@ def _draw_heavy_analysis(fig, force_axis, obs, prep, frame, args, *,
         xlabel=r"heavy coordinate / common position $R$ ($a_0$)",
         ylabel=r"force (Hartree/$a_0$)",
     )
-    color_y_axis(force_axis, FORCE_COLOR, r"force (Hartree/$a_0$)")
+    color_y_axis(force_axis, "0.10", r"force (Hartree/$a_0$)")
     force_axis.grid(alpha=0.16)
 
     alpha_axis = force_axis.twinx()
     alpha = prep["alpha_positive"][frame]
     alpha_line, alpha_tail = tdse_report._support_tail_lines(
         alpha_axis, R, np.where(support, alpha, np.nan), alpha, support,
-        color=COLORS[0], label=r"$\alpha_{PD}(R,t)=K_R$",
+        color=COLORS[0], label=r"$\alpha_{\mathrm{PG}}(R,t)=K_R$",
         linewidth=(1.1 if compact else 2.0),
     )
     alpha_axis.set_ylim(prep["alpha_limits"])
-    color_y_axis(alpha_axis, COLORS[0], r"$\alpha_{PD}$ ($a_0^{-1}$)")
+    color_y_axis(alpha_axis, COLORS[0], r"$\alpha_{\mathrm{PG}}$ ($a_0^{-1}$)")
     silhouettes = _draw_silhouettes(
         force_axis, obs, frame, prep["R_limits"], scale=(0.20 if compact else 0.25),
     )
     handles = [
         silhouettes["heavy_line"], silhouettes["proton_line"],
-        alpha_line, driven_line, harmonic_line,
+        alpha_line, total_line, driven_line, harmonic_line,
     ]
     force_axis.legend(
         handles=handles, frameon=False, fontsize=(5.2 if compact else 8),
@@ -721,6 +759,7 @@ def _draw_heavy_analysis(fig, force_axis, obs, prep, frame, args, *,
     )
     return {
         "force_axis": force_axis, "alpha_axis": alpha_axis,
+        "total_line": total_line, "total_tail": total_tail,
         "driven_line": driven_line, "driven_tail": driven_tail,
         "harmonic_line": harmonic_line,
         "alpha_line": alpha_line, "alpha_tail": alpha_tail,
@@ -730,8 +769,11 @@ def _draw_heavy_analysis(fig, force_axis, obs, prep, frame, args, *,
 
 def _update_heavy_analysis(state, obs, prep, frame, compact=False):
     support = prep["heavy_support"][frame]
+    total = prep["total_force"][frame]
     driven = prep["driven_force"][frame]
     alpha = prep["alpha_positive"][frame]
+    state["total_line"].set_ydata(np.where(support, total, np.nan))
+    state["total_tail"].set_ydata(np.where(~support, total, np.nan))
     state["driven_line"].set_ydata(np.where(support, driven, np.nan))
     state["driven_tail"].set_ydata(np.where(~support, driven, np.nan))
     state["alpha_line"].set_ydata(np.where(support, alpha, np.nan))
@@ -757,7 +799,9 @@ def render_heavy_analysis(obs, ef_zero, alpha_positive, outdir, args, snapshots)
         _draw_heavy_analysis(fig, axis, obs, prep, frame, args)
         fig.suptitle(
             f"Heavy-coordinate analysis | t={times[frame]:.4f} fs\n"
-            r"momentum: positive-density gauge; driven force: $\alpha_{ZP}=0$ gauge",
+            r"$\alpha_{\rm PG}$: positive gauge; forces: "
+            r"$\alpha_{\rm ZP}=0$ gauge; "
+            r"$F_{\rm total}=F_{\rm driven}+F_{\rm harm}$",
             fontweight="bold",
         )
         return fig
@@ -795,10 +839,12 @@ def render_heavy_analysis(obs, ef_zero, alpha_positive, outdir, args, snapshots)
             _update_heavy_analysis(state, obs, prep, frame)
             title.set_text(
                 f"Heavy-coordinate analysis | t={times[frame]:.4f} fs\n"
-                r"$\alpha_{PD}=K_R$; driven $=-D_R^+\epsilon_{ZP}^{(2)}$; "
-                r"harmonic $=-2\alpha_{trap}(R-R_c)$"
+                r"$\alpha_{\rm PG}=K_R$; "
+                r"$F_{\rm total}=-D_R^+\epsilon_{\rm ZP}^{(2)}"
+                r"=F_{\rm driven}+F_{\rm harm}$"
             )
             return (
+                state["total_line"], state["total_tail"],
                 state["driven_line"], state["driven_tail"],
                 state["harmonic_line"], state["alpha_line"],
                 state["alpha_tail"], state["silhouettes"]["heavy_line"],
@@ -1095,6 +1141,11 @@ def run(args):
             "heavy positive-gauge alpha branch turns: "
             f"min={int(np.min(branch_turns))}, max={int(np.max(branch_turns))}"
         )
+        print(
+            "heavy force decomposition audit: "
+            "max|F_total-(F_driven+F_harm)|="
+            f"{heavy_prep['force_decomposition_max_abs']:.3e}"
+        )
 
     manifest = [
         f"source_archive={archive}",
@@ -1112,7 +1163,15 @@ def run(args):
     if heavy_prep is not None:
         manifest.extend((
             "harmonic_potential=heavy_trap_alpha*(R-heavy_trap_center)^2",
-            "harmonic_force=-2*heavy_trap_alpha*(R-heavy_trap_center)",
+            "total_force=-D_R^+*epsilon_ZP^(2)",
+            "harmonic_force=-D_R^+*harmonic_potential",
+            "driven_force=total_force-harmonic_force",
+            "force_identity=total_force=driven_force+harmonic_force",
+            "force_coordinates=forward_R_bonds",
+            (
+                "force_decomposition_max_abs="
+                f"{heavy_prep['force_decomposition_max_abs']:.16g}"
+            ),
             f"heavy_trap_alpha={heavy_prep['trap_alpha']:.16g}",
             f"heavy_trap_center={heavy_prep['trap_center']:.16g}",
             f"heavy_R_limits={heavy_prep['R_limits']}",

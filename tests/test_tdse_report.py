@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -275,6 +276,54 @@ class TDSEReportTests(unittest.TestCase):
             ):
                 self.assertEqual(len(list((output/directory).glob("*.png"))), 2)
             self.assertGreaterEqual(len(products), 16)
+
+    def test_heavy_force_split_is_an_exact_forward_bond_identity(self):
+        R = np.linspace(0.0, 4.0, 5, endpoint=False)
+        dR = R[1]-R[0]
+        times = np.array([0.0, 0.5])
+        density = np.ones((len(times), len(R)))
+        density /= np.sum(density, axis=1)[:, None]*dR
+        trap_alpha, trap_center = 0.23, 1.7
+        intrinsic = np.asarray([
+            0.3*R+0.04*time*R**2 for time in times
+        ])
+        trap = trap_alpha*(R-trap_center)**2
+        obs = {
+            "R": R, "dR": dR, "times_fs": times,
+            "heavy_density": density,
+            "options": {
+                "heavy_trap_alpha": trap_alpha,
+                "heavy_trap_center": trap_center,
+            },
+        }
+        ef_zero = {"epsilon_2": intrinsic+trap[None, :]}
+        args = argparse.Namespace(
+            support_floor=1.0e-4, heavy_min=0.0, heavy_max=3.2,
+            max_frames=2,
+        )
+        prep = render_final_visualizations._heavy_preparation(
+            obs, ef_zero, np.zeros_like(density), args,
+        )
+        expected_harmonic = -tdse_report._forward_bond_derivative(
+            trap, dR, axis=0,
+        )
+        expected_driven = -tdse_report._forward_bond_derivative(
+            intrinsic, dR, axis=1,
+        )
+        self.assertTrue(np.allclose(
+            prep["harmonic_force"], expected_harmonic,
+            rtol=0.0, atol=2.0e-15,
+        ))
+        self.assertTrue(np.allclose(
+            prep["driven_force"], expected_driven,
+            rtol=0.0, atol=2.0e-15,
+        ))
+        self.assertTrue(np.allclose(
+            prep["total_force"],
+            prep["driven_force"]+prep["harmonic_force"][None, :],
+            rtol=0.0, atol=2.0e-15,
+        ))
+        self.assertLessEqual(prep["force_decomposition_max_abs"], 2.0e-15)
 
     def test_relative_collision_reduction_preserves_mass_and_crossing(self):
         q = np.array([-1.0, 0.0, 1.0])

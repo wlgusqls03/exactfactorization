@@ -409,9 +409,12 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 summary만 다시 만든다. Heavy 분석의 trap 항은 archive의 실제 Hamiltonian
 metadata를 읽어
 ``V_trap=alpha_trap*(R-Rc)^2``와
-``F_harm=-2*alpha_trap*(R-Rc)``로 따로 표시한다. Driven 항은 두 번째
-zero-potential gauge TDPES에서 계산한 ``-d_R epsilon^(2)``이며 harmonic
-force와 합치지 않는다.
+``F_harm=-D_R^+ V_trap``로 표시한다. 같은 forward-bond 미분으로
+``F_total=-D_R^+ epsilon_ZP^(2)``를 계산하고,
+``F_driven=F_total-F_harm``으로 explicit trap을 제거한다. 따라서 그림의
+굵은 실선 total force와 두 점선 성분은 finite grid에서도 정확히
+``F_total=F_driven+F_harm``을 만족한다. 별도 오른쪽 축의
+``alpha_PG``는 positive-gauge mechanical-momentum 정보이다.
 
 GPU 전파는 NPZ 저장이 성공한 직후 빠른 통합 렌더링을 기본 실행한다. 날짜가
 붙은 실제 저장 경로가 직접 전달되므로 동일한 폴더 이름을 검색할 필요가 없다.
