@@ -627,7 +627,7 @@ def _draw_particle_marginal_panel(axis, obs, frame, args, *, compact=False):
 
 def _add_attached_colorbar(fig, axis, image, label):
     """Attach a narrow colorbar directly to a final-composite map panel."""
-    color_axis = axis.inset_axes([1.012, 0.035, 0.034, 0.93])
+    color_axis = axis.inset_axes([1.020, 0.035, 0.034, 0.93])
     colorbar = fig.colorbar(
         image, cax=color_axis, format=NUMBER_FORMATTER,
         extend="both", label=label,
