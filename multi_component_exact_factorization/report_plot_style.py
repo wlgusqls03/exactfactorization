@@ -26,9 +26,9 @@ SCALAR_CMAP = "viridis"
 # Keep support-masked physical fields visually distinct from the gray tail.
 # Their numerical limits remain unchanged; this only changes value-to-color
 # mapping so that a near-zero signed field no longer looks like empty space.
-SIGNED_CMAP = SCALAR_CMAP
+SIGNED_CMAP = "RdBu_r"
 LINK_CMAP = SCALAR_CMAP
-MASK_COLOR = "#D7DCE0"
+MASK_COLOR = "#BFC4C9"
 
 
 def masked_cmap(name):

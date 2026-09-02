@@ -389,8 +389,8 @@ python -m multi_component_exact_factorization.render_tdse_tdpes_gauges \
 
 완료된 TDSE run의 reduced density, BO 분석 배열과
 ``tdse_exact_factorization_fields.npz``를 재사용해 marginal history,
-proton--heavy joint density, positive-gauge vector potentials, heavy-coordinate
-force 분해, BO cut/channel packet을 한 번에 만들 수 있다. 대형
+proton--heavy joint density, positive-gauge velocity field와 vector potentials,
+heavy-coordinate force 분해, BO cut/channel packet을 한 번에 만들 수 있다. 대형
 ``tdse_coefficients``와 사용하지 않는 overlap-link 배열은 읽지 않는다.
 
 ```bash
@@ -404,9 +404,24 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 기본 출력은 해당 계산 폴더의 ``report/final_visualizations/`` 아래에 모인다.
 별도 위치가 필요한 경우에만 ``--outdir PATH``를 명시한다.
 
-``--only marginal joint vector heavy bo``로 필요한 묶음만 고를 수 있고,
+``--only marginal joint velocity vector heavy bo``로 필요한 묶음만 고를 수 있고,
 ``--no-animation``을 주면 같은 plotting function으로 8개 개별 PNG와 2x4
-summary만 다시 만든다. Heavy 분석의 trap 항은 archive의 실제 Hamiltonian
+summary만 다시 만든다. 특히 joint density 위의 속도 화살표만 다시 만들려면
+
+```bash
+python -m multi_component_exact_factorization.render_final_visualizations \
+  results/YYYYMMDD/RUN_NAME --only velocity \
+  --format mp4 --fps 12 --max-frames 240 --snapshot-count 8
+```
+
+를 사용한다. 화살표는 positive-density gauge의 저장된 connection에서
+``(v_q,v_R)=(a/m_p,b/M)``로 계산하며, ``--support-floor`` 아래 density에서만
+숨긴다. 모든 frame에 하나의 trajectory-wide arrow scale을 사용하고 field를
+frame별로 정규화하거나 평활화하지 않는다. ``--velocity-q-points``와
+``--velocity-R-points``로 화살표 sampling 밀도만 조절할 수 있다. Signed 2D
+field는 음수=파랑, 0=흰색, 양수=빨강이고 low-density mask는 회색이다.
+
+Heavy 분석의 trap 항은 archive의 실제 Hamiltonian
 metadata를 읽어
 ``V_trap=alpha_trap*(R-Rc)^2``와
 ``F_harm=-D_R^+ V_trap``로 표시한다. 같은 forward-bond 미분으로

@@ -6,6 +6,7 @@ import unittest
 import numpy as np
 
 from multi_component_exact_factorization import (
+    report_plot_style,
     render_final_visualizations,
     render_tdse_tdpes_gauges,
     tdse_collision_report,
@@ -261,6 +262,7 @@ class TDSEReportTests(unittest.TestCase):
             for name in (
                 "marginal_time_position_snapshots.png",
                 "joint_density_qR_snapshots.png",
+                "joint_velocity_snapshots.png",
                 "vector_potential_composite_snapshots.png",
                 "heavy_analysis_snapshots.png",
                 "bo_combined_snapshots.png",
@@ -270,12 +272,74 @@ class TDSEReportTests(unittest.TestCase):
             for directory in (
                 "marginal_time_position_frames",
                 "joint_density_qR_frames",
+                "joint_velocity_frames",
                 "vector_potential_composite_frames",
                 "heavy_analysis_frames",
                 "bo_combined_frames",
             ):
                 self.assertEqual(len(list((output/directory).glob("*.png"))), 2)
-            self.assertGreaterEqual(len(products), 16)
+            self.assertGreaterEqual(len(products), 19)
+
+    def test_joint_velocity_uses_mass_scaled_positive_gauge_connections(self):
+        q = np.array([-1.0, 0.0, 1.0])
+        R = np.array([2.0, 3.0])
+        density = np.ones((1, len(q), len(R)))
+        obs = {
+            "q": q,
+            "R": R,
+            "times_fs": np.array([0.0]),
+            "joint_density": density,
+            "options": {"proton_mass": 2.0, "heavy_mass": 8.0},
+        }
+        ef = {
+            "a": np.full_like(density, 4.0),
+            "b": np.full_like(density, -8.0),
+        }
+        args = argparse.Namespace(
+            max_frames=1, velocity_q_points=3, velocity_R_points=2,
+            support_floor=1.0e-4,
+        )
+        prep = render_final_visualizations._joint_velocity_preparation(
+            obs, ef, args,
+        )
+        velocity_q, velocity_R = (
+            render_final_visualizations._joint_velocity_frame(
+                obs, ef, prep, 0, args.support_floor,
+            )
+        )
+        self.assertTrue(np.allclose(velocity_q.compressed(), 2.0))
+        self.assertTrue(np.allclose(velocity_R.compressed(), -1.0))
+
+    def test_joint_velocity_only_command_writes_movie_and_snapshots(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_archive(root)
+            output = root/"velocity_only"
+            args = render_final_visualizations.parse_args([
+                str(root), "--outdir", str(output), "--only", "velocity",
+                "--format", "gif", "--snapshot-count", "2",
+                "--max-frames", "2", "--dpi", "30",
+                "--animation-dpi", "25", "--fps", "2",
+                "--velocity-q-points", "3", "--velocity-R-points", "3",
+            ])
+            render_final_visualizations.run(args)
+            self.assertTrue((output/"joint_velocity_movie.gif").is_file())
+            self.assertTrue((output/"joint_velocity_snapshots.png").is_file())
+            self.assertEqual(
+                len(list((output/"joint_velocity_frames").glob("*.png"))),
+                2,
+            )
+
+    def test_signed_maps_use_blue_white_red_with_gray_mask(self):
+        from matplotlib.colors import to_rgba
+
+        self.assertEqual(report_plot_style.SIGNED_CMAP, "RdBu_r")
+        cmap = report_plot_style.masked_cmap(report_plot_style.SIGNED_CMAP)
+        self.assertTrue(np.allclose(
+            cmap.get_bad(), to_rgba(report_plot_style.MASK_COLOR),
+        ))
+        self.assertGreater(cmap(1.0)[0], cmap(1.0)[2])
+        self.assertGreater(cmap(0.0)[2], cmap(0.0)[0])
 
     def test_heavy_force_split_is_an_exact_forward_bond_identity(self):
         R = np.linspace(0.0, 4.0, 5, endpoint=False)

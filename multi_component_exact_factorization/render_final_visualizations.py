@@ -36,7 +36,7 @@ from .report_plot_style import (
 from .visualize import NUMBER_FORMATTER, selected_frames
 
 
-FINAL_PRODUCTS = ("marginal", "joint", "vector", "heavy", "bo")
+FINAL_PRODUCTS = ("marginal", "joint", "velocity", "vector", "heavy", "bo")
 
 
 def _snapshot_frames(obs, count=8):
@@ -338,6 +338,208 @@ def render_joint_density(obs, outdir, args, snapshots):
             args.fps, args.animation_dpi, args.format,
         ))
     return products
+
+
+# ---------------------------------------------------------------------------
+# 2b. Proton-heavy joint density + positive-gauge velocity field
+
+
+def _uniform_sample_indices(coordinate, limits, count):
+    """Fixed, approximately uniform indices inside one display window."""
+    coordinate = np.asarray(coordinate, float)
+    inside = np.flatnonzero(
+        (coordinate >= float(limits[0])) & (coordinate <= float(limits[1]))
+    )
+    if not inside.size:
+        return np.array([
+            int(np.argmin(np.abs(coordinate-np.mean(limits))))
+        ])
+    selected = np.linspace(
+        int(inside[0]), int(inside[-1]), min(int(count), len(inside)),
+    )
+    return np.unique(np.rint(selected).astype(int))
+
+
+def _joint_velocity_preparation(obs, ef, args):
+    """Prepare one trajectory-wide sampling grid and physical arrow scale."""
+    q, R = np.asarray(obs["q"], float), np.asarray(obs["R"], float)
+    q_limits = tdse_collision_report._q_display_limits(q)
+    R_limits = (float(R[0]), float(R[-1]))
+    q_indices = _uniform_sample_indices(q, q_limits, args.velocity_q_points)
+    R_indices = _uniform_sample_indices(R, R_limits, args.velocity_R_points)
+    q_mesh, R_mesh = np.meshgrid(q[q_indices], R[R_indices])
+    proton_mass = float(obs["options"].get("proton_mass", 1836.15267343))
+    heavy_mass = float(obs["options"].get("heavy_mass", 1836.15267343))
+
+    supported_speeds = []
+    for frame in _movie_frames(obs, args.max_frames):
+        frame = int(frame)
+        density = obs["joint_density"][frame][np.ix_(q_indices, R_indices)]
+        support = density >= args.support_floor*max(
+            float(np.max(obs["joint_density"][frame])), 1.0e-300,
+        )
+        velocity_q = (
+            ef["a"][frame][np.ix_(q_indices, R_indices)]/proton_mass
+        )
+        velocity_R = (
+            ef["b"][frame][np.ix_(q_indices, R_indices)]/heavy_mass
+        )
+        speed = np.hypot(velocity_q, velocity_R)
+        valid = support & np.isfinite(speed)
+        if np.any(valid):
+            supported_speeds.append(speed[valid])
+
+    if supported_speeds:
+        reference_speed = float(np.percentile(
+            np.concatenate(supported_speeds), 95.0,
+        ))
+    else:
+        reference_speed = 1.0
+    reference_speed = max(reference_speed, 1.0e-14)
+    reference_length = 0.055*min(
+        float(q_limits[1]-q_limits[0]), float(R_limits[1]-R_limits[0]),
+    )
+    quiver_scale = reference_speed/max(reference_length, 1.0e-12)
+    return {
+        "q_indices": q_indices,
+        "R_indices": R_indices,
+        "q_mesh": q_mesh,
+        "R_mesh": R_mesh,
+        "q_limits": q_limits,
+        "R_limits": R_limits,
+        "proton_mass": proton_mass,
+        "heavy_mass": heavy_mass,
+        "reference_speed": reference_speed,
+        "quiver_scale": quiver_scale,
+    }
+
+
+def _joint_velocity_frame(obs, ef, prep, frame, floor):
+    """Return mass-scaled velocity components on density-supported sites."""
+    q_indices, R_indices = prep["q_indices"], prep["R_indices"]
+    density = obs["joint_density"][frame][np.ix_(q_indices, R_indices)]
+    cutoff = float(floor)*max(
+        float(np.max(obs["joint_density"][frame])), 1.0e-300,
+    )
+    support = density >= cutoff
+    velocity_q = (
+        ef["a"][frame][np.ix_(q_indices, R_indices)]/prep["proton_mass"]
+    )
+    velocity_R = (
+        ef["b"][frame][np.ix_(q_indices, R_indices)]/prep["heavy_mass"]
+    )
+    invalid = ~support | ~np.isfinite(velocity_q) | ~np.isfinite(velocity_R)
+    # imshow uses (q, R).T while quiver's mesh is (R rows, q columns).
+    return (
+        np.ma.array(velocity_q.T, mask=invalid.T),
+        np.ma.array(velocity_R.T, mask=invalid.T),
+    )
+
+
+def _draw_joint_velocity(axis, obs, ef, prep, frame, args, *, compact=False):
+    image = _draw_joint_density(
+        axis, obs, frame, args.decades, compact=compact,
+    )
+    velocity_q, velocity_R = _joint_velocity_frame(
+        obs, ef, prep, frame, args.support_floor,
+    )
+    arrows = axis.quiver(
+        prep["q_mesh"], prep["R_mesh"], velocity_q, velocity_R,
+        color="#55DDE0", edgecolor="#102A30",
+        linewidth=(0.18 if compact else 0.28),
+        angles="xy", scale_units="xy", scale=prep["quiver_scale"],
+        width=(0.0022 if compact else 0.0028),
+        headwidth=3.5, headlength=4.5, headaxislength=4.0,
+        pivot="mid", zorder=4,
+    )
+    if not compact:
+        axis.quiverkey(
+            arrows, 0.985, 1.025, prep["reference_speed"],
+            rf"$v_{{95}}={prep['reference_speed']:.2e}\ a_0/t_{{\rm au}}$",
+            labelpos="W", coordinates="axes", color="#102A30",
+            labelcolor="#102A30", fontproperties={"size": 8},
+        )
+    return image, arrows
+
+
+def render_joint_velocity(obs, ef, outdir, args, snapshots):
+    """Render joint density with (a/m_p, b/M) positive-gauge arrows."""
+    times = obs["times_fs"]
+    prep = _joint_velocity_preparation(obs, ef, args)
+
+    def individual(frame):
+        fig, axis = plt.subplots(figsize=(9.8, 7.2), constrained_layout=True)
+        image, _ = _draw_joint_velocity(axis, obs, ef, prep, frame, args)
+        fig.colorbar(
+            image, ax=axis, pad=0.012,
+            label=rf"$\log_{{10}}[\rho_{{qR}}/\rho_{{qR,\max}}(t)]$",
+        )
+        fig.suptitle(
+            f"Joint density and positive-gauge velocity | "
+            f"t={times[frame]:.4f} fs\n"
+            r"$(v_q,v_R)=(K_q/m_p,K_R^{(1)}/M)=(a/m_p,b/M)$",
+            fontweight="bold",
+        )
+        return fig
+
+    products = _save_individual_frames(
+        individual, snapshots, times, Path(outdir)/"joint_velocity_frames",
+        "joint_velocity", args.dpi,
+    )
+    fig, axes = plt.subplots(2, 4, figsize=(21.0, 9.6), constrained_layout=True)
+    image = None
+    for axis, frame in zip(axes.flat, snapshots):
+        image, _ = _draw_joint_velocity(
+            axis, obs, ef, prep, int(frame), args, compact=True,
+        )
+        axis.set_title(f"t = {times[int(frame)]:.3f} fs", color="white", fontsize=9)
+    fig.colorbar(
+        image, ax=list(axes.flat), pad=0.008, shrink=0.82,
+        label=rf"$\log_{{10}}[\rho_{{qR}}/\rho_{{qR,\max}}(t)]$",
+    )
+    fig.suptitle(
+        r"Proton-heavy probability density and mechanical velocity field",
+        fontweight="bold",
+    )
+    products.append(_save_figure(
+        fig, Path(outdir)/"joint_velocity_snapshots.png", args.dpi,
+    ))
+
+    if not args.no_animation:
+        frames = _movie_frames(obs, args.max_frames)
+        first = int(frames[0])
+        fig, axis = plt.subplots(figsize=(9.8, 7.2), constrained_layout=True)
+        image, arrows = _draw_joint_velocity(axis, obs, ef, prep, first, args)
+        fig.colorbar(
+            image, ax=axis, pad=0.012,
+            label=rf"$\log_{{10}}[\rho_{{qR}}/\rho_{{qR,\max}}(t)]$",
+        )
+        title = fig.suptitle("", fontweight="bold")
+
+        def update(number):
+            frame = int(frames[number])
+            image.set_data(tdse_collision_report._relative_log_frame(
+                obs["joint_density"][frame], args.decades,
+            ).T)
+            velocity_q, velocity_R = _joint_velocity_frame(
+                obs, ef, prep, frame, args.support_floor,
+            )
+            arrows.set_UVC(velocity_q, velocity_R)
+            title.set_text(
+                f"Joint density and positive-gauge velocity | "
+                f"t={times[frame]:.4f} fs\n"
+                r"$(v_q,v_R)=(a/m_p,b/M)$"
+            )
+            return image, arrows, title
+
+        update(0)
+        animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
+        products.append(tdse_report._save_animation(
+            animation, fig, outdir, "joint_velocity_movie",
+            args.fps, args.animation_dpi, args.format,
+        ))
+    prep["arrow_support_floor"] = float(args.support_floor)
+    return products, prep
 
 
 # ---------------------------------------------------------------------------
@@ -1098,10 +1300,14 @@ def run(args):
     if "joint" in selected:
         products.extend(render_joint_density(obs, output, args, snapshots))
 
-    ef_needed = any(name in selected for name in ("vector", "heavy", "bo"))
+    ef_needed = any(
+        name in selected for name in ("velocity", "vector", "heavy", "bo")
+    )
     ef = None
     if ef_needed:
         field_keys = []
+        if "velocity" in selected:
+            field_keys.extend(("a", "b"))
         if "vector" in selected:
             field_keys.extend(("a", "b", "alpha"))
         if "heavy" in selected:
@@ -1117,6 +1323,13 @@ def run(args):
             raise FileNotFoundError(
                 f"{run_dir/'tdse_exact_factorization_fields.npz'}가 없습니다."
             )
+
+    velocity_prep = None
+    if "velocity" in selected:
+        generated, velocity_prep = render_joint_velocity(
+            obs, ef, output, args, snapshots,
+        )
+        products.extend(generated)
 
     vector_prep = None
     if "vector" in selected:
@@ -1159,6 +1372,22 @@ def run(args):
         manifest.extend((
             f"vector_q_limits={vector_prep['q_limits']}",
             f"vector_R_limits={vector_prep['R_limits']}",
+        ))
+    if velocity_prep is not None:
+        manifest.extend((
+            f"velocity_q_limits={velocity_prep['q_limits']}",
+            f"velocity_R_limits={velocity_prep['R_limits']}",
+            (
+                "velocity_reference_speed="
+                f"{velocity_prep['reference_speed']:.16g}"
+            ),
+            f"velocity_quiver_scale={velocity_prep['quiver_scale']:.16g}",
+            (
+                "velocity_arrow_support_floor="
+                f"{velocity_prep['arrow_support_floor']:.16g}"
+            ),
+            "velocity_components=(a/proton_mass,b/heavy_mass)",
+            "velocity_arrow_scaling=trajectory_wide_no_field_normalization",
         ))
     if heavy_prep is not None:
         manifest.extend((
@@ -1204,6 +1433,14 @@ def parse_args(argv=None):
     parser.add_argument("--animation-dpi", type=int, default=110)
     parser.add_argument("--decades", type=float, default=6.0)
     parser.add_argument("--support-floor", type=float, default=1.0e-4)
+    parser.add_argument(
+        "--velocity-q-points", type=int, default=36,
+        help="number of fixed proton-coordinate arrow samples",
+    )
+    parser.add_argument(
+        "--velocity-R-points", type=int, default=18,
+        help="number of fixed heavy-coordinate arrow samples",
+    )
     parser.add_argument("--marginal-ymax", type=float, default=1.5)
     parser.add_argument("--marginal-xmax", type=float, default=12.0)
     parser.add_argument("--heavy-min", type=float, default=5.0)
@@ -1214,7 +1451,7 @@ def parse_args(argv=None):
     positive = (
         "fps", "max_frames", "snapshot_count", "dpi", "animation_dpi",
         "decades", "support_floor", "marginal_ymax", "marginal_xmax",
-        "surface_count",
+        "surface_count", "velocity_q_points", "velocity_R_points",
     )
     for name in positive:
         if not np.isfinite(getattr(args, name)) or getattr(args, name) <= 0:
