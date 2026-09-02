@@ -389,8 +389,9 @@ python -m multi_component_exact_factorization.render_tdse_tdpes_gauges \
 
 완료된 TDSE run의 reduced density, BO 분석 배열과
 ``tdse_exact_factorization_fields.npz``를 재사용해 marginal history,
-proton--heavy joint density, positive-gauge velocity field와 vector potentials,
-heavy-coordinate force 분해, BO cut/channel packet을 한 번에 만들 수 있다. 대형
+proton--heavy joint density, positive-gauge velocity field/vector potentials/
+probability currents, heavy-coordinate force 분해, BO cut/channel packet을 한
+번에 만들 수 있다. 대형
 ``tdse_coefficients``와 사용하지 않는 overlap-link 배열은 읽지 않는다.
 
 ```bash
@@ -404,7 +405,8 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 기본 출력은 해당 계산 폴더의 ``report/final_visualizations/`` 아래에 모인다.
 별도 위치가 필요한 경우에만 ``--outdir PATH``를 명시한다.
 
-``--only marginal joint velocity vector heavy bo``로 필요한 묶음만 고를 수 있고,
+``--only marginal joint velocity vector current heavy bo``로 필요한 묶음만
+고를 수 있고,
 ``--no-animation``을 주면 같은 plotting function으로 8개 개별 PNG와 2x4
 summary만 다시 만든다. 특히 joint density 위의 속도 화살표만 다시 만들려면
 
@@ -420,6 +422,20 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 frame별로 정규화하거나 평활화하지 않는다. ``--velocity-q-points``와
 ``--velocity-R-points``로 화살표 sampling 밀도만 조절할 수 있다. Signed 2D
 field는 음수=파랑, 0=흰색, 양수=빨강이고 low-density mask는 회색이다.
+
+상단 particle marginal은 그대로 유지하고 아래 세 패널만 MCEF probability
+current로 바꾼 composite는 다음처럼 별도로 다시 만든다.
+
+```bash
+python -m multi_component_exact_factorization.render_final_visualizations \
+  results/YYYYMMDD/RUN_NAME --only current \
+  --format mp4 --fps 12 --max-frames 240 --snapshot-count 8
+```
+
+세 패널은 positive-density gauge에서 각각
+``J_A^p=rho_qR*a/m_p``, ``J_c^R=rho_qR*b/M``,
+``bar(J_c^R)=rho_R*alpha/M``을 표시한다. 마지막 식은 연속 이론에서
+``bar(J_c^R)=integral dq J_c^R``와 같다.
 
 Heavy 분석의 trap 항은 archive의 실제 Hamiltonian
 metadata를 읽어

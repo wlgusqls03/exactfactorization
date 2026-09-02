@@ -36,7 +36,9 @@ from .report_plot_style import (
 from .visualize import NUMBER_FORMATTER, selected_frames
 
 
-FINAL_PRODUCTS = ("marginal", "joint", "velocity", "vector", "heavy", "bo")
+FINAL_PRODUCTS = (
+    "marginal", "joint", "velocity", "vector", "current", "heavy", "bo",
+)
 
 
 def _snapshot_frames(obs, count=8):
@@ -593,37 +595,42 @@ def _new_vector_axes(figsize=(15.6, 8.8), *, compact=False, subplot_spec=None,
     return figure, axes
 
 
-def _draw_vector_composite(fig, axes, obs, ef, prep, frame, args, *,
-                           colorbars=True, compact=False):
-    x, q, R = obs["x"], obs["q"], obs["R"]
-    electron = obs["electron_density"]
+def _draw_particle_marginal_panel(axis, obs, frame, args, *, compact=False):
+    """Draw the shared upper panel used by vector/current composites."""
     marginal_lines = []
     for name, coordinate, density in (
-        ("electron", x, electron),
-        ("proton", q, obs["proton_density"]),
-        ("heavy", R, obs["heavy_density"]),
+        ("electron", obs["x"], obs["electron_density"]),
+        ("proton", obs["q"], obs["proton_density"]),
+        ("heavy", obs["R"], obs["heavy_density"]),
     ):
-        line, = axes["marginal"].plot(
+        line, = axis.plot(
             coordinate, density[frame], color=PARTICLE_COLORS[name],
             lw=(1.15 if compact else 2.0), label=name,
         )
         marginal_lines.append(line)
-    add_fixed_center_markers(axes["marginal"], obs["options"])
-    axes["marginal"].set(
+    add_fixed_center_markers(axis, obs["options"])
+    axis.set(
         xlim=(-args.marginal_xmax, args.marginal_xmax),
         ylim=(0.0, args.marginal_ymax),
         xlabel=("" if compact else r"common position coordinate ($a_0$)"),
         ylabel=r"density ($a_0^{-1}$)",
     )
-    axes["marginal"].set_title(
+    axis.set_title(
         "Particle marginals" if compact else
         "Electron, proton and heavy-nucleus marginals | fixed display scale",
         loc="left", fontweight="semibold", fontsize=(7 if compact else None),
     )
-    axes["marginal"].legend(
-        frameon=False, ncol=3, fontsize=(5.5 if compact else 8),
+    axis.legend(frameon=False, ncol=3, fontsize=(5.5 if compact else 8))
+    axis.grid(alpha=0.18)
+    return marginal_lines
+
+
+def _draw_vector_composite(fig, axes, obs, ef, prep, frame, args, *,
+                           colorbars=True, compact=False):
+    q, R = obs["q"], obs["R"]
+    marginal_lines = _draw_particle_marginal_panel(
+        axes["marginal"], obs, frame, args, compact=compact,
     )
-    axes["marginal"].grid(alpha=0.18)
 
     density = obs["joint_density"][frame]
     opacity = density_display_alpha(density, args.support_floor)
@@ -763,6 +770,276 @@ def render_vector_composite(obs, ef, outdir, args, snapshots):
         animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
         products.append(tdse_report._save_animation(
             animation, fig, outdir, "vector_potential_composite_movie",
+            args.fps, args.animation_dpi, args.format,
+        ))
+    return products, prep
+
+
+# ---------------------------------------------------------------------------
+# 3b. Particle dynamics + positive-gauge probability currents
+
+
+def _new_current_axes(figsize=(15.6, 8.8), *, compact=False,
+                      subplot_spec=None, figure=None):
+    if subplot_spec is None:
+        figure = plt.figure(figsize=figsize, constrained_layout=True)
+        grid = figure.add_gridspec(2, 3, height_ratios=(0.72, 1.0))
+    else:
+        grid = subplot_spec.subgridspec(
+            2, 3, height_ratios=(0.62, 1.0), hspace=0.12,
+        )
+    axes = {
+        "marginal": figure.add_subplot(grid[0, :]),
+        "proton": figure.add_subplot(grid[1, 0]),
+        "heavy_joint": figure.add_subplot(grid[1, 1]),
+        "heavy_marginal": figure.add_subplot(grid[1, 2]),
+    }
+    if compact:
+        for axis in axes.values():
+            axis.tick_params(labelsize=5.5)
+    return figure, axes
+
+
+def _supported_percentile_bound(values, density, floor, percentile=99.0):
+    support = density >= float(floor)*max(float(np.max(density)), 1.0e-300)
+    selected = np.abs(np.asarray(values, float)[support])
+    selected = selected[np.isfinite(selected)]
+    return float(np.percentile(selected, percentile)) if selected.size else 0.0
+
+
+def _current_preparation(obs, ef, args):
+    frames = _movie_frames(obs, args.max_frames)
+    proton_mass = float(obs["options"].get("proton_mass", 1836.15267343))
+    heavy_mass = float(obs["options"].get("heavy_mass", 1836.15267343))
+    alpha_lifted, heavy_support, _ = tdse_report.support_aware_temporal_lift_1d(
+        ef["alpha"], obs["heavy_density"], obs["dR"], args.support_floor,
+    )
+    proton_bounds, heavy_joint_bounds, heavy_marginal_bounds = [], [], []
+    for frame in frames:
+        frame = int(frame)
+        density = obs["joint_density"][frame]
+        heavy = obs["heavy_density"][frame]
+        proton_current = density*ef["a"][frame]/proton_mass
+        heavy_joint_current = density*ef["b"][frame]/heavy_mass
+        heavy_marginal_current = heavy*alpha_lifted[frame]/heavy_mass
+        proton_bounds.append(_supported_percentile_bound(
+            proton_current, density, args.support_floor,
+        ))
+        heavy_joint_bounds.append(_supported_percentile_bound(
+            heavy_joint_current, density, args.support_floor,
+        ))
+        heavy_marginal_bounds.append(_supported_percentile_bound(
+            heavy_marginal_current, heavy, args.support_floor,
+        ))
+
+    def limits(bounds):
+        bound = max(
+            float(np.percentile(bounds, 98.0)) if bounds else 0.0,
+            1.0e-18,
+        )
+        return -bound, bound
+
+    return {
+        "proton_mass": proton_mass,
+        "heavy_mass": heavy_mass,
+        "alpha_lifted": alpha_lifted,
+        "heavy_support": heavy_support,
+        "proton_limits": limits(proton_bounds),
+        "heavy_joint_limits": limits(heavy_joint_bounds),
+        "heavy_marginal_limits": limits(heavy_marginal_bounds),
+        "q_limits": _support_limits(
+            obs["q"], obs["proton_density"], args.support_floor,
+        ),
+        "R_limits": _support_limits(
+            obs["R"], obs["heavy_density"], args.support_floor,
+        ),
+    }
+
+
+def _current_frame(obs, ef, prep, frame):
+    density = obs["joint_density"][frame]
+    heavy = obs["heavy_density"][frame]
+    return {
+        "proton": density*ef["a"][frame]/prep["proton_mass"],
+        "heavy_joint": density*ef["b"][frame]/prep["heavy_mass"],
+        "heavy_marginal": (
+            heavy*prep["alpha_lifted"][frame]/prep["heavy_mass"]
+        ),
+    }
+
+
+def _draw_current_composite(fig, axes, obs, ef, prep, frame, args, *,
+                            colorbars=True, compact=False):
+    q, R = obs["q"], obs["R"]
+    marginal_lines = _draw_particle_marginal_panel(
+        axes["marginal"], obs, frame, args, compact=compact,
+    )
+    current = _current_frame(obs, ef, prep, frame)
+    density = obs["joint_density"][frame]
+    opacity = density_display_alpha(density, args.support_floor)
+    extent = [q[0], q[-1], R[0], R[-1]]
+    specifications = (
+        (
+            "proton", prep["proton_limits"],
+            r"$J_A^p=\rho_{qR}K_A^p/m_p=\rho_{qR}a/m_p$",
+        ),
+        (
+            "heavy_joint", prep["heavy_joint_limits"],
+            r"$J_c^R=\rho_{qR}K_c^R/M=\rho_{qR}b/M$",
+        ),
+    )
+    images = []
+    for key, value_limits, label in specifications:
+        axis = axes[key]
+        axis.set_facecolor(MASK_COLOR)
+        image = axis.imshow(
+            current[key].T, origin="lower", aspect="auto",
+            interpolation="nearest", extent=extent,
+            cmap=masked_cmap(SIGNED_CMAP),
+            vmin=value_limits[0], vmax=value_limits[1], alpha=opacity.T,
+        )
+        axis.set(
+            xlim=prep["q_limits"], ylim=prep["R_limits"],
+            xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
+        )
+        axis.set_title(label, fontsize=(5.8 if compact else 8.5))
+        if colorbars:
+            fig.colorbar(
+                image, ax=axis, pad=0.01, format=NUMBER_FORMATTER,
+                extend="both", label="joint probability current (a.u.)",
+            )
+        images.append((image, key))
+
+    support = prep["heavy_support"][frame]
+    heavy_marginal = current["heavy_marginal"]
+    current_line, current_tail = tdse_report._support_tail_lines(
+        axes["heavy_marginal"], R,
+        np.where(support, heavy_marginal, np.nan),
+        heavy_marginal, support, color=COLORS[0],
+        label=r"$\overline{J_c^R}$", linewidth=(1.2 if compact else 2.0),
+    )
+    density_line = tdse_report._scaled_heavy_density(
+        axes["heavy_marginal"], R, obs["heavy_density"][frame],
+    )
+    axes["heavy_marginal"].set(
+        xlim=prep["R_limits"], ylim=prep["heavy_marginal_limits"],
+        xlabel=r"heavy $R$ ($a_0$)",
+        ylabel=r"marginal probability current (a.u.)",
+    )
+    axes["heavy_marginal"].set_title(
+        r"$\overline{J_c^R}=\int dq\,J_c^R=\rho_R\alpha/M$",
+        fontsize=(5.8 if compact else 8.5),
+    )
+    axes["heavy_marginal"].legend(
+        frameon=False, fontsize=(5.5 if compact else 8),
+    )
+    axes["heavy_marginal"].grid(alpha=0.18)
+    return {
+        "marginal_lines": marginal_lines,
+        "images": images,
+        "current_line": current_line,
+        "current_tail": current_tail,
+        "density_line": density_line,
+    }
+
+
+def _update_current_composite(state, obs, ef, prep, frame, args):
+    for line, density in zip(state["marginal_lines"], (
+        obs["electron_density"], obs["proton_density"], obs["heavy_density"],
+    )):
+        line.set_ydata(density[frame])
+    current = _current_frame(obs, ef, prep, frame)
+    opacity = density_display_alpha(
+        obs["joint_density"][frame], args.support_floor,
+    )
+    for image, key in state["images"]:
+        image.set_data(current[key].T)
+        image.set_alpha(opacity.T)
+    support = prep["heavy_support"][frame]
+    heavy_marginal = current["heavy_marginal"]
+    state["current_line"].set_ydata(
+        np.where(support, heavy_marginal, np.nan),
+    )
+    state["current_tail"].set_ydata(
+        np.where(~support, heavy_marginal, np.nan),
+    )
+    heavy = obs["heavy_density"][frame]
+    state["density_line"].set_ydata(
+        heavy/max(float(np.max(heavy)), 1.0e-300),
+    )
+
+
+def render_current_composite(obs, ef, outdir, args, snapshots):
+    if obs.get("electron_density") is None or obs.get("x") is None:
+        raise KeyError("current composite에는 저장된 electron marginal이 필요합니다")
+    prep = _current_preparation(obs, ef, args)
+    times = obs["times_fs"]
+
+    def individual(frame):
+        fig, axes = _new_current_axes()
+        _draw_current_composite(fig, axes, obs, ef, prep, frame, args)
+        fig.suptitle(
+            "Particle dynamics and positive-density-gauge probability "
+            f"currents | t={times[frame]:.4f} fs",
+            fontweight="bold",
+        )
+        return fig
+
+    products = _save_individual_frames(
+        individual, snapshots, times,
+        Path(outdir)/"current_density_composite_frames",
+        "current_density_composite", args.dpi,
+    )
+    fig = plt.figure(figsize=(24.0, 8.4), constrained_layout=True)
+    outer = fig.add_gridspec(2, 4)
+    for slot, frame in zip(outer, snapshots):
+        _, axes = _new_current_axes(
+            compact=True, subplot_spec=slot, figure=fig,
+        )
+        _draw_current_composite(
+            fig, axes, obs, ef, prep, int(frame), args,
+            colorbars=False, compact=True,
+        )
+        axes["marginal"].text(
+            0.99, 0.92, f"t={times[int(frame)]:.3f} fs",
+            transform=axes["marginal"].transAxes, ha="right", va="top",
+            fontsize=6.5,
+        )
+    fig.suptitle(
+        "Particle dynamics with positive-density-gauge probability currents",
+        fontweight="bold",
+    )
+    products.append(_save_figure(
+        fig, Path(outdir)/"current_density_composite_snapshots.png", args.dpi,
+    ))
+
+    if not args.no_animation:
+        frames = _movie_frames(obs, args.max_frames)
+        first = int(frames[0])
+        fig, axes = _new_current_axes()
+        state = _draw_current_composite(
+            fig, axes, obs, ef, prep, first, args,
+        )
+        title = fig.suptitle("", fontweight="bold")
+
+        def update(number):
+            frame = int(frames[number])
+            _update_current_composite(state, obs, ef, prep, frame, args)
+            title.set_text(
+                "Particle dynamics and positive-density-gauge probability "
+                f"currents | t={times[frame]:.4f} fs"
+            )
+            return (
+                *state["marginal_lines"],
+                *(image for image, _ in state["images"]),
+                state["current_line"], state["current_tail"],
+                state["density_line"], title,
+            )
+
+        update(0)
+        animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
+        products.append(tdse_report._save_animation(
+            animation, fig, outdir, "current_density_composite_movie",
             args.fps, args.animation_dpi, args.format,
         ))
     return products, prep
@@ -1301,7 +1578,8 @@ def run(args):
         products.extend(render_joint_density(obs, output, args, snapshots))
 
     ef_needed = any(
-        name in selected for name in ("velocity", "vector", "heavy", "bo")
+        name in selected
+        for name in ("velocity", "vector", "current", "heavy", "bo")
     )
     ef = None
     if ef_needed:
@@ -1309,6 +1587,8 @@ def run(args):
         if "velocity" in selected:
             field_keys.extend(("a", "b"))
         if "vector" in selected:
+            field_keys.extend(("a", "b", "alpha"))
+        if "current" in selected:
             field_keys.extend(("a", "b", "alpha"))
         if "heavy" in selected:
             field_keys.extend(("epsilon_2", "alpha"))
@@ -1334,6 +1614,12 @@ def run(args):
     vector_prep = None
     if "vector" in selected:
         generated, vector_prep = render_vector_composite(
+            obs, ef, output, args, snapshots,
+        )
+        products.extend(generated)
+    current_prep = None
+    if "current" in selected:
+        generated, current_prep = render_current_composite(
             obs, ef, output, args, snapshots,
         )
         products.extend(generated)
@@ -1388,6 +1674,14 @@ def run(args):
             ),
             "velocity_components=(a/proton_mass,b/heavy_mass)",
             "velocity_arrow_scaling=trajectory_wide_no_field_normalization",
+        ))
+    if current_prep is not None:
+        manifest.extend((
+            "proton_current=joint_density*a/proton_mass",
+            "heavy_joint_current=joint_density*b/heavy_mass",
+            "heavy_marginal_current=heavy_density*alpha/heavy_mass",
+            f"current_q_limits={current_prep['q_limits']}",
+            f"current_R_limits={current_prep['R_limits']}",
         ))
     if heavy_prep is not None:
         manifest.extend((

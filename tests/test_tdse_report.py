@@ -264,6 +264,7 @@ class TDSEReportTests(unittest.TestCase):
                 "joint_density_qR_snapshots.png",
                 "joint_velocity_snapshots.png",
                 "vector_potential_composite_snapshots.png",
+                "current_density_composite_snapshots.png",
                 "heavy_analysis_snapshots.png",
                 "bo_combined_snapshots.png",
                 "final_visualizations_manifest.txt",
@@ -274,11 +275,12 @@ class TDSEReportTests(unittest.TestCase):
                 "joint_density_qR_frames",
                 "joint_velocity_frames",
                 "vector_potential_composite_frames",
+                "current_density_composite_frames",
                 "heavy_analysis_frames",
                 "bo_combined_frames",
             ):
                 self.assertEqual(len(list((output/directory).glob("*.png"))), 2)
-            self.assertGreaterEqual(len(products), 19)
+            self.assertGreaterEqual(len(products), 22)
 
     def test_joint_velocity_uses_mass_scaled_positive_gauge_connections(self):
         q = np.array([-1.0, 0.0, 1.0])
@@ -329,6 +331,61 @@ class TDSEReportTests(unittest.TestCase):
                 len(list((output/"joint_velocity_frames").glob("*.png"))),
                 2,
             )
+
+    def test_current_fields_follow_mcef_probability_current_definitions(self):
+        q = np.array([-1.0, 0.0, 1.0])
+        R = np.array([2.0, 3.0])
+        dq, dR = 1.0, 1.0
+        joint = np.full((1, len(q), len(R)), 1.0/6.0)
+        heavy = np.sum(joint, axis=1)*dq
+        obs = {
+            "q": q,
+            "R": R,
+            "dq": dq,
+            "dR": dR,
+            "times_fs": np.array([0.0]),
+            "joint_density": joint,
+            "proton_density": np.sum(joint, axis=2)*dR,
+            "heavy_density": heavy,
+            "options": {"proton_mass": 2.0, "heavy_mass": 8.0},
+        }
+        ef = {
+            "a": np.full_like(joint, 4.0),
+            "b": np.full_like(joint, -8.0),
+            "alpha": np.full_like(heavy, -8.0),
+        }
+        args = argparse.Namespace(max_frames=1, support_floor=1.0e-4)
+        prep = render_final_visualizations._current_preparation(obs, ef, args)
+        current = render_final_visualizations._current_frame(obs, ef, prep, 0)
+        self.assertTrue(np.allclose(current["proton"], 2.0*joint[0]))
+        self.assertTrue(np.allclose(current["heavy_joint"], -joint[0]))
+        self.assertTrue(np.allclose(current["heavy_marginal"], -heavy[0]))
+        self.assertTrue(np.allclose(
+            np.sum(current["heavy_joint"], axis=0)*dq,
+            current["heavy_marginal"],
+        ))
+
+    def test_current_only_command_writes_movie_and_snapshots(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_archive(root)
+            output = root/"current_only"
+            args = render_final_visualizations.parse_args([
+                str(root), "--outdir", str(output), "--only", "current",
+                "--format", "gif", "--snapshot-count", "2",
+                "--max-frames", "2", "--dpi", "30",
+                "--animation-dpi", "25", "--fps", "2",
+            ])
+            render_final_visualizations.run(args)
+            self.assertTrue((
+                output/"current_density_composite_movie.gif"
+            ).is_file())
+            self.assertTrue((
+                output/"current_density_composite_snapshots.png"
+            ).is_file())
+            self.assertEqual(len(list((
+                output/"current_density_composite_frames"
+            ).glob("*.png"))), 2)
 
     def test_signed_maps_use_blue_white_red_with_gray_mask(self):
         from matplotlib.colors import to_rgba
