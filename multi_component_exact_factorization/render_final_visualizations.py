@@ -625,6 +625,17 @@ def _draw_particle_marginal_panel(axis, obs, frame, args, *, compact=False):
     return marginal_lines
 
 
+def _add_attached_colorbar(fig, axis, image, label):
+    """Attach a narrow colorbar directly to a final-composite map panel."""
+    color_axis = axis.inset_axes([1.012, 0.035, 0.034, 0.93])
+    colorbar = fig.colorbar(
+        image, cax=color_axis, format=NUMBER_FORMATTER,
+        extend="both", label=label,
+    )
+    colorbar.ax.tick_params(labelsize=8, pad=1.5)
+    return colorbar
+
+
 def _draw_vector_composite(fig, axes, obs, ef, prep, frame, args, *,
                            colorbars=True, compact=False):
     q, R = obs["q"], obs["R"]
@@ -652,9 +663,8 @@ def _draw_vector_composite(fig, axes, obs, ef, prep, frame, args, *,
         )
         axis.set_title(label+" | positive-density gauge", fontsize=(7 if compact else 9))
         if colorbars:
-            fig.colorbar(
-                image, ax=axis, pad=0.01, format=NUMBER_FORMATTER,
-                extend="both", label=r"connection ($a_0^{-1}$)",
+            _add_attached_colorbar(
+                fig, axis, image, r"connection ($a_0^{-1}$)",
             )
         images.append((image, key))
 
@@ -904,9 +914,8 @@ def _draw_current_composite(fig, axes, obs, ef, prep, frame, args, *,
         )
         axis.set_title(label, fontsize=(5.8 if compact else 8.5))
         if colorbars:
-            fig.colorbar(
-                image, ax=axis, pad=0.004, format=NUMBER_FORMATTER,
-                extend="both", label="joint probability current (a.u.)",
+            _add_attached_colorbar(
+                fig, axis, image, "joint probability current (a.u.)",
             )
         images.append((image, key))
 
