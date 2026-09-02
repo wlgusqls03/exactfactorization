@@ -905,7 +905,7 @@ def _draw_current_composite(fig, axes, obs, ef, prep, frame, args, *,
         axis.set_title(label, fontsize=(5.8 if compact else 8.5))
         if colorbars:
             fig.colorbar(
-                image, ax=axis, pad=0.01, format=NUMBER_FORMATTER,
+                image, ax=axis, pad=0.004, format=NUMBER_FORMATTER,
                 extend="both", label="joint probability current (a.u.)",
             )
         images.append((image, key))
