@@ -440,8 +440,9 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 Heavy 분석의 trap 항은 archive의 실제 Hamiltonian
 metadata를 읽어
 ``V_trap=alpha_trap*(R-Rc)^2``와
-``F_harm=-D_R^+ V_trap``로 표시한다. 같은 forward-bond 미분으로
-``F_total=-D_R^+ epsilon_ZP^(2)``를 계산하고,
+``F_harm=-partial_R V_trap``로 표시한다. 여기서 ``partial_R``은 실제
+계산에서는 forward-bond finite difference로 평가한다. 같은 미분으로
+``F_total=-partial_R epsilon_ZP^(2)``를 계산하고,
 ``F_driven=F_total-F_harm``으로 explicit trap을 제거한다. 따라서 그림의
 굵은 실선 total force와 두 점선 성분은 finite grid에서도 정확히
 ``F_total=F_driven+F_harm``을 만족한다. 별도 오른쪽 축의

@@ -1192,7 +1192,7 @@ def _draw_heavy_analysis(fig, force_axis, obs, prep, frame, args, *,
     total_line, total_tail = tdse_report._support_tail_lines(
         force_axis, R, np.where(support, total, np.nan), total, support,
         color="0.10",
-        label=r"$F_{\mathrm{total}}=-D_R^+\epsilon_{\mathrm{ZP}}^{(2)}$",
+        label=r"$F_{\mathrm{total}}=-\partial_R\epsilon_{\mathrm{ZP}}^{(2)}$",
         linewidth=(1.55 if compact else 2.7), linestyle="-",
     )
     driven_line, driven_tail = tdse_report._support_tail_lines(
@@ -1200,14 +1200,14 @@ def _draw_heavy_analysis(fig, force_axis, obs, prep, frame, args, *,
         color=FORCE_COLOR,
         label=(
             r"$F_{\mathrm{driven}}="
-            r"-D_R^+[\epsilon_{\mathrm{ZP}}^{(2)}-V_{\mathrm{trap}}]$"
+            r"-\partial_R[\epsilon_{\mathrm{ZP}}^{(2)}-V_{\mathrm{trap}}]$"
         ),
         linewidth=(1.0 if compact else 1.75), linestyle="--",
     )
     harmonic_line, = force_axis.plot(
         R, prep["harmonic_force"], color=COLORS[4],
         lw=(1.0 if compact else 1.75), ls="--",
-        label=r"$F_{\mathrm{harm}}=-D_R^+V_{\mathrm{trap}}$",
+        label=r"$F_{\mathrm{harm}}=-\partial_RV_{\mathrm{trap}}$",
     )
     force_axis.axhline(0.0, color="0.65", lw=0.7, zorder=0)
     force_axis.axvline(
@@ -1328,7 +1328,7 @@ def render_heavy_analysis(obs, ef_zero, alpha_positive, outdir, args, snapshots)
             title.set_text(
                 f"Heavy-coordinate analysis | t={times[frame]:.4f} fs\n"
                 r"$\alpha_{\rm PG}=K_R$; "
-                r"$F_{\rm total}=-D_R^+\epsilon_{\rm ZP}^{(2)}"
+                r"$F_{\rm total}=-\partial_R\epsilon_{\rm ZP}^{(2)}"
                 r"=F_{\rm driven}+F_{\rm harm}$"
             )
             return (
@@ -1695,11 +1695,12 @@ def run(args):
     if heavy_prep is not None:
         manifest.extend((
             "harmonic_potential=heavy_trap_alpha*(R-heavy_trap_center)^2",
-            "total_force=-D_R^+*epsilon_ZP^(2)",
-            "harmonic_force=-D_R^+*harmonic_potential",
+            "total_force=-partial_R*epsilon_ZP^(2)",
+            "harmonic_force=-partial_R*harmonic_potential",
             "driven_force=total_force-harmonic_force",
             "force_identity=total_force=driven_force+harmonic_force",
             "force_coordinates=forward_R_bonds",
+            "force_derivative=forward_finite_difference_in_R",
             (
                 "force_decomposition_max_abs="
                 f"{heavy_prep['force_decomposition_max_abs']:.16g}"
