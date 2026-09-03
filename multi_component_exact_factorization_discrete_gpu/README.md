@@ -368,12 +368,16 @@ It saves `tdse_exact_factorization_fields.npz` beside the TDSE archive with
 - exact factorization and imaginary-scalar residual audits.
 - the exact electron marginal reconstructed from the BO coefficients and
   cached electronic states.
+- the coherent electron--proton reduced density
+  `electron_proton_density(x,q)=int dR |Psi(x,q,R)|^2`, reconstructed before
+  squaring so all BO cross terms are retained.
 
-Electron-marginal reconstruction is exact but expensive because every saved
-frame must stream the large cached BO eigenstate tensor. Use
-`--no-electron-density` only when the exact-potential fields are needed without
-the three-particle marginal movie. New TDSE propagation archives save the
-electron marginal at each output frame by default; use
+Electronic reduced-density reconstruction is exact but expensive because every
+saved frame must stream the large cached BO eigenstate tensor. The electron
+marginal and electron--proton density are accumulated in the same blockwise
+pass. Use `--no-electron-density` and/or `--no-electron-proton-density` when the
+corresponding visualization is not needed. New TDSE propagation archives save
+the electron marginal at each output frame by default; use
 `--no-bo-save-electron-density` to opt out.
 
 Run the standard renderer again.  It automatically finds this field cache

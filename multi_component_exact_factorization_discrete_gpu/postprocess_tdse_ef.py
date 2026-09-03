@@ -28,7 +28,7 @@ from multi_component_exact_factorization.render_all import (
     resolve_run_input,
 )
 from multi_component_exact_factorization.tdse_electron import (
-    electron_marginal_from_bo,
+    electronic_reduced_densities_from_bo,
 )
 from multi_component_exact_factorization_discrete.core import (
     OFFSETS,
@@ -304,6 +304,10 @@ def run(args):
         )*np.dtype(np.complex128).itemsize
     if args.electron_density:
         estimated_bytes += nt*len(metadata["x"])*np.dtype(np.float64).itemsize
+    if args.electron_proton_density:
+        estimated_bytes += (
+            nt*len(metadata["x"])*nq*np.dtype(np.float64).itemsize
+        )
     free_bytes = shutil.disk_usage(output.parent).free
     print(
         "EF field cache 예상 raw payload="
@@ -324,7 +328,9 @@ def run(args):
     model = make_discrete_gpu_model(cpu_model)
     spectral_source = "spectral_split" in metadata["source_kind"]
     compact_states = (
-        basis_cpu.states if args.electron_density or spectral_source else None
+        basis_cpu.states
+        if args.electron_density or args.electron_proton_density or spectral_source
+        else None
     )
     link_kernel = args.bo_link_kernel or metadata["bo_link_kernel"]
     basis = to_gpu_basis(basis_cpu, model, link_kernel)
@@ -374,8 +380,19 @@ def run(args):
         fields["electron_density"] = np.empty(
             (nt, len(metadata["x"])), dtype=np.float64
         )
+    if args.electron_proton_density:
+        fields["electron_proton_density"] = np.empty(
+            (nt, len(metadata["x"]), nq), dtype=np.float64,
+        )
+    if args.electron_density or args.electron_proton_density:
+        requested_densities = []
+        if args.electron_density:
+            requested_densities.append("electron marginal")
+        if args.electron_proton_density:
+            requested_densities.append("electron-proton joint density")
         print(
-            "TDSE electron marginal도 정확히 복원합니다. BO states를 "
+            "TDSE " + " + ".join(requested_densities)
+            + "를 coherent BO sum으로 정확히 복원합니다. BO states를 "
             f"R-block={args.electron_density_R_block}으로 순차 읽습니다."
         )
     stream_keys = ["tdse_coefficients"]
@@ -413,14 +430,19 @@ def run(args):
                 y_frame, model, basis, link_keys, action_frame,
                 spectral_analyzer,
             )
-            if args.electron_density:
-                if metadata["electron_density"] is not None:
-                    current["electron_density"] = metadata["electron_density"][frame]
-                else:
-                    current["electron_density"] = electron_marginal_from_bo(
-                        y_frame, compact_states, model.dq, model.dR,
-                        args.electron_density_R_block,
-                    )
+            reconstruct_marginal = (
+                args.electron_density and metadata["electron_density"] is None
+            )
+            if reconstruct_marginal or args.electron_proton_density:
+                reconstructed_density = electronic_reduced_densities_from_bo(
+                    y_frame, compact_states, model.dq, model.dR,
+                    args.electron_density_R_block,
+                    electron_marginal=reconstruct_marginal,
+                    electron_proton=args.electron_proton_density,
+                )
+                current.update(reconstructed_density)
+            if args.electron_density and metadata["electron_density"] is not None:
+                current["electron_density"] = metadata["electron_density"][frame]
             for key in fields:
                 fields[key][frame] = current[key]
             if args.progress_every and (
@@ -494,6 +516,15 @@ def parse_args(argv=None):
         help="전자 marginal 복원을 생략해 field 후처리를 더 빠르게 수행",
     )
     parser.add_argument("--electron-density-R-block", type=int, default=24)
+    parser.set_defaults(electron_proton_density=True)
+    parser.add_argument(
+        "--no-electron-proton-density", action="store_false",
+        dest="electron_proton_density",
+        help=(
+            "R을 적분한 electron-proton joint density 복원을 생략해 "
+            "field cache 크기를 줄임"
+        ),
+    )
     parser.add_argument("--spectral-analysis-R-block", type=int, default=2)
     args = parser.parse_args(argv)
     if args.electron_density_R_block <= 0:

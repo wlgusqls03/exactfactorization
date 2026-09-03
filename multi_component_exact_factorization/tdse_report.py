@@ -975,8 +975,15 @@ def _load_ef_fields(obs, *, field_keys=None, link_keys=None):
     with np.load(path, allow_pickle=False) as stored:
         missing = [key for key in required if key not in stored.files]
         if missing:
+            hint = ""
+            if "electron_proton_density" in missing:
+                hint = (
+                    " 오래된 cache라면 postprocess_tdse_ef --overwrite를 "
+                    "한 번 다시 실행하세요; TDSE 재전파는 필요하지 않습니다."
+                )
             raise KeyError(
                 f"{path.name}에 field가 없습니다: " + ", ".join(missing)
+                + hint
             )
         if not np.allclose(stored["times_fs"], obs["times_fs"], rtol=0.0, atol=1.0e-10):
             raise ValueError("TDSE field cache와 source archive의 저장 시각이 다릅니다")

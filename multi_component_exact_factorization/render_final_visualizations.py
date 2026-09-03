@@ -13,6 +13,7 @@ import gc
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as path_effects
 from matplotlib.animation import FuncAnimation
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
@@ -37,7 +38,8 @@ from .visualize import NUMBER_FORMATTER, selected_frames
 
 
 FINAL_PRODUCTS = (
-    "marginal", "joint", "velocity", "vector", "current", "heavy", "bo",
+    "marginal", "joint", "velocity", "vector", "current", "nested",
+    "heavy", "bo",
 )
 
 
@@ -1055,7 +1057,448 @@ def render_current_composite(obs, ef, outdir, args, snapshots):
 
 
 # ---------------------------------------------------------------------------
-# 4. Heavy-coordinate force/momentum analysis
+# 4. Nested-factorization potential and conditional-density analysis
+
+
+def _robust_shifted_limits(arrays, densities, floor):
+    """Trajectory-wide scalar limits after one occupied-density offset."""
+    lower, upper = [], []
+    for values, density in zip(arrays, densities):
+        shifted = density_weighted_shift(values, density, floor)
+        support = (
+            np.asarray(density, float)
+            >= float(floor)*max(float(np.max(density)), 1.0e-300)
+        )
+        selected = shifted[support & np.isfinite(shifted)]
+        if selected.size:
+            lower.append(float(np.percentile(selected, 1.0)))
+            upper.append(float(np.percentile(selected, 99.0)))
+    if not lower:
+        return -1.0, 1.0
+    low = float(np.percentile(lower, 2.0))
+    high = float(np.percentile(upper, 98.0))
+    if not np.isfinite(low) or not np.isfinite(high) or high <= low:
+        center = 0.5*(low+high) if np.isfinite(low+high) else 0.0
+        width = max(abs(center)*1.0e-6, 1.0e-12)
+        return center-width, center+width
+    padding = 0.04*(high-low)
+    return low-padding, high+padding
+
+
+def _robust_shifted_symmetric_limits(arrays, densities, floor):
+    """Trajectory-wide zero-centred limits for shifted occupied fields."""
+    per_frame = []
+    for values, density in zip(arrays, densities):
+        shifted = density_weighted_shift(values, density, floor)
+        support = (
+            np.asarray(density, float)
+            >= float(floor)*max(float(np.max(density)), 1.0e-300)
+        )
+        selected = np.abs(shifted[support & np.isfinite(shifted)])
+        if selected.size:
+            per_frame.append(float(np.percentile(selected, 99.0)))
+    bound = max(
+        float(np.percentile(per_frame, 98.0)) if per_frame else 0.0,
+        1.0e-12,
+    )
+    return -1.04*bound, 1.04*bound
+
+
+def _conditional_proton_density(obs, frame):
+    """Return rho(q|R)=rho(q,R)/rho_R without dividing at exact nodes."""
+    joint = np.asarray(obs["joint_density"][frame], float)
+    heavy = np.asarray(obs["heavy_density"][frame], float)
+    conditional = np.zeros_like(joint)
+    np.divide(
+        joint, heavy[None, :], out=conditional,
+        where=heavy[None, :] > np.finfo(np.float64).tiny,
+    )
+    return conditional
+
+
+def _nested_frame(obs, ef_zero, frame, args):
+    joint = obs["joint_density"][frame]
+    heavy = obs["heavy_density"][frame]
+    conditional = _conditional_proton_density(obs, frame)
+    heavy_opacity = density_display_alpha(heavy, args.support_floor)
+    return {
+        "electron_proton_log": tdse_collision_report._relative_log_frame(
+            ef_zero["electron_proton_density"][frame], args.decades,
+        ),
+        "conditional": conditional,
+        "conditional_log": tdse_collision_report._relative_log_frame(
+            conditional, args.decades,
+        ),
+        "conditional_opacity": np.broadcast_to(
+            heavy_opacity[None, :], conditional.shape,
+        ),
+        "joint_log": tdse_collision_report._relative_log_frame(
+            joint, args.decades,
+        ),
+        "joint_opacity": density_display_alpha(joint, args.support_floor),
+        "epsilon_1": density_weighted_shift(
+            ef_zero["epsilon_1"][frame], joint, args.support_floor,
+        ),
+        "epsilon_2": density_weighted_shift(
+            ef_zero["epsilon_2"][frame], heavy, args.support_floor,
+        ),
+        "heavy_support": (
+            heavy
+            >= args.support_floor*max(float(np.max(heavy)), 1.0e-300)
+        ),
+    }
+
+
+def _nested_preparation(obs, ef_zero, args):
+    electron_proton = np.asarray(ef_zero["electron_proton_density"], float)
+    expected = (len(obs["times_fs"]), len(obs["x"]), len(obs["q"]))
+    if electron_proton.shape != expected:
+        raise ValueError(
+            "electron_proton_density shape mismatch: "
+            f"{electron_proton.shape} != {expected}"
+        )
+    frames = _movie_frames(obs, args.max_frames)
+    epsilon_1_limits = _robust_shifted_symmetric_limits(
+        [ef_zero["epsilon_1"][int(frame)] for frame in frames],
+        [obs["joint_density"][int(frame)] for frame in frames],
+        args.support_floor,
+    )
+    epsilon_2_limits = _robust_shifted_limits(
+        [ef_zero["epsilon_2"][int(frame)] for frame in frames],
+        [obs["heavy_density"][int(frame)] for frame in frames],
+        args.support_floor,
+    )
+    dx = float(obs["x"][1]-obs["x"][0])
+    ep_mass_error = max(
+        abs(
+            float(np.sum(electron_proton[int(frame)])*dx*obs["dq"])-1.0
+        )
+        for frame in frames
+    )
+    conditional_normalization_error = 0.0
+    for frame in frames:
+        frame = int(frame)
+        heavy = obs["heavy_density"][frame]
+        support = (
+            heavy
+            >= args.support_floor*max(float(np.max(heavy)), 1.0e-300)
+        )
+        if np.any(support):
+            normalization = (
+                np.sum(_conditional_proton_density(obs, frame), axis=0)
+                *obs["dq"]
+            )
+            conditional_normalization_error = max(
+                conditional_normalization_error,
+                float(np.max(np.abs(normalization[support]-1.0))),
+            )
+    return {
+        "epsilon_1_limits": epsilon_1_limits,
+        "epsilon_2_limits": epsilon_2_limits,
+        "x_limits": _support_limits(
+            obs["x"], obs["electron_density"], args.support_floor,
+            requested=(-args.marginal_xmax, args.marginal_xmax),
+        ),
+        "q_limits": _support_limits(
+            obs["q"], obs["proton_density"], args.support_floor,
+        ),
+        "R_limits": _support_limits(
+            obs["R"], obs["heavy_density"], args.support_floor,
+        ),
+        "electron_proton_mass_error": ep_mass_error,
+        "conditional_normalization_error": conditional_normalization_error,
+    }
+
+
+def _new_nested_axes(figsize=(15.4, 10.2), *, compact=False,
+                     subplot_spec=None, figure=None):
+    if subplot_spec is None:
+        figure = plt.figure(figsize=figsize, constrained_layout=True)
+        grid = figure.add_gridspec(2, 2)
+    else:
+        grid = subplot_spec.subgridspec(2, 2, wspace=0.12, hspace=0.20)
+    axes = {
+        "electron_proton": figure.add_subplot(grid[0, 0]),
+        "conditional": figure.add_subplot(grid[0, 1]),
+        "epsilon_1": figure.add_subplot(grid[1, 0]),
+        "epsilon_2": figure.add_subplot(grid[1, 1]),
+    }
+    if compact:
+        for axis in axes.values():
+            axis.tick_params(labelsize=5.2, direction="in")
+    return figure, axes
+
+
+def _joint_contours(axis, obs, log_density, decades, compact=False):
+    levels = np.linspace(-0.88*float(decades), -0.28*float(decades), 3)
+    contours = axis.contour(
+        obs["q"], obs["R"], log_density.T, levels=levels,
+        colors="white", linewidths=(0.45, 0.7, 1.0),
+        alpha=(0.72 if compact else 0.88),
+    )
+    # A dark halo keeps the physical-density contours legible over both the
+    # bright and dark ends of the scalar-potential colour map.  This changes
+    # only the line rendering; contour levels and field values are untouched.
+    halo_width = 1.05 if compact else 1.55
+    for collection in contours.collections:
+        collection.set_path_effects((
+            path_effects.Stroke(
+                linewidth=halo_width, foreground="0.08", alpha=0.72,
+            ),
+            path_effects.Normal(),
+        ))
+    return contours
+
+
+def _heavy_silhouette(axis, R, density, compact=False):
+    normalized = density/max(float(np.max(density)), 1.0e-300)
+    height = (0.18 if compact else 0.23)*normalized
+    transform = axis.get_xaxis_transform()
+    fill = axis.fill_between(
+        R, 0.0, height, transform=transform,
+        color=PARTICLE_COLORS["heavy"], alpha=0.22, linewidth=0,
+    )
+    line, = axis.plot(
+        R, height, transform=transform,
+        color=PARTICLE_COLORS["heavy"],
+        lw=(0.8 if compact else 1.5), label=r"heavy $\rho_R$ silhouette",
+    )
+    return fill, line
+
+
+def _draw_nested_composite(fig, axes, obs, ef_zero, prep, frame, args, *,
+                           colorbars=True, compact=False):
+    q, R, x = obs["q"], obs["R"], obs["x"]
+    current = _nested_frame(obs, ef_zero, frame, args)
+    density_extent = [x[0], x[-1], q[0], q[-1]]
+    qR_extent = [q[0], q[-1], R[0], R[-1]]
+
+    electron_proton_image = axes["electron_proton"].imshow(
+        current["electron_proton_log"].T, origin="lower", aspect="auto",
+        interpolation="nearest", extent=density_extent, cmap=JOINT_CMAP,
+        vmin=-args.decades, vmax=0.0,
+    )
+    axes["electron_proton"].set(
+        xlim=prep["x_limits"], ylim=prep["q_limits"],
+        xlabel=r"electron $x$ ($a_0$)", ylabel=r"proton $q$ ($a_0$)",
+    )
+    axes["electron_proton"].set_title(
+        r"Heavy-integrated $\rho_{ep}(x,q)=\int dR\,|\Psi|^2$",
+        loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
+    )
+    _set_density_axis(axes["electron_proton"])
+
+    conditional_image = axes["conditional"].imshow(
+        current["conditional_log"].T, origin="lower", aspect="auto",
+        interpolation="nearest", extent=qR_extent, cmap=JOINT_CMAP,
+        vmin=-args.decades, vmax=0.0,
+        alpha=current["conditional_opacity"].T,
+    )
+    axes["conditional"].set(
+        xlim=prep["q_limits"], ylim=prep["R_limits"],
+        xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
+    )
+    axes["conditional"].set_title(
+        r"Conditional proton $\rho(q|R)=\rho_{qR}/\rho_R=|\Lambda_R|^2$",
+        loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
+    )
+    _set_density_axis(axes["conditional"])
+
+    axes["epsilon_1"].set_facecolor(MASK_COLOR)
+    epsilon_1_image = axes["epsilon_1"].imshow(
+        current["epsilon_1"].T, origin="lower", aspect="auto",
+        interpolation="nearest", extent=qR_extent,
+        cmap=masked_cmap(SIGNED_CMAP),
+        vmin=prep["epsilon_1_limits"][0],
+        vmax=prep["epsilon_1_limits"][1],
+        alpha=current["joint_opacity"].T,
+    )
+    contours = _joint_contours(
+        axes["epsilon_1"], obs, current["joint_log"], args.decades, compact,
+    )
+    axes["epsilon_1"].set(
+        xlim=prep["q_limits"], ylim=prep["R_limits"],
+        xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
+    )
+    axes["epsilon_1"].set_title(
+        r"First TDPES $\epsilon_{\rm ZP}^{(1)}(q,R)$ + $\rho_{qR}$ contours",
+        loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
+    )
+
+    support = current["heavy_support"]
+    epsilon_2_line, epsilon_2_tail = tdse_report._support_tail_lines(
+        axes["epsilon_2"], R,
+        np.where(support, current["epsilon_2"], np.nan),
+        current["epsilon_2"], support, color=COLORS[0],
+        label=r"$\epsilon_{\rm ZP}^{(2)}(R,t)$",
+        linewidth=(1.0 if compact else 2.2),
+    )
+    heavy_fill, heavy_line = _heavy_silhouette(
+        axes["epsilon_2"], R, obs["heavy_density"][frame], compact,
+    )
+    axes["epsilon_2"].axhline(0.0, color="0.72", lw=0.65, zorder=0)
+    axes["epsilon_2"].set(
+        xlim=prep["R_limits"], ylim=prep["epsilon_2_limits"],
+        xlabel=r"heavy $R$ ($a_0$)", ylabel="shifted energy (Hartree)",
+    )
+    axes["epsilon_2"].set_title(
+        r"Second TDPES $\epsilon_{\rm ZP}^{(2)}(R)$ and heavy support",
+        loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
+    )
+    axes["epsilon_2"].grid(alpha=0.16)
+    axes["epsilon_2"].legend(
+        handles=(epsilon_2_line, heavy_line), frameon=False,
+        fontsize=(5.0 if compact else 8), loc="best",
+    )
+
+    if colorbars:
+        fig.colorbar(
+            electron_proton_image,
+            ax=[axes["electron_proton"], axes["conditional"]],
+            pad=0.014, shrink=0.93,
+            label=rf"$\log_{{10}}[\rho/\rho_{{\max}}(t)]$",
+        )
+        fig.colorbar(
+            epsilon_1_image, ax=axes["epsilon_1"], pad=0.014,
+            format=NUMBER_FORMATTER, extend="both",
+            label="shifted energy (Hartree)",
+        )
+    return {
+        "electron_proton_image": electron_proton_image,
+        "conditional_image": conditional_image,
+        "epsilon_1_image": epsilon_1_image,
+        "contours": contours,
+        "epsilon_2_line": epsilon_2_line,
+        "epsilon_2_tail": epsilon_2_tail,
+        "heavy_fill": heavy_fill,
+        "heavy_line": heavy_line,
+        "axes": axes,
+    }
+
+
+def _update_nested_composite(state, obs, ef_zero, prep, frame, args):
+    current = _nested_frame(obs, ef_zero, frame, args)
+    state["electron_proton_image"].set_data(
+        current["electron_proton_log"].T,
+    )
+    state["conditional_image"].set_data(current["conditional_log"].T)
+    state["conditional_image"].set_alpha(
+        current["conditional_opacity"].T,
+    )
+    state["epsilon_1_image"].set_data(current["epsilon_1"].T)
+    state["epsilon_1_image"].set_alpha(current["joint_opacity"].T)
+    for collection in state["contours"].collections:
+        collection.remove()
+    state["contours"] = _joint_contours(
+        state["axes"]["epsilon_1"], obs, current["joint_log"],
+        args.decades,
+    )
+    support = current["heavy_support"]
+    state["epsilon_2_line"].set_ydata(
+        np.where(support, current["epsilon_2"], np.nan),
+    )
+    state["epsilon_2_tail"].set_ydata(
+        np.where(~support, current["epsilon_2"], np.nan),
+    )
+    state["heavy_fill"].remove()
+    state["heavy_fill"], temporary_line = _heavy_silhouette(
+        state["axes"]["epsilon_2"], obs["R"],
+        obs["heavy_density"][frame],
+    )
+    temporary_line.remove()
+    normalized = (
+        obs["heavy_density"][frame]
+        /max(float(np.max(obs["heavy_density"][frame])), 1.0e-300)
+    )
+    state["heavy_line"].set_ydata(0.23*normalized)
+
+
+def render_nested_factorization(obs, ef_zero, outdir, args, snapshots):
+    if obs.get("electron_density") is None or obs.get("x") is None:
+        raise KeyError(
+            "nested analysis에는 electron marginal과 x grid가 필요합니다"
+        )
+    prep = _nested_preparation(obs, ef_zero, args)
+    times = obs["times_fs"]
+
+    def individual(frame):
+        fig, axes = _new_nested_axes()
+        _draw_nested_composite(fig, axes, obs, ef_zero, prep, frame, args)
+        fig.suptitle(
+            "Nested factorization: correlated densities and exact potentials | "
+            f"t={times[frame]:.4f} fs\n"
+            r"potentials: axial zero-potential gauge; density contours: "
+            r"physical $\rho_{qR}$",
+            fontweight="bold",
+        )
+        return fig
+
+    products = _save_individual_frames(
+        individual, snapshots, times,
+        Path(outdir)/"nested_factorization_analysis_frames",
+        "nested_factorization_analysis", args.dpi,
+    )
+    fig = plt.figure(figsize=(24.0, 10.8), constrained_layout=True)
+    outer = fig.add_gridspec(2, 4)
+    for slot, frame in zip(outer, snapshots):
+        _, axes = _new_nested_axes(
+            compact=True, subplot_spec=slot, figure=fig,
+        )
+        _draw_nested_composite(
+            fig, axes, obs, ef_zero, prep, int(frame), args,
+            colorbars=False, compact=True,
+        )
+        axes["electron_proton"].text(
+            0.98, 0.92, f"t={times[int(frame)]:.3f} fs",
+            transform=axes["electron_proton"].transAxes,
+            ha="right", va="top", color="white", fontsize=6.0,
+        )
+    fig.suptitle(
+        "Heavy-integrated electronic dynamics and subsequent proton factorization",
+        fontweight="bold",
+    )
+    products.append(_save_figure(
+        fig, Path(outdir)/"nested_factorization_analysis_snapshots.png",
+        args.dpi,
+    ))
+
+    if not args.no_animation:
+        frames = _movie_frames(obs, args.max_frames)
+        first = int(frames[0])
+        fig, axes = _new_nested_axes()
+        state = _draw_nested_composite(
+            fig, axes, obs, ef_zero, prep, first, args,
+        )
+        title = fig.suptitle("", fontweight="bold")
+
+        def update(number):
+            frame = int(frames[number])
+            _update_nested_composite(
+                state, obs, ef_zero, prep, frame, args,
+            )
+            title.set_text(
+                "Nested factorization: correlated densities and exact "
+                f"potentials | t={times[frame]:.4f} fs\n"
+                "axial zero-potential gauge; no density smoothing"
+            )
+            return (
+                state["electron_proton_image"],
+                state["conditional_image"], state["epsilon_1_image"],
+                state["epsilon_2_line"], state["epsilon_2_tail"],
+                state["heavy_line"], title,
+            )
+
+        update(0)
+        animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
+        products.append(tdse_report._save_animation(
+            animation, fig, outdir, "nested_factorization_analysis_movie",
+            args.fps, args.animation_dpi, args.format,
+        ))
+    return products, prep
+
+
+# ---------------------------------------------------------------------------
+# 5. Heavy-coordinate force/momentum analysis
 
 
 def _heavy_preparation(obs, ef_zero, alpha_positive, args):
@@ -1588,7 +2031,9 @@ def run(args):
 
     ef_needed = any(
         name in selected
-        for name in ("velocity", "vector", "current", "heavy", "bo")
+        for name in (
+            "velocity", "vector", "current", "nested", "heavy", "bo",
+        )
     )
     ef = None
     if ef_needed:
@@ -1599,14 +2044,23 @@ def run(args):
             field_keys.extend(("a", "b", "alpha"))
         if "current" in selected:
             field_keys.extend(("a", "b", "alpha"))
+        if "nested" in selected:
+            field_keys.extend((
+                "epsilon_1", "epsilon_2", "a", "b", "alpha",
+                "electron_proton_density",
+            ))
         if "heavy" in selected:
             field_keys.extend(("epsilon_2", "alpha"))
         if "bo" in selected:
             field_keys.extend(("bo_state_density_q", "bo_state_density_R"))
         field_keys = tuple(dict.fromkeys(field_keys))
-        link_keys = ("sgamma_R1",) if "heavy" in selected else ()
+        link_keys = []
+        if "nested" in selected:
+            link_keys.extend(("sphi_q1", "sphi_R1", "sgamma_R1"))
+        elif "heavy" in selected:
+            link_keys.append("sgamma_R1")
         ef = tdse_report._load_ef_fields(
-            obs, field_keys=field_keys, link_keys=link_keys,
+            obs, field_keys=field_keys, link_keys=tuple(link_keys),
         )
         if ef is None:
             raise FileNotFoundError(
@@ -1634,13 +2088,27 @@ def run(args):
         products.extend(generated)
     if "bo" in selected:
         products.extend(render_bo_combined(obs, ef, output, args, snapshots))
-    heavy_prep = None
+
+    alpha_positive = None
+    branch_turns = None
     if "heavy" in selected:
         alpha_positive, _, branch_turns = tdse_report.support_aware_temporal_lift_1d(
             ef["alpha"], obs["heavy_density"], obs["dR"], args.support_floor,
         )
         alpha_positive = alpha_positive.copy()
-        tdse_report.transform_second_level_to_zero_potential_gauge(obs, ef)
+
+    nested_prep = None
+    if "nested" in selected:
+        tdse_report.transform_to_zero_potential_gauge(obs, ef)
+        generated, nested_prep = render_nested_factorization(
+            obs, ef, output, args, snapshots,
+        )
+        products.extend(generated)
+
+    heavy_prep = None
+    if "heavy" in selected:
+        if "nested" not in selected:
+            tdse_report.transform_second_level_to_zero_potential_gauge(obs, ef)
         generated, heavy_prep = render_heavy_analysis(
             obs, ef, alpha_positive, output, args, snapshots,
         )
@@ -1691,6 +2159,24 @@ def run(args):
             "heavy_marginal_current=heavy_density*alpha/heavy_mass",
             f"current_q_limits={current_prep['q_limits']}",
             f"current_R_limits={current_prep['R_limits']}",
+        ))
+    if nested_prep is not None:
+        manifest.extend((
+            "nested_potential_gauge=axial_zero_potential",
+            "electron_proton_density=integral_dR_abs_Psi_squared",
+            "conditional_proton_density=joint_density/heavy_density",
+            "epsilon_1_overlay=physical_joint_density_relative_contours",
+            (
+                "electron_proton_mass_error="
+                f"{nested_prep['electron_proton_mass_error']:.16g}"
+            ),
+            (
+                "conditional_proton_normalization_error="
+                f"{nested_prep['conditional_normalization_error']:.16g}"
+            ),
+            f"nested_x_limits={nested_prep['x_limits']}",
+            f"nested_q_limits={nested_prep['q_limits']}",
+            f"nested_R_limits={nested_prep['R_limits']}",
         ))
     if heavy_prep is not None:
         manifest.extend((

@@ -390,9 +390,10 @@ python -m multi_component_exact_factorization.render_tdse_tdpes_gauges \
 완료된 TDSE run의 reduced density, BO 분석 배열과
 ``tdse_exact_factorization_fields.npz``를 재사용해 marginal history,
 proton--heavy joint density, positive-gauge velocity field/vector potentials/
-probability currents, heavy-coordinate force 분해, BO cut/channel packet을 한
-번에 만들 수 있다. 대형
-``tdse_coefficients``와 사용하지 않는 overlap-link 배열은 읽지 않는다.
+probability currents, nested-factorization density/TDPES 분석,
+heavy-coordinate force 분해, BO cut/channel packet을 한 번에 만들 수 있다.
+final renderer 자체는 대형 ``tdse_coefficients``를 읽지 않으며 필요한 reduced
+density와 field cache만 읽는다.
 
 ```bash
 python -m multi_component_exact_factorization.render_final_visualizations \
@@ -405,7 +406,7 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 기본 출력은 해당 계산 폴더의 ``report/final_visualizations/`` 아래에 모인다.
 별도 위치가 필요한 경우에만 ``--outdir PATH``를 명시한다.
 
-``--only marginal joint velocity vector current heavy bo``로 필요한 묶음만
+``--only marginal joint velocity vector current nested heavy bo``로 필요한 묶음만
 고를 수 있고,
 ``--no-animation``을 주면 같은 plotting function으로 8개 개별 PNG와 2x4
 summary만 다시 만든다. 특히 joint density 위의 속도 화살표만 다시 만들려면
@@ -422,6 +423,25 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 frame별로 정규화하거나 평활화하지 않는다. ``--velocity-q-points``와
 ``--velocity-R-points``로 화살표 sampling 밀도만 조절할 수 있다. Signed 2D
 field는 음수=파랑, 0=흰색, 양수=빨강이고 low-density mask는 회색이다.
+
+교수님 분석용 nested-factorization 4-panel만 다시 만들려면 다음을 사용한다.
+
+```bash
+python -m multi_component_exact_factorization.render_final_visualizations \
+  results/YYYYMMDD/RUN_NAME --only nested \
+  --format mp4 --fps 12 --max-frames 240 --snapshot-count 8
+```
+
+네 패널은 ``rho_ep(x,q)=int dR |Psi|^2``,
+``rho(q|R)=rho_qR/rho_R``, zero-potential-gauge ``epsilon^(1)(q,R)`` 위의
+physical joint-density contour, zero-potential-gauge ``epsilon^(2)(R)``와 heavy
+density silhouette이다. density는 log-relative scale로만 표시하며 원자료를
+평활화하지 않는다. 2D TDPES는 음수=파랑, 0=흰색, 양수=빨강의 0 중심
+대칭 color scale을 쓰며, joint density가 peak의 ``1e-4`` 이상이면 완전히
+보이고 ``1e-6``까지 부드럽게 회색 배경으로 사라진다. 오래된
+``tdse_exact_factorization_fields.npz``에
+``electron_proton_density``가 없다면 아래 TDSE 후처리를 ``--overwrite``로 한
+번 다시 실행해야 한다. dynamics 자체를 다시 전파할 필요는 없다.
 
 상단 particle marginal은 그대로 유지하고 아래 세 패널만 MCEF probability
 current로 바꾼 composite는 다음처럼 별도로 다시 만든다.

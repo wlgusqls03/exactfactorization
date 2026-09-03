@@ -37,6 +37,7 @@ class TDSEReportTests(unittest.TestCase):
             np.exp(-0.5*((x-0.1*time)/0.8)**2) for time in times
         ])
         electron /= np.sum(electron, axis=1)[:, None]*(x[1]-x[0])
+        electron_proton = electron[:, :, None]*proton[:, None, :]
         state_density_q = populations[:, :, None]*proton[:, None, :]
         state_density_R = populations[:, :, None]*heavy[:, None, :]
         archive = root/"multi_component_discrete_tdse_gpu.npz"
@@ -94,6 +95,7 @@ class TDSEReportTests(unittest.TestCase):
             bo_state_density_q=state_density_q,
             bo_state_density_R=state_density_R,
             factorization_residual=np.zeros(len(times)),
+            electron_proton_density=electron_proton,
         )
         return archive, joint
 
@@ -265,6 +267,7 @@ class TDSEReportTests(unittest.TestCase):
                 "joint_velocity_snapshots.png",
                 "vector_potential_composite_snapshots.png",
                 "current_density_composite_snapshots.png",
+                "nested_factorization_analysis_snapshots.png",
                 "heavy_analysis_snapshots.png",
                 "bo_combined_snapshots.png",
                 "final_visualizations_manifest.txt",
@@ -276,11 +279,34 @@ class TDSEReportTests(unittest.TestCase):
                 "joint_velocity_frames",
                 "vector_potential_composite_frames",
                 "current_density_composite_frames",
+                "nested_factorization_analysis_frames",
                 "heavy_analysis_frames",
                 "bo_combined_frames",
             ):
                 self.assertEqual(len(list((output/directory).glob("*.png"))), 2)
-            self.assertGreaterEqual(len(products), 22)
+            self.assertGreaterEqual(len(products), 25)
+
+    def test_nested_factorization_only_command_writes_movie_and_snapshots(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_archive(root)
+            output = root/"nested_only"
+            args = render_final_visualizations.parse_args([
+                str(root), "--outdir", str(output), "--only", "nested",
+                "--format", "gif", "--snapshot-count", "2",
+                "--max-frames", "2", "--dpi", "30",
+                "--animation-dpi", "25", "--fps", "2",
+            ])
+            render_final_visualizations.run(args)
+            self.assertTrue((
+                output/"nested_factorization_analysis_movie.gif"
+            ).is_file())
+            self.assertTrue((
+                output/"nested_factorization_analysis_snapshots.png"
+            ).is_file())
+            self.assertEqual(len(list((
+                output/"nested_factorization_analysis_frames"
+            ).glob("*.png"))), 2)
 
     def test_joint_velocity_uses_mass_scaled_positive_gauge_connections(self):
         q = np.array([-1.0, 0.0, 1.0])
