@@ -1122,13 +1122,10 @@ def _nested_frame(obs, ef_zero, frame, args):
     conditional = _conditional_proton_density(obs, frame)
     heavy_opacity = density_display_alpha(heavy, args.support_floor)
     return {
-        "electron_proton_log": tdse_collision_report._relative_log_frame(
-            ef_zero["electron_proton_density"][frame], args.decades,
+        "electron_proton": np.maximum(
+            np.asarray(ef_zero["electron_proton_density"][frame], float), 0.0,
         ),
         "conditional": conditional,
-        "conditional_log": tdse_collision_report._relative_log_frame(
-            conditional, args.decades,
-        ),
         "conditional_opacity": np.broadcast_to(
             heavy_opacity[None, :], conditional.shape,
         ),
@@ -1169,14 +1166,19 @@ def _nested_preparation(obs, ef_zero, args):
         args.support_floor,
     )
     dx = float(obs["x"][1]-obs["x"][0])
+    electron_proton_vmax = max(
+        float(np.nanmax(electron_proton)), 1.0e-300,
+    )
+    all_frames = range(len(obs["times_fs"]))
     ep_mass_error = max(
         abs(
             float(np.sum(electron_proton[int(frame)])*dx*obs["dq"])-1.0
         )
-        for frame in frames
+        for frame in all_frames
     )
     conditional_normalization_error = 0.0
-    for frame in frames:
+    conditional_vmax = 0.0
+    for frame in range(len(obs["times_fs"])):
         frame = int(frame)
         heavy = obs["heavy_density"][frame]
         support = (
@@ -1184,17 +1186,21 @@ def _nested_preparation(obs, ef_zero, args):
             >= args.support_floor*max(float(np.max(heavy)), 1.0e-300)
         )
         if np.any(support):
-            normalization = (
-                np.sum(_conditional_proton_density(obs, frame), axis=0)
-                *obs["dq"]
-            )
+            conditional = _conditional_proton_density(obs, frame)
+            normalization = np.sum(conditional, axis=0)*obs["dq"]
             conditional_normalization_error = max(
                 conditional_normalization_error,
                 float(np.max(np.abs(normalization[support]-1.0))),
             )
+            conditional_vmax = max(
+                conditional_vmax,
+                float(np.nanmax(conditional[:, support])),
+            )
     return {
         "epsilon_1_limits": epsilon_1_limits,
         "epsilon_2_limits": epsilon_2_limits,
+        "electron_proton_vmax": electron_proton_vmax,
+        "conditional_vmax": max(conditional_vmax, 1.0e-300),
         "x_limits": _support_limits(
             obs["x"], obs["electron_density"], args.support_floor,
             requested=(-args.marginal_xmax, args.marginal_xmax),
@@ -1230,10 +1236,13 @@ def _new_nested_axes(figsize=(15.4, 10.2), *, compact=False,
 
 
 def _joint_contours(axis, obs, log_density, decades, compact=False):
-    levels = np.linspace(-0.88*float(decades), -0.28*float(decades), 3)
+    canonical = np.array([-5.0, -4.0, -3.0, -2.0, -1.0, np.log10(0.5)])
+    levels = canonical[canonical >= -float(decades)]
+    if levels.size < 3:
+        levels = np.linspace(-0.9*float(decades), -0.1*float(decades), 3)
     contours = axis.contour(
         obs["q"], obs["R"], log_density.T, levels=levels,
-        colors="white", linewidths=(0.45, 0.7, 1.0),
+        colors="white", linewidths=np.linspace(0.42, 1.05, len(levels)),
         alpha=(0.72 if compact else 0.88),
     )
     # A dark halo keeps the physical-density contours legible over both the
@@ -1274,24 +1283,24 @@ def _draw_nested_composite(fig, axes, obs, ef_zero, prep, frame, args, *,
     qR_extent = [q[0], q[-1], R[0], R[-1]]
 
     electron_proton_image = axes["electron_proton"].imshow(
-        current["electron_proton_log"].T, origin="lower", aspect="auto",
+        current["electron_proton"].T, origin="lower", aspect="auto",
         interpolation="nearest", extent=density_extent, cmap=JOINT_CMAP,
-        vmin=-args.decades, vmax=0.0,
+        vmin=0.0, vmax=prep["electron_proton_vmax"],
     )
     axes["electron_proton"].set(
         xlim=prep["x_limits"], ylim=prep["q_limits"],
         xlabel=r"electron $x$ ($a_0$)", ylabel=r"proton $q$ ($a_0$)",
     )
     axes["electron_proton"].set_title(
-        r"Heavy-integrated $\rho_{ep}(x,q)=\int dR\,|\Psi|^2$",
+        r"Absolute $\rho_{ep}(x,q)=\int dR\,|\Psi|^2$",
         loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
     )
     _set_density_axis(axes["electron_proton"])
 
     conditional_image = axes["conditional"].imshow(
-        current["conditional_log"].T, origin="lower", aspect="auto",
+        current["conditional"].T, origin="lower", aspect="auto",
         interpolation="nearest", extent=qR_extent, cmap=JOINT_CMAP,
-        vmin=-args.decades, vmax=0.0,
+        vmin=0.0, vmax=prep["conditional_vmax"],
         alpha=current["conditional_opacity"].T,
     )
     axes["conditional"].set(
@@ -1353,10 +1362,14 @@ def _draw_nested_composite(fig, axes, obs, ef_zero, prep, frame, args, *,
 
     if colorbars:
         fig.colorbar(
-            electron_proton_image,
-            ax=[axes["electron_proton"], axes["conditional"]],
-            pad=0.014, shrink=0.93,
-            label=rf"$\log_{{10}}[\rho/\rho_{{\max}}(t)]$",
+            electron_proton_image, ax=axes["electron_proton"],
+            pad=0.014, format=NUMBER_FORMATTER,
+            label=rf"$\rho_{{ep}}$ ($a_0^{{-2}}$)",
+        )
+        fig.colorbar(
+            conditional_image, ax=axes["conditional"],
+            pad=0.014, format=NUMBER_FORMATTER,
+            label=rf"$\rho(q|R)$ ($a_0^{{-1}}$)",
         )
         fig.colorbar(
             epsilon_1_image, ax=axes["epsilon_1"], pad=0.014,
@@ -1379,9 +1392,9 @@ def _draw_nested_composite(fig, axes, obs, ef_zero, prep, frame, args, *,
 def _update_nested_composite(state, obs, ef_zero, prep, frame, args):
     current = _nested_frame(obs, ef_zero, frame, args)
     state["electron_proton_image"].set_data(
-        current["electron_proton_log"].T,
+        current["electron_proton"].T,
     )
-    state["conditional_image"].set_data(current["conditional_log"].T)
+    state["conditional_image"].set_data(current["conditional"].T)
     state["conditional_image"].set_alpha(
         current["conditional_opacity"].T,
     )
@@ -1427,8 +1440,8 @@ def render_nested_factorization(obs, ef_zero, outdir, args, snapshots):
         fig.suptitle(
             "Nested factorization: correlated densities and exact potentials | "
             f"t={times[frame]:.4f} fs\n"
-            r"potentials: axial zero-potential gauge; density contours: "
-            r"physical $\rho_{qR}$",
+            r"absolute densities: trajectory-fixed linear scales; potentials: "
+            r"axial zero-potential gauge; contours: physical $\rho_{qR}$",
             fontweight="bold",
         )
         return fig
@@ -1479,7 +1492,8 @@ def render_nested_factorization(obs, ef_zero, outdir, args, snapshots):
             title.set_text(
                 "Nested factorization: correlated densities and exact "
                 f"potentials | t={times[frame]:.4f} fs\n"
-                "axial zero-potential gauge; no density smoothing"
+                "absolute densities on trajectory-fixed scales; axial "
+                "zero-potential gauge; no smoothing"
             )
             return (
                 state["electron_proton_image"],
@@ -2165,6 +2179,15 @@ def run(args):
             "nested_potential_gauge=axial_zero_potential",
             "electron_proton_density=integral_dR_abs_Psi_squared",
             "conditional_proton_density=joint_density/heavy_density",
+            "nested_density_display=absolute_linear_trajectory_fixed",
+            (
+                "nested_electron_proton_vmax="
+                f"{nested_prep['electron_proton_vmax']:.16g}"
+            ),
+            (
+                "nested_conditional_proton_vmax="
+                f"{nested_prep['conditional_vmax']:.16g}"
+            ),
             "epsilon_1_overlay=physical_joint_density_relative_contours",
             (
                 "electron_proton_mass_error="

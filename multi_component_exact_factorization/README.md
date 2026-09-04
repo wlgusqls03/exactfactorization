@@ -435,10 +435,13 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 네 패널은 ``rho_ep(x,q)=int dR |Psi|^2``,
 ``rho(q|R)=rho_qR/rho_R``, zero-potential-gauge ``epsilon^(1)(q,R)`` 위의
 physical joint-density contour, zero-potential-gauge ``epsilon^(2)(R)``와 heavy
-density silhouette이다. density는 log-relative scale로만 표시하며 원자료를
-평활화하지 않는다. 2D TDPES는 음수=파랑, 0=흰색, 양수=빨강의 0 중심
-대칭 color scale을 쓰며, joint density가 peak의 ``1e-4`` 이상이면 완전히
-보이고 ``1e-6``까지 부드럽게 회색 배경으로 사라진다. 오래된
+density silhouette이다. 위의 두 density panel은 frame별 peak로 재정규화하지
+않고 전체 trajectory에 고정한 absolute linear density scale과 물리 단위를
+사용한다. 원자료를 평활화하지 않는다. 2D TDPES는 음수=파랑, 0=흰색,
+양수=빨강의 0 중심 대칭 color scale을 쓰며, joint density가 peak의
+``1e-4`` 이상이면 완전히 보이고 ``1e-6``까지 부드럽게 회색 배경으로
+사라진다. TDPES 위에는 physical joint density의 ``1e-5``부터 ``0.5``까지
+최대 여섯 개 relative contour를 겹친다. 오래된
 ``tdse_exact_factorization_fields.npz``에
 ``electron_proton_density``가 없다면 아래 TDSE 후처리를 ``--overwrite``로 한
 번 다시 실행해야 한다. dynamics 자체를 다시 전파할 필요는 없다.

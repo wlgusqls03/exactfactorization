@@ -307,6 +307,13 @@ class TDSEReportTests(unittest.TestCase):
             self.assertEqual(len(list((
                 output/"nested_factorization_analysis_frames"
             ).glob("*.png"))), 2)
+            manifest = (output/"final_visualizations_manifest.txt").read_text()
+            self.assertIn(
+                "nested_density_display=absolute_linear_trajectory_fixed",
+                manifest,
+            )
+            self.assertIn("nested_electron_proton_vmax=", manifest)
+            self.assertIn("nested_conditional_proton_vmax=", manifest)
 
     def test_joint_velocity_uses_mass_scaled_positive_gauge_connections(self):
         q = np.array([-1.0, 0.0, 1.0])
