@@ -1236,7 +1236,13 @@ def _new_nested_axes(figsize=(15.4, 10.2), *, compact=False,
 
 
 def _joint_contours(axis, obs, log_density, decades, compact=False):
-    canonical = np.array([-5.0, -4.0, -3.0, -2.0, -1.0, np.log10(0.5)])
+    # Half-decade spacing resolves shoulders and weakly connected branches
+    # without changing or smoothing the underlying physical density.  The
+    # final two contours make the high-density core easy to identify.
+    canonical = np.array([
+        -5.0, -4.5, -4.0, -3.5, -3.0, -2.5,
+        -2.0, -1.5, -1.0, -0.5, np.log10(0.6),
+    ])
     levels = canonical[canonical >= -float(decades)]
     if levels.size < 3:
         levels = np.linspace(-0.9*float(decades), -0.1*float(decades), 3)
@@ -1330,7 +1336,8 @@ def _draw_nested_composite(fig, axes, obs, ef_zero, prep, frame, args, *,
         xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
     )
     axes["epsilon_1"].set_title(
-        r"First TDPES $\epsilon_{\rm ZP}^{(1)}(q,R)$ + $\rho_{qR}$ contours",
+        r"First TDPES $\epsilon_{\rm ZP}^{(1)}(q,R)$ + $\rho_{qR}$ contours "
+        r"(denser inward)",
         loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
     )
 

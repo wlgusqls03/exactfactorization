@@ -440,8 +440,9 @@ density silhouette이다. 위의 두 density panel은 frame별 peak로 재정규
 사용한다. 원자료를 평활화하지 않는다. 2D TDPES는 음수=파랑, 0=흰색,
 양수=빨강의 0 중심 대칭 color scale을 쓰며, joint density가 peak의
 ``1e-4`` 이상이면 완전히 보이고 ``1e-6``까지 부드럽게 회색 배경으로
-사라진다. TDPES 위에는 physical joint density의 ``1e-5``부터 ``0.5``까지
-최대 여섯 개 relative contour를 겹친다. 오래된
+사라진다. TDPES 위에는 physical joint density의 ``1e-5``부터 ``0.6``까지
+half-decade 간격의 최대 열한 개 relative contour를 겹친다. 각 닫힌 contour
+묶음은 일반적으로 안쪽으로 갈수록 밀도가 높고, 높은 밀도선일수록 굵다. 오래된
 ``tdse_exact_factorization_fields.npz``에
 ``electron_proton_density``가 없다면 아래 TDSE 후처리를 ``--overwrite``로 한
 번 다시 실행해야 한다. dynamics 자체를 다시 전파할 필요는 없다.
