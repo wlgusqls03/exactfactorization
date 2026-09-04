@@ -40,6 +40,7 @@ class TDSEReportTests(unittest.TestCase):
         electron_proton = electron[:, :, None]*proton[:, None, :]
         state_density_q = populations[:, :, None]*proton[:, None, :]
         state_density_R = populations[:, :, None]*heavy[:, None, :]
+        channel_density_qR = populations[:, :, None, None]*joint[:, None, :, :]
         archive = root/"multi_component_discrete_tdse_gpu.npz"
         np.savez_compressed(
             archive,
@@ -86,6 +87,7 @@ class TDSEReportTests(unittest.TestCase):
             times_fs=times, q=q, R=R,
             epsilon_1=epsilon_1,
             epsilon_1_gi=0.65*epsilon_1,
+            epsilon_1_wbo=0.60*epsilon_1,
             epsilon_2=epsilon_2,
             epsilon_2_gi=0.55*epsilon_2,
             a=a, b=b, alpha=alpha,
@@ -94,6 +96,7 @@ class TDSEReportTests(unittest.TestCase):
             sgamma_R1=np.exp(1j*alpha*dR),
             bo_state_density_q=state_density_q,
             bo_state_density_R=state_density_R,
+            bo_channel_density_qR=channel_density_qR,
             factorization_residual=np.zeros(len(times)),
             electron_proton_density=electron_proton,
         )
@@ -270,6 +273,8 @@ class TDSEReportTests(unittest.TestCase):
                 "nested_factorization_analysis_snapshots.png",
                 "heavy_analysis_snapshots.png",
                 "bo_combined_snapshots.png",
+                "bo_3d_channel_dynamics_snapshots.png",
+                "tdpes1_origin_snapshots.png",
                 "final_visualizations_manifest.txt",
             ):
                 self.assertTrue((output/name).is_file(), name)
@@ -282,9 +287,68 @@ class TDSEReportTests(unittest.TestCase):
                 "nested_factorization_analysis_frames",
                 "heavy_analysis_frames",
                 "bo_combined_frames",
+                "bo_3d_channel_frames",
+                "tdpes1_origin_frames",
             ):
                 self.assertEqual(len(list((output/directory).glob("*.png"))), 2)
             self.assertGreaterEqual(len(products), 25)
+
+    def test_bo3d_and_tdpes1_only_commands_write_movies_and_snapshots(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_archive(root)
+            output = root/"new_analysis"
+            args = render_final_visualizations.parse_args([
+                str(root), "--outdir", str(output), "--only", "bo3d", "tdpes1",
+                "--format", "gif", "--snapshot-count", "2", "--max-frames", "2",
+                "--dpi", "30", "--animation-dpi", "25", "--fps", "2",
+                "--bo3d-q-points", "5", "--bo3d-R-points", "7",
+            ])
+            render_final_visualizations.run(args)
+            for name in (
+                "bo_3d_channel_dynamics_movie.gif",
+                "bo_3d_channel_dynamics_snapshots.png",
+                "tdpes1_origin_movie.gif",
+                "tdpes1_origin_snapshots.png",
+            ):
+                self.assertTrue((output/name).is_file(), name)
+            manifest = (output/"final_visualizations_manifest.txt").read_text()
+            self.assertIn("bo3d_density=rho_j", manifest)
+            self.assertIn("tdpes1_discrete_identity=", manifest)
+
+    def test_link_metric_is_zero_for_unit_links_and_positive_below_unit(self):
+        unit = np.exp(1j*np.linspace(0.0, 0.4, 12)).reshape(3, 4)
+        metric = render_final_visualizations._site_link_metric(unit, 0.2, axis=0)
+        self.assertLess(np.max(np.abs(metric)), 2.0e-14)
+        reduced = 0.8*unit
+        metric = render_final_visualizations._site_link_metric(reduced, 0.2, axis=1)
+        self.assertTrue(np.all(metric > 0.0))
+
+    def test_tdpes1_origin_keeps_discrete_identity_separate_from_link_limit(self):
+        with TemporaryDirectory() as temporary:
+            archive, _ = self._write_archive(temporary)
+            obs = tdse_report.calculate_observables(tdse_report.load_observables(archive))
+            ef = tdse_report._load_ef_fields(
+                obs,
+                field_keys=(
+                    "epsilon_1", "epsilon_1_gi", "epsilon_1_wbo",
+                    "epsilon_2", "a", "b", "alpha",
+                ),
+                link_keys=("sphi_q1", "sphi_R1", "sgamma_R1"),
+            )
+            tdse_report.transform_to_zero_potential_gauge(obs, ef)
+            args = argparse.Namespace(support_floor=1.0e-4, decades=6.0, max_frames=3)
+            prep = render_final_visualizations._tdpes1_origin_preparation(obs, ef, args)
+            frame = render_final_visualizations._tdpes1_origin_frame(obs, ef, prep, 1)
+            self.assertTrue(np.allclose(
+                frame["total"], frame["native_gi"]+frame["gd"],
+                rtol=0.0, atol=2.0e-15,
+            ))
+            self.assertTrue(np.allclose(
+                frame["gi_limit"],
+                frame["wbo"]+frame["geo_q"]+frame["geo_R"],
+                rtol=0.0, atol=2.0e-15,
+            ))
 
     def test_nested_factorization_only_command_writes_movie_and_snapshots(self):
         with TemporaryDirectory() as temporary:

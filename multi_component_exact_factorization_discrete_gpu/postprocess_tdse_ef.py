@@ -62,6 +62,7 @@ def _metadata(archive):
             "q": np.asarray(data["q"], float),
             "R": np.asarray(data["R"], float),
             "bo_states": int(np.asarray(data["bo_states_count"]).item()),
+            "bo_populations": np.asarray(data["bo_populations"], float),
             "bo_link_kernel": str(np.asarray(data.get("bo_link_kernel", "fused")).item()),
             "source_kind": str(np.asarray(data.get("kind", "")).item()),
             "has_instantaneous_action": (
@@ -110,7 +111,7 @@ def _safe_density_gauge_factorization(y, action, model):
 
 def _frame_fields(
     y_cpu, model, basis, link_keys=(), action_cpu=None,
-    spectral_analyzer=None,
+    spectral_analyzer=None, channel_density_states=0,
 ):
     y = cp.ascontiguousarray(cp.asarray(y_cpu, dtype=cp.complex128))
     action = (
@@ -138,11 +139,12 @@ def _frame_fields(
     )*model.dq
     lam_norm_safe = cp.maximum(lam_norm, tiny)
 
+    weighted_bo = cp.sum(
+        cp.conj(c)*basis.energies*c, axis=0,
+        dtype=model.reduction_complex_dtype,
+    )/c_norm_safe
     if spectral_analyzer is None:
-        electronic = cp.sum(
-            cp.conj(c)*basis.energies*c, axis=0,
-            dtype=model.reduction_complex_dtype,
-        )/c_norm_safe
+        electronic = weighted_bo
         spectral_q_kinetic = None
     else:
         electronic, spectral_q_kinetic = spectral_analyzer.energies(
@@ -230,6 +232,7 @@ def _frame_fields(
     result = {
         "epsilon_1": epsilon_1_complex.real,
         "epsilon_1_gi": epsilon_1_gi_complex.real,
+        "epsilon_1_wbo": weighted_bo.real,
         "epsilon_2": epsilon_2_complex.real,
         "epsilon_2_gi": epsilon_2_gi_complex.real,
         # Connections are derived diagnostics.  The complex overlap links
@@ -251,6 +254,13 @@ def _frame_fields(
             dtype=model.reduction_real_dtype,
         )*model.dq*model.dR),
     }
+    if channel_density_states:
+        # Physical BO-channel joint densities.  Unlike |C_j|^2 these vanish
+        # with the nuclear support and therefore do not promote empty-tail
+        # conditional populations into visible dynamics.
+        result["bo_channel_density_qR"] = (
+            state_probability[:int(channel_density_states)]/total_probability
+        )
     native_links = {
         "sphi_q1": sphi_q[1],
         "sphi_q2": sphi_q[2],
@@ -286,8 +296,14 @@ def run(args):
     nt = len(metadata["times_fs"])
     nq, nR = len(metadata["q"]), len(metadata["R"])
     estimated_bytes = nt*(
-        4*nq*nR+3*nR+metadata["bo_states"]*(nq+nR)
+        5*nq*nR+3*nR+metadata["bo_states"]*(nq+nR)
     )*np.dtype(np.float64).itemsize
+    channel_density_states = min(
+        int(args.channel_density_states), metadata["bo_states"],
+    )
+    estimated_bytes += (
+        nt*channel_density_states*nq*nR*np.dtype(np.float64).itemsize
+    )
     link_keys = ()
     if args.link_output == "nearest":
         link_keys = ("sphi_q1", "sphi_R1", "sgamma_R1")
@@ -350,6 +366,12 @@ def run(args):
         f"TDSE -> exact factorization fields: frames={len(metadata['times_fs'])}, "
         f"N_BO={metadata['bo_states']}, GPU={args.device}, links={link_kernel}"
     )
+    if channel_density_states:
+        print(
+            "physical BO-channel joint densities 저장: "
+            f"rho_j(q,R)=|Y_j(q,R)|^2, j=0..{channel_density_states-1}; "
+            "empty conditional tails are not promoted"
+        )
     print(
         f"BO cache {'HIT' if cache_info['hit'] else 'build'}: "
         f"{cache_info['seconds']:.2f} s; {cache_info['path']}"
@@ -358,6 +380,7 @@ def run(args):
     fields = {
         "epsilon_1": np.empty((nt, nq, nR), dtype=np.float64),
         "epsilon_1_gi": np.empty((nt, nq, nR), dtype=np.float64),
+        "epsilon_1_wbo": np.empty((nt, nq, nR), dtype=np.float64),
         "epsilon_2": np.empty((nt, nR), dtype=np.float64),
         "epsilon_2_gi": np.empty((nt, nR), dtype=np.float64),
         "a": np.empty((nt, nq, nR), dtype=np.float64),
@@ -373,6 +396,10 @@ def run(args):
         "epsilon_2_imaginary_defect": np.empty(nt, dtype=np.float64),
         "factorization_residual": np.empty(nt, dtype=np.float64),
     }
+    if channel_density_states:
+        fields["bo_channel_density_qR"] = np.empty(
+            (nt, channel_density_states, nq, nR), dtype=np.float64,
+        )
     for key in link_keys:
         shape = (nt, nq, nR) if key.startswith("sphi_") else (nt, nR)
         fields[key] = np.empty(shape, dtype=np.complex128)
@@ -428,7 +455,7 @@ def run(args):
             )
             current = _frame_fields(
                 y_frame, model, basis, link_keys, action_frame,
-                spectral_analyzer,
+                spectral_analyzer, channel_density_states,
             )
             reconstruct_marginal = (
                 args.electron_density and metadata["electron_density"] is None
@@ -455,6 +482,15 @@ def run(args):
                     flush=True,
                 )
 
+    if channel_density_states:
+        channel_populations = np.sum(
+            fields["bo_channel_density_qR"], axis=(2, 3), dtype=np.float64,
+        )*cpu_model.dq*cpu_model.dR
+        fields["bo_channel_population_residual"] = (
+            channel_populations
+            -metadata["bo_populations"][:, :channel_density_states]
+        )
+
     np.savez_compressed(
         output,
         **fields,
@@ -466,11 +502,15 @@ def run(args):
             "epsilon_total=epsilon_gi+epsilon_gd; "
             "epsilon_gd reconstructed as total-minus-stored-gi"
         ),
+        epsilon_1_wbo_definition=np.array(
+            "sum_over_all_stored_BO_states_abs_Cj_squared_times_Ej_BO"
+        ),
         scalar_time_derivative=np.array(
             "saved_instantaneous_full_spectral_action_projection"
             if metadata["has_instantaneous_action"]
             else "recomputed_instantaneous_bo_link_action"
         ),
+        bo_channel_density_states=np.array(channel_density_states),
         discrete_link_output=np.array(args.link_output),
         discrete_link_convention=np.array(
             "forward S(g,g+r); backward=S(g-r,g)^dagger"
@@ -490,6 +530,11 @@ def run(args):
     )
     if link_keys:
         print("  saved native overlap links: " + ", ".join(link_keys))
+    if channel_density_states:
+        print(
+            "  max channel-density/population residual: "
+            f"{np.max(np.abs(fields['bo_channel_population_residual'])):.3e}"
+        )
     return output
 
 
@@ -526,11 +571,20 @@ def parse_args(argv=None):
         ),
     )
     parser.add_argument("--spectral-analysis-R-block", type=int, default=2)
+    parser.add_argument(
+        "--channel-density-states", type=int, default=2,
+        help=(
+            "store physical rho_j(q,R)=|Y_j(q,R)|^2 for the first N BO "
+            "channels; use 0 to disable (default: 2)"
+        ),
+    )
     args = parser.parse_args(argv)
     if args.electron_density_R_block <= 0:
         parser.error("--electron-density-R-block must be positive")
     if args.spectral_analysis_R_block <= 0:
         parser.error("--spectral-analysis-R-block must be positive")
+    if args.channel_density_states < 0:
+        parser.error("--channel-density-states must be nonnegative")
     return args
 
 

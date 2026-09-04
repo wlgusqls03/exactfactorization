@@ -39,7 +39,7 @@ from .visualize import NUMBER_FORMATTER, selected_frames
 
 FINAL_PRODUCTS = (
     "marginal", "joint", "velocity", "vector", "current", "nested",
-    "heavy", "bo",
+    "heavy", "bo", "bo3d", "tdpes1",
 )
 
 
@@ -2019,6 +2019,331 @@ def render_bo_combined(obs, ef, outdir, args, snapshots):
 
 
 # ---------------------------------------------------------------------------
+# 6. Two physical BO-channel densities on the fixed two-dimensional BOPES
+
+
+def _bo3d_preparation(obs, ef, args):
+    energies = np.asarray(obs.get("bo_energies"), float)
+    channel = np.asarray(ef.get("bo_channel_density_qR"), float)
+    if energies.ndim != 3 or channel.ndim != 4:
+        raise KeyError(
+            "2D BO channel density가 없습니다. postprocess_tdse_ef를 "
+            "--channel-density-states 2 --overwrite로 다시 실행하세요."
+        )
+    n_states = min(2, int(args.surface_count), energies.shape[0], channel.shape[1])
+    q_limits = _support_limits(
+        obs["q"], obs["proton_density"], args.support_floor, padding=0.08,
+    )
+    R_limits = _support_limits(
+        obs["R"], obs["heavy_density"], args.support_floor, padding=0.12,
+    )
+    q_indices = np.flatnonzero((obs["q"] >= q_limits[0]) & (obs["q"] <= q_limits[1]))
+    R_indices = np.flatnonzero((obs["R"] >= R_limits[0]) & (obs["R"] <= R_limits[1]))
+    q_indices = q_indices[np.linspace(
+        0, len(q_indices)-1, min(len(q_indices), args.bo3d_q_points), dtype=int,
+    )]
+    R_indices = R_indices[np.linspace(
+        0, len(R_indices)-1, min(len(R_indices), args.bo3d_R_points), dtype=int,
+    )]
+    sampled_energy = energies[:n_states][:, q_indices][:, :, R_indices]
+    finite = sampled_energy[np.isfinite(sampled_energy)]
+    lo, hi = np.percentile(finite, (1.0, 99.0))
+    span = max(float(hi-lo), 1.0e-3)
+    density_max = max(float(np.max(channel[:, :n_states])), 1.0e-300)
+    return {
+        "energies": energies, "channel": channel, "n_states": n_states,
+        "q_indices": q_indices, "R_indices": R_indices,
+        "energy_limits": (float(lo-0.06*span), float(hi+0.42*span)),
+        "packet_lift": 0.30*span, "density_max": density_max,
+        "q_limits": q_limits, "R_limits": R_limits,
+        "floor": float(args.support_floor),
+    }
+
+
+def _draw_bo3d_axis(axis, obs, prep, frame, states, compact=False):
+    qi, Ri = prep["q_indices"], prep["R_indices"]
+    Q, RR = np.meshgrid(obs["q"][qi], obs["R"][Ri], indexing="ij")
+    for state in states:
+        energy = prep["energies"][state][np.ix_(qi, Ri)]
+        density = prep["channel"][frame, state][np.ix_(qi, Ri)]
+        relative = density/prep["density_max"]
+        axis.plot_surface(
+            Q, RR, energy, color=COLORS[state % len(COLORS)], alpha=0.18,
+            linewidth=0.0, antialiased=False, shade=False,
+        )
+        occupied = relative >= prep["floor"]
+        lifted = np.where(
+            occupied, energy+prep["packet_lift"]*np.sqrt(relative), np.nan,
+        )
+        face = plt.get_cmap(JOINT_CMAP)(np.clip(relative**0.22, 0.0, 1.0))
+        face[..., 3] = np.where(occupied, 0.35+0.65*np.clip(relative**0.18, 0, 1), 0)
+        axis.plot_surface(
+            Q, RR, lifted, facecolors=face, linewidth=0.0,
+            antialiased=False, shade=False,
+        )
+    axis.set(
+        xlim=prep["q_limits"], ylim=prep["R_limits"],
+        zlim=prep["energy_limits"], xlabel=r"proton $q$ ($a_0$)",
+        ylabel=r"heavy $R$ ($a_0$)", zlabel="BO energy (Hartree)",
+    )
+    axis.view_init(elev=29, azim=-132)
+    axis.tick_params(labelsize=(5 if compact else 7), pad=0)
+    state_text = ", ".join(rf"$j={j}$" for j in states)
+    axis.set_title(
+        state_text+r": fixed BOPES + physical $\rho_j$ (display lift)",
+        fontsize=(6 if compact else 9), pad=(1 if compact else 5),
+    )
+
+
+def _draw_bo3d(fig, axes, obs, prep, frame, compact=False):
+    if len(axes) == prep["n_states"]:
+        for state, axis in enumerate(axes):
+            _draw_bo3d_axis(axis, obs, prep, frame, (state,), compact)
+    else:
+        _draw_bo3d_axis(axes[0], obs, prep, frame, range(prep["n_states"]), compact)
+
+
+def render_bo3d_channels(obs, ef, outdir, args, snapshots):
+    prep = _bo3d_preparation(obs, ef, args)
+    times = obs["times_fs"]
+    def individual(frame):
+        fig = plt.figure(figsize=(15.0, 6.5), constrained_layout=True)
+        axes = [fig.add_subplot(1, prep["n_states"], j+1, projection="3d")
+                for j in range(prep["n_states"])]
+        _draw_bo3d(fig, axes, obs, prep, frame)
+        fig.suptitle(
+            f"Physical BO-channel density on fixed BOPES | t={times[frame]:.4f} fs\n"
+            r"$\rho_j(q,R,t)=\rho_{qR}|C_j|^2=|Y_j|^2$; vertical lift is display-only",
+            fontweight="bold",
+        )
+        return fig
+
+    products = _save_individual_frames(
+        individual, snapshots, times, Path(outdir)/"bo_3d_channel_frames",
+        "bo_3d_channel_dynamics", args.dpi,
+    )
+    fig = plt.figure(figsize=(24.0, 13.0), constrained_layout=True)
+    for slot, frame in zip(fig.add_gridspec(2, 4), snapshots):
+        axis = fig.add_subplot(slot, projection="3d")
+        _draw_bo3d(fig, [axis], obs, prep, int(frame), compact=True)
+        axis.text2D(
+            0.98, 0.94, f"t={times[int(frame)]:.3f} fs",
+            transform=axis.transAxes, ha="right", va="top", fontsize=6,
+        )
+    fig.suptitle(
+        r"BO surfaces are time independent; physical channel densities $\rho_j$ redistribute",
+        fontweight="bold",
+    )
+    products.append(_save_figure(
+        fig, Path(outdir)/"bo_3d_channel_dynamics_snapshots.png", args.dpi,
+    ))
+    if not args.no_animation:
+        frames = _movie_frames(obs, args.max_frames)
+        fig = plt.figure(figsize=(15.0, 6.5), constrained_layout=True)
+        axes = [fig.add_subplot(1, prep["n_states"], j+1, projection="3d")
+                for j in range(prep["n_states"])]
+        title = fig.suptitle("", fontweight="bold")
+
+        def update(number):
+            frame = int(frames[number])
+            for axis in axes:
+                axis.clear()
+            _draw_bo3d(fig, axes, obs, prep, frame)
+            title.set_text(
+                f"Physical BO-channel density on fixed BOPES | t={times[frame]:.4f} fs\n"
+                r"$\rho_j=|Y_j|^2$; fixed trajectory scale; display lift only"
+            )
+            return (*axes, title)
+
+        update(0)
+        animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
+        products.append(tdse_report._save_animation(
+            animation, fig, outdir, "bo_3d_channel_dynamics_movie",
+            args.fps, args.animation_dpi, args.format,
+        ))
+    return products, prep
+
+
+# ---------------------------------------------------------------------------
+# 7. First-level TDPES origin: exact discrete pieces and link-metric limit
+
+
+def _site_link_metric(link, spacing, axis):
+    """Site-centred continuum-limit metric from adjacent overlap magnitudes."""
+    forward = (1.0-np.abs(link)**2)/(float(spacing)**2)
+    return 0.5*(forward+np.roll(forward, 1, axis=axis))
+
+
+def _tdpes1_origin_frame(obs, ef_zero, prep, frame):
+    density = obs["joint_density"][frame]
+    total = density_weighted_shift(
+        ef_zero["epsilon_1"][frame], density, prep["floor"],
+    )
+    native_gi = np.asarray(ef_zero["epsilon_1_gi"][frame], float)
+    wbo = np.asarray(ef_zero["epsilon_1_wbo"][frame], float)
+    # Match the arbitrary additive energy origin of weighted BO to total only;
+    # no spatial feature is altered.
+    support = density >= prep["floor"]*max(float(np.max(density)), 1.0e-300)
+    offset = np.average((native_gi-total)[support], weights=density[support]) if np.any(support) else 0.0
+    native_gi = native_gi-offset
+    # Put wBO on the same arbitrary scalar origin as the native GI term.
+    wbo -= np.average((wbo-native_gi)[support], weights=density[support]) if np.any(support) else 0.0
+    gd = total-native_gi
+    geo_q = _site_link_metric(
+        ef_zero["sphi_q1"][frame], obs["dq"], axis=0,
+    )/(2.0*prep["proton_mass"])
+    geo_R = _site_link_metric(
+        ef_zero["sphi_R1"][frame], obs["dR"], axis=1,
+    )/(2.0*prep["heavy_mass"])
+    return {
+        "total": total, "wbo": wbo,
+        "native_gi": native_gi,
+        "gi_limit": wbo+geo_q+geo_R,
+        "geo_q": geo_q, "geo_R": geo_R, "gd": gd,
+        "opacity": density_display_alpha(density, floor=prep["floor"]),
+        "joint_log": tdse_collision_report._relative_log(density, 6.0),
+    }
+
+
+def _tdpes1_origin_preparation(obs, ef_zero, args):
+    floor = float(args.support_floor)
+    proton_mass = float(obs["options"].get("proton_mass", 1836.15267343))
+    heavy_mass = float(obs["options"].get("heavy_mass", 1836.15267343))
+    provisional = {
+        "floor": floor, "proton_mass": proton_mass, "heavy_mass": heavy_mass,
+        "decades": float(args.decades),
+        "q_limits": _support_limits(
+            obs["q"], obs["proton_density"], floor, padding=0.08,
+        ),
+        "R_limits": _support_limits(
+            obs["R"], obs["heavy_density"], floor, padding=0.12,
+        ),
+    }
+    samples, geo_samples = [], []
+    for frame in _movie_frames(obs, args.max_frames):
+        current = _tdpes1_origin_frame(obs, ef_zero, provisional, int(frame))
+        support = current["opacity"] > 0.05
+        for key in ("total", "wbo", "gi_limit", "gd"):
+            values = np.abs(current[key][support & np.isfinite(current[key])])
+            if values.size:
+                samples.append(values)
+        for key in ("geo_q", "geo_R"):
+            values = current[key][support & np.isfinite(current[key])]
+            if values.size:
+                geo_samples.append(values)
+    signed_bound = max(float(np.percentile(np.concatenate(samples), 99.0)), 1.0e-10)
+    geo_all = np.concatenate(geo_samples) if geo_samples else np.array([0.0, 1.0e-10])
+    geo_limits = (float(np.percentile(geo_all, 1.0)),
+                  max(float(np.percentile(geo_all, 99.0)), 1.0e-10))
+    provisional.update({"signed_bound": signed_bound, "geo_limits": geo_limits})
+    return provisional
+
+
+_TDPES1_TITLES = (
+    r"Discrete total $E_{\rm total,ZP}^{(1)}=E_{\rm GI,d}^{(1)}+E_{\rm GD,ZP}^{(1)}$",
+    r"Weighted BO $E_{\rm wBO}^{(1)}=\sum_j|C_j|^2E_j^{\rm BO}$",
+    r"Continuum-limit GI diagnostic $E_{\rm wBO}^{(1)}+\epsilon_{q,geo}^{(1)}+\epsilon_{R,geo}^{(1)}$",
+    r"$\epsilon_{q,geo}^{(1)}\simeq(1-|S_q^\Phi|^2)/(2m_q\,dq^2)$",
+    r"$\epsilon_{R,geo}^{(1)}\simeq(1-|S_R^\Phi|^2)/(2M\,dR^2)$",
+    r"Discrete GD $E_{\rm GD,ZP}^{(1)}=E_{\rm total,ZP}^{(1)}-E_{\rm GI,d}^{(1)}$",
+)
+
+
+def _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame, colorbars=True,
+                        compact=False):
+    current = _tdpes1_origin_frame(obs, ef_zero, prep, frame)
+    keys = ("total", "wbo", "gi_limit", "geo_q", "geo_R", "gd")
+    images = []
+    extent = [obs["q"][0], obs["q"][-1], obs["R"][0], obs["R"][-1]]
+    for index, (axis, key, title) in enumerate(zip(axes, keys, _TDPES1_TITLES)):
+        if key in ("geo_q", "geo_R"):
+            vmin, vmax = prep["geo_limits"]
+            cmap = "magma"
+        else:
+            vmin, vmax = -prep["signed_bound"], prep["signed_bound"]
+            cmap = masked_cmap(SIGNED_CMAP)
+        image = axis.imshow(
+            current[key].T, origin="lower", aspect="auto", extent=extent,
+            cmap=cmap, vmin=vmin, vmax=vmax, interpolation="nearest",
+            alpha=current["opacity"].T,
+        )
+        _joint_contours(axis, obs, current["joint_log"], prep["decades"])
+        axis.set_facecolor(MASK_COLOR)
+        axis.set_title(title, loc="left", fontweight="semibold",
+                       fontsize=(5.5 if compact else 8.5))
+        axis.set_xlabel(r"proton $q$ ($a_0$)")
+        axis.set_ylabel(r"heavy $R$ ($a_0$)")
+        axis.set_xlim(prep["q_limits"])
+        axis.set_ylim(prep["R_limits"])
+        axis.tick_params(labelsize=(5 if compact else 7), direction="in")
+        images.append(image)
+    if colorbars:
+        fig.colorbar(images[0], ax=list(axes[:3])+[axes[5]], pad=0.012,
+                     format=NUMBER_FORMATTER, label="shifted energy (Hartree)")
+        fig.colorbar(images[3], ax=list(axes[3:5]), pad=0.012,
+                     format=NUMBER_FORMATTER, label="link-metric energy (Hartree)")
+    return images
+
+
+def render_tdpes1_origin(obs, ef_zero, outdir, args, snapshots):
+    prep = _tdpes1_origin_preparation(obs, ef_zero, args)
+    times = obs["times_fs"]
+
+    def individual(frame):
+        fig, axes = plt.subplots(2, 3, figsize=(16.5, 9.2), constrained_layout=True)
+        _draw_tdpes1_origin(fig, axes.ravel(), obs, ef_zero, prep, frame)
+        fig.suptitle(
+            f"Origin of first-level TDPES structure | t={times[frame]:.4f} fs\n"
+            "axial zero-potential gauge; contours are occupied physical density; "
+            "link metrics are continuum-limit diagnostics",
+            fontweight="bold",
+        )
+        return fig
+
+    products = _save_individual_frames(
+        individual, snapshots, times, Path(outdir)/"tdpes1_origin_frames",
+        "tdpes1_origin", args.dpi,
+    )
+    fig = plt.figure(figsize=(28.0, 16.0), constrained_layout=True)
+    for slot, frame in zip(fig.add_gridspec(2, 4), snapshots):
+        inner = slot.subgridspec(2, 3, wspace=0.05, hspace=0.15)
+        axes = [fig.add_subplot(inner[i, j]) for i in range(2) for j in range(3)]
+        _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, int(frame),
+                            colorbars=False, compact=True)
+        axes[0].text(0.98, 0.92, f"t={times[int(frame)]:.3f} fs",
+                     transform=axes[0].transAxes, ha="right", va="top",
+                     fontsize=5.5)
+    fig.suptitle("First-level TDPES origin: 8 representative times", fontweight="bold")
+    products.append(_save_figure(
+        fig, Path(outdir)/"tdpes1_origin_snapshots.png", args.dpi,
+    ))
+    if not args.no_animation:
+        frames = _movie_frames(obs, args.max_frames)
+        fig, axes = plt.subplots(2, 3, figsize=(16.5, 9.2), constrained_layout=True)
+        title = fig.suptitle("", fontweight="bold")
+
+        def update(number):
+            frame = int(frames[number])
+            for axis in axes.ravel():
+                axis.clear()
+            _draw_tdpes1_origin(fig, axes.ravel(), obs, ef_zero, prep, frame,
+                                colorbars=False)
+            title.set_text(
+                f"Origin of first-level TDPES structure | t={times[frame]:.4f} fs\n"
+                "exact discrete total/wBO/GD; q/R link metrics are continuum-limit diagnostics"
+            )
+            return (*axes.ravel(), title)
+
+        update(0)
+        animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
+        products.append(tdse_report._save_animation(
+            animation, fig, outdir, "tdpes1_origin_movie",
+            args.fps, args.animation_dpi, args.format,
+        ))
+    return products, prep
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 
 
@@ -2054,6 +2379,7 @@ def run(args):
         name in selected
         for name in (
             "velocity", "vector", "current", "nested", "heavy", "bo",
+            "bo3d", "tdpes1",
         )
     )
     ef = None
@@ -2074,9 +2400,16 @@ def run(args):
             field_keys.extend(("epsilon_2", "alpha"))
         if "bo" in selected:
             field_keys.extend(("bo_state_density_q", "bo_state_density_R"))
+        if "bo3d" in selected:
+            field_keys.append("bo_channel_density_qR")
+        if "tdpes1" in selected:
+            field_keys.extend((
+                "epsilon_1", "epsilon_1_gi", "epsilon_1_wbo",
+                "epsilon_2", "a", "b", "alpha",
+            ))
         field_keys = tuple(dict.fromkeys(field_keys))
         link_keys = []
-        if "nested" in selected:
+        if "nested" in selected or "tdpes1" in selected:
             link_keys.extend(("sphi_q1", "sphi_R1", "sgamma_R1"))
         elif "heavy" in selected:
             link_keys.append("sgamma_R1")
@@ -2109,6 +2442,12 @@ def run(args):
         products.extend(generated)
     if "bo" in selected:
         products.extend(render_bo_combined(obs, ef, output, args, snapshots))
+    bo3d_prep = None
+    if "bo3d" in selected:
+        generated, bo3d_prep = render_bo3d_channels(
+            obs, ef, output, args, snapshots,
+        )
+        products.extend(generated)
 
     alpha_positive = None
     branch_turns = None
@@ -2119,9 +2458,17 @@ def run(args):
         alpha_positive = alpha_positive.copy()
 
     nested_prep = None
-    if "nested" in selected:
+    if "nested" in selected or "tdpes1" in selected:
         tdse_report.transform_to_zero_potential_gauge(obs, ef)
+    if "nested" in selected:
         generated, nested_prep = render_nested_factorization(
+            obs, ef, output, args, snapshots,
+        )
+        products.extend(generated)
+
+    tdpes1_prep = None
+    if "tdpes1" in selected:
+        generated, tdpes1_prep = render_tdpes1_origin(
             obs, ef, output, args, snapshots,
         )
         products.extend(generated)
@@ -2208,6 +2555,27 @@ def run(args):
             f"nested_q_limits={nested_prep['q_limits']}",
             f"nested_R_limits={nested_prep['R_limits']}",
         ))
+    if bo3d_prep is not None:
+        manifest.extend((
+            "bo3d_density=rho_j(q,R,t)=rho_qR*abs(C_j)^2=abs(Y_j)^2",
+            "bo3d_surfaces=time_independent_BO_energies",
+            "bo3d_vertical_density_lift=display_only_fixed_trajectory_scale",
+            f"bo3d_states={bo3d_prep['n_states']}",
+            f"bo3d_q_limits={bo3d_prep['q_limits']}",
+            f"bo3d_R_limits={bo3d_prep['R_limits']}",
+        ))
+    if tdpes1_prep is not None:
+        manifest.extend((
+            "tdpes1_gauge=axial_zero_potential",
+            "tdpes1_discrete_identity=E_total_ZP=E_GI_native+E_GD_ZP",
+            "tdpes1_weighted_bo=sum_all_stored_abs(C_j)^2*E_j_BO",
+            "tdpes1_q_metric=(1-abs(Sphi_q1)^2)/dq^2_site_centered",
+            "tdpes1_R_metric=(1-abs(Sphi_R1)^2)/dR^2_site_centered",
+            "tdpes1_continuum_limit_interpretation=E_wBO+q_metric/(2m_q)+R_metric/(2M)",
+            "tdpes1_warning=link_metrics_are_continuum_limit_diagnostics_not_termwise_finite_difference_replacements_of_the_native_discrete_GI_scalar",
+            f"tdpes1_signed_bound={tdpes1_prep['signed_bound']:.16g}",
+            f"tdpes1_geo_limits={tdpes1_prep['geo_limits']}",
+        ))
     if heavy_prep is not None:
         manifest.extend((
             "harmonic_potential=heavy_trap_alpha*(R-heavy_trap_center)^2",
@@ -2266,12 +2634,15 @@ def parse_args(argv=None):
     parser.add_argument("--heavy-min", type=float, default=5.0)
     parser.add_argument("--heavy-max", type=float, default=15.0)
     parser.add_argument("--surface-count", type=int, default=2)
+    parser.add_argument("--bo3d-q-points", type=int, default=72)
+    parser.add_argument("--bo3d-R-points", type=int, default=54)
     parser.add_argument("--no-animation", action="store_true")
     args = parser.parse_args(argv)
     positive = (
         "fps", "max_frames", "snapshot_count", "dpi", "animation_dpi",
         "decades", "support_floor", "marginal_ymax", "marginal_xmax",
         "surface_count", "velocity_q_points", "velocity_R_points",
+        "bo3d_q_points", "bo3d_R_points",
     )
     for name in positive:
         if not np.isfinite(getattr(args, name)) or getattr(args, name) <= 0:

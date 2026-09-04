@@ -371,6 +371,13 @@ It saves `tdse_exact_factorization_fields.npz` beside the TDSE archive with
 - the coherent electron--proton reduced density
   `electron_proton_density(x,q)=int dR |Psi(x,q,R)|^2`, reconstructed before
   squaring so all BO cross terms are retained.
+- the first two physical BO-channel joint densities by default,
+  `bo_channel_density_qR[j]=rho_qR*|C_j|^2=|Y_j|^2`. These retain physical
+  nuclear support, unlike a bare conditional `|C_j|^2`; select the count with
+  `--channel-density-states` or disable them with value zero.
+- `epsilon_1_wbo=sum_j |C_j|^2 E_j_BO`, stored separately from the native GI
+  scalar so spectral and finite-grid archives have an unambiguous weighted-BO
+  diagnostic.
 
 Electronic reduced-density reconstruction is exact but expensive because every
 saved frame must stream the large cached BO eigenstate tensor. The electron
@@ -379,6 +386,30 @@ pass. Use `--no-electron-density` and/or `--no-electron-proton-density` when the
 corresponding visualization is not needed. New TDSE propagation archives save
 the electron marginal at each output frame by default; use
 `--no-bo-save-electron-density` to opt out.
+
+Two additional analysis products can be rendered independently after this
+cache has been refreshed:
+
+```bash
+python -m multi_component_exact_factorization.render_final_visualizations \
+  results/YYYYMMDD/RUN_NAME \
+  --only bo3d tdpes1 \
+  --surface-count 2 \
+  --format mp4 --fps 12 --max-frames 240 \
+  --snapshot-count 8 --dpi 180 --animation-dpi 110
+```
+
+`bo3d` places the physical `rho_0` and `rho_1` channel packets above the two
+fixed two-dimensional BOPES. Its vertical packet lift is visual only and is
+fixed over the trajectory; neither density nor energy is altered in storage.
+`tdpes1` gives a six-panel origin audit in the axial zero-potential gauge:
+native discrete total, weighted BO, their continuum-limit GI reconstruction,
+q/R nearest-link quantum-metric energies, and native discrete GD. The exact
+finite-grid identity shown is `E_total=E_GI,d+E_GD`; the native `E_GI,d` is
+used to form GD even though the third panel is the continuum diagnostic. The link expressions
+`(1-|S_mu|^2)/(2 M_mu dmu^2)` are explicitly labelled continuum-limit
+diagnostics: finite-grid link geometry must not be presented as a termwise
+finite-difference replacement of the native discrete scalar.
 
 Run the standard renderer again.  It automatically finds this field cache
 and creates complete `report/positive_gauge/` and
