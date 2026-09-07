@@ -2387,8 +2387,23 @@ def _tdpes1_shared_norm(prep):
     )
 
 
+def _tdpes1_colorbar(fig, prep, cax):
+    """Draw the shared TDPES scale in a dedicated, layout-stable axis."""
+    scale = "symmetric log" if prep.get("color_scale") == "symlog" else "linear"
+    colorbar = fig.colorbar(
+        ScalarMappable(norm=_tdpes1_shared_norm(prep), cmap=SIGNED_CMAP),
+        cax=cax, extend="both", format=NUMBER_FORMATTER,
+    )
+    colorbar.set_label(
+        f"energy contribution (Hartree; shared {scale} scale)",
+        labelpad=9,
+    )
+    colorbar.ax.tick_params(labelsize=7, pad=3)
+    return colorbar
+
+
 def _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame, colorbars=True,
-                        compact=False):
+                        compact=False, colorbar_axis=None):
     current = _tdpes1_origin_frame(obs, ef_zero, prep, frame)
     keys = ("total", "wbo", "gd", "geo_q", "geo_R")
     active, indices, limits = _frame_focus(obs, frame, prep['focus_floor'])
@@ -2430,12 +2445,9 @@ def _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame, colorbars=True,
         axis.tick_params(labelsize=(5 if compact else 7), direction="in")
         images.append(image)
     if colorbars:
-        scale = "symmetric log" if prep.get("color_scale") == "symlog" else "linear"
-        fig.colorbar(
-            images[0], ax=list(axes), pad=0.018, extend='both',
-            format=NUMBER_FORMATTER,
-            label=f"energy contribution (Hartree; shared {scale} scale)",
-        )
+        if colorbar_axis is None:
+            raise ValueError("TDPES origin colorbar requires a dedicated axis")
+        _tdpes1_colorbar(fig, prep, colorbar_axis)
     return {"images": images, "contours": contours}
 
 
@@ -2476,13 +2488,29 @@ def _update_tdpes1_origin(state, axes, obs, ef_zero, prep, frame):
 
 
 def _tdpes1_origin_axes(fig, slot=None):
-    """Three scalar panels above two wider geometric panels."""
-    grid = fig.add_gridspec(2, 1) if slot is None else slot.subgridspec(2, 1)
-    top = grid[0].subgridspec(1, 3)
-    bottom = grid[1].subgridspec(1, 2)
+    """Three scalar panels above two wider geometric panels.
+
+    The full-frame layout deliberately reserves the right margin for a colorbar.
+    Letting constrained-layout attach one colorbar to axes from two nested
+    GridSpecs can collapse both panel rows to nearly zero height.
+    """
+    if slot is None:
+        grid = fig.add_gridspec(
+            2, 1, left=0.055, right=0.915, bottom=0.075, top=0.855,
+            hspace=0.34,
+        )
+    else:
+        grid = slot.subgridspec(2, 1, hspace=0.30)
+    top = grid[0].subgridspec(1, 3, wspace=0.27)
+    bottom = grid[1].subgridspec(1, 2, wspace=0.20)
     return [fig.add_subplot(top[i]) for i in range(3)] + [
         fig.add_subplot(bottom[i]) for i in range(2)
     ]
+
+
+def _tdpes1_full_colorbar_axis(fig):
+    """Fixed colorbar slot shared by the five full-size TDPES panels."""
+    return fig.add_axes((0.938, 0.145, 0.014, 0.645))
 
 
 def render_tdpes1_origin(obs, ef_fields, outdir, args, snapshots, *,
@@ -2496,9 +2524,13 @@ def render_tdpes1_origin(obs, ef_fields, outdir, args, snapshots, *,
         )
 
     def individual(frame):
-        fig = plt.figure(figsize=(16.5, 9.2), constrained_layout=True)
+        fig = plt.figure(figsize=(16.5, 9.2), constrained_layout=False)
         axes = _tdpes1_origin_axes(fig)
-        _draw_tdpes1_origin(fig, axes, obs, ef_fields, prep, frame)
+        cax = _tdpes1_full_colorbar_axis(fig)
+        _draw_tdpes1_origin(
+            fig, axes, obs, ef_fields, prep, frame,
+            colorbar_axis=cax,
+        )
         fig.suptitle(
             f"Origin of first-level TDPES structure | t={times[frame]:.4f} fs\n"
             f"{gauge_label}; contours are occupied physical density; "
@@ -2511,23 +2543,20 @@ def render_tdpes1_origin(obs, ef_fields, outdir, args, snapshots, *,
         individual, snapshots, times, Path(outdir)/f"{stem}_frames",
         stem, args.dpi,
     )
-    fig = plt.figure(figsize=(28.0, 16.0), constrained_layout=True)
-    summary_axes = []
-    for slot, frame in zip(fig.add_gridspec(2, 4), snapshots):
+    fig = plt.figure(figsize=(28.0, 16.0), constrained_layout=False)
+    summary_grid = fig.add_gridspec(
+        2, 4, left=0.025, right=0.945, bottom=0.045, top=0.925,
+        wspace=0.16, hspace=0.20,
+    )
+    for slot, frame in zip(summary_grid, snapshots):
         axes = _tdpes1_origin_axes(fig, slot)
         _draw_tdpes1_origin(fig, axes, obs, ef_fields, prep, int(frame),
                             colorbars=False, compact=True)
-        summary_axes.append(axes)
         axes[0].text(0.98, 0.92, f"t={times[int(frame)]:.3f} fs",
                      transform=axes[0].transAxes, ha="right", va="top",
                      fontsize=5.5)
-    all_summary_axes = [axis for axes in summary_axes for axis in axes]
-    scale = "symmetric log" if prep.get("color_scale") == "symlog" else "linear"
-    fig.colorbar(ScalarMappable(
-        norm=_tdpes1_shared_norm(prep), cmap=SIGNED_CMAP,
-    ), ax=all_summary_axes, pad=0.008, shrink=0.72, extend='both',
-        format=NUMBER_FORMATTER,
-        label=f'energy contribution (Hartree; shared {scale} scale)')
+    summary_cax = fig.add_axes((0.958, 0.16, 0.009, 0.65))
+    _tdpes1_colorbar(fig, prep, summary_cax)
     fig.suptitle(
         f"First-level TDPES origin ({gauge_label}): 8 representative times",
         fontweight="bold",
@@ -2537,14 +2566,11 @@ def render_tdpes1_origin(obs, ef_fields, outdir, args, snapshots, *,
     ))
     if not args.no_animation:
         frames = _movie_frames(obs, args.max_frames)
-        fig = plt.figure(figsize=(16.5, 9.2), constrained_layout=True)
+        fig = plt.figure(figsize=(16.5, 9.2), constrained_layout=False)
         axes = _tdpes1_origin_axes(fig)
+        cax = _tdpes1_full_colorbar_axis(fig)
         title = fig.suptitle("", fontweight="bold")
-        scale = "symmetric log" if prep.get("color_scale") == "symlog" else "linear"
-        fig.colorbar(ScalarMappable(
-            norm=_tdpes1_shared_norm(prep), cmap=SIGNED_CMAP,
-        ), ax=axes, pad=0.018, extend='both', format=NUMBER_FORMATTER,
-            label=f'energy contribution (Hartree; shared {scale} scale)')
+        _tdpes1_colorbar(fig, prep, cax)
         state = _draw_tdpes1_origin(
             fig, axes, obs, ef_fields, prep, int(frames[0]), colorbars=False,
         )
