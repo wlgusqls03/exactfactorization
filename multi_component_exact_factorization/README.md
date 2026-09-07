@@ -406,7 +406,7 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 기본 출력은 해당 계산 폴더의 ``report/final_visualizations/`` 아래에 모인다.
 별도 위치가 필요한 경우에만 ``--outdir PATH``를 명시한다.
 
-``--only marginal joint velocity vector current nested heavy bo``로 필요한 묶음만
+``--only marginal joint velocity vector current nested heavy bo bo3d tdpes1``로 필요한 묶음만
 고를 수 있고,
 ``--no-animation``을 주면 같은 plotting function으로 8개 개별 PNG와 2x4
 summary만 다시 만든다. 특히 joint density 위의 속도 화살표만 다시 만들려면
@@ -423,6 +423,26 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 frame별로 정규화하거나 평활화하지 않는다. ``--velocity-q-points``와
 ``--velocity-R-points``로 화살표 sampling 밀도만 조절할 수 있다. Signed 2D
 field는 음수=파랑, 0=흰색, 양수=빨강이고 low-density mask는 회색이다.
+
+BO 3D와 first-level TDPES origin 영상은 고정 artist/축을 재사용하고 현재의
+고밀도 support만 갱신한다. TDPES 첫 패널은 논문 Fig. 3과 같은 해석 문법,
+즉 signed TDPES color map 위에 physical joint density의 검은 등고선을
+중첩한다. 기본 ``--analysis-focus-floor 1e-2`` 밖의 tail은 회색으로 숨기고
+표시 범위는 점유 영역을 따라간다. 다섯 energy 패널은 하나의 공통 colorbar와
+0-centered symmetric-log scale을 써서 큰 late-time GD 구조가 있더라도 작은
+초기 BO 곡률이 흰색에 묻히지 않게 한다. 정확한 선형 비교가 필요하면
+``--tdpes-color-scale linear``를 쓸 수 있다. 속도와 선명도의 균형을 위한 기본 encoding은
+near-1080p CRF 18 / medium preset이다. 더 빠른 재생성은
+``--movie-preset fast --max-frames 160``을, 더 조밀한 BO movie mesh는
+``--movie-bo3d-q-points``와 ``--movie-bo3d-R-points``를 사용한다. 이 옵션들은
+렌더링 sampling/encoding만 바꾸며 저장된 물리량은 변경하지 않는다.
+
+``--only tdpes1``은 기본적으로 두 gauge를 모두 만든다. 기존 이름
+``tdpes1_origin_movie.mp4``는 axial zero-potential gauge이고,
+``tdpes1_origin_positive_gauge_movie.mp4``는 저장된 positive-density gauge이다.
+한쪽만 필요하면 ``--tdpes-gauges positive`` 또는 ``--tdpes-gauges zero``를
+지정한다. weighted BO와 link-metric geometry는 gauge invariant하고 두 출력에서
+같으며, total과 GD 패널이 gauge transformation에 따라 달라진다.
 
 교수님 분석용 nested-factorization 4-panel만 다시 만들려면 다음을 사용한다.
 

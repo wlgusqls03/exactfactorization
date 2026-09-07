@@ -308,6 +308,8 @@ class TDSEReportTests(unittest.TestCase):
             for name in (
                 "bo_3d_channel_dynamics_movie.gif",
                 "bo_3d_channel_dynamics_snapshots.png",
+                "tdpes1_origin_positive_gauge_movie.gif",
+                "tdpes1_origin_positive_gauge_snapshots.png",
                 "tdpes1_origin_movie.gif",
                 "tdpes1_origin_snapshots.png",
             ):
@@ -355,6 +357,25 @@ class TDSEReportTests(unittest.TestCase):
                 frame["wbo"]+frame["geo_q"]+frame["geo_R"],
                 rtol=0.0, atol=2.0e-15,
             ))
+
+    def test_first_level_only_gauge_matches_complete_zero_gauge(self):
+        with TemporaryDirectory() as temporary:
+            archive, _ = self._write_archive(temporary)
+            obs = tdse_report.calculate_observables(
+                tdse_report.load_observables(archive)
+            )
+            complete = tdse_report._load_ef_fields(obs)
+            first = tdse_report._load_ef_fields(
+                obs, field_keys=("epsilon_1",),
+                link_keys=("sphi_q1", "sphi_R1"),
+            )
+            tdse_report.transform_to_zero_potential_gauge(obs, complete)
+            tdse_report.transform_first_level_to_q_axial_gauge(obs, first)
+            for key in ("epsilon_1", "sphi_q1", "sphi_R1"):
+                self.assertTrue(np.allclose(
+                    first[key], complete[key], rtol=0.0, atol=2.0e-15,
+                ), key)
+            self.assertEqual(first["gauge"], "first_level_q_axial")
 
     def test_analysis_focus_tracks_moving_support_and_keeps_branches(self):
         q = np.arange(100, dtype=float)

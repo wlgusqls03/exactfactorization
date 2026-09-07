@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patheffects as path_effects
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 from matplotlib.cm import ScalarMappable
-from matplotlib.colors import Normalize
+from matplotlib.colors import Normalize, SymLogNorm
 import numpy as np
 
 from . import tdse_collision_report, tdse_report
@@ -376,7 +376,13 @@ def _joint_velocity_preparation(obs, ef, args):
     heavy_mass = float(obs["options"].get("heavy_mass", 1836.15267343))
 
     supported_speeds = []
-    for frame in _movie_frames(obs, args.max_frames):
+    # Robust trajectory-wide limits do not need an expensive full-resolution
+    # decomposition pass over every movie frame.  Evenly sample the complete
+    # trajectory; the plotted physical arrays themselves are never sampled or
+    # altered by this choice.
+    for frame in _movie_frames(obs, min(
+        args.max_frames, getattr(args, "scale_sample_frames", 32),
+    )):
         frame = int(frame)
         density = obs["joint_density"][frame][np.ix_(q_indices, R_indices)]
         support = density >= args.support_floor*max(
@@ -1235,7 +1241,8 @@ def _new_nested_axes(figsize=(15.4, 10.2), *, compact=False,
     return figure, axes
 
 
-def _joint_contours(axis, obs, log_density, decades, compact=False):
+def _joint_contours(axis, obs, log_density, decades, compact=False, *,
+                    q=None, R=None, color="white", halo_color="0.08"):
     # Half-decade spacing resolves shoulders and weakly connected branches
     # without changing or smoothing the underlying physical density.  The
     # final two contours make the high-density core easy to identify.
@@ -1247,8 +1254,9 @@ def _joint_contours(axis, obs, log_density, decades, compact=False):
     if levels.size < 3:
         levels = np.linspace(-0.9*float(decades), -0.1*float(decades), 3)
     contours = axis.contour(
-        obs["q"], obs["R"], log_density.T, levels=levels,
-        colors="white", linewidths=np.linspace(0.42, 1.05, len(levels)),
+        obs["q"] if q is None else q, obs["R"] if R is None else R,
+        log_density.T, levels=levels,
+        colors=color, linewidths=np.linspace(0.42, 1.05, len(levels)),
         alpha=(0.72 if compact else 0.88),
     )
     # A dark halo keeps the physical-density contours legible over both the
@@ -1258,7 +1266,7 @@ def _joint_contours(axis, obs, log_density, decades, compact=False):
     for collection in contours.collections:
         collection.set_path_effects((
             path_effects.Stroke(
-                linewidth=halo_width, foreground="0.08", alpha=0.72,
+                linewidth=halo_width, foreground=halo_color, alpha=0.72,
             ),
             path_effects.Normal(),
         ))
@@ -2041,14 +2049,17 @@ def _frame_focus(obs, frame, floor):
 
 
 def _save_analysis_movie(animation, fig, outdir, stem, args):
-    """Quality-based encoding for dense scientific plots, no bitrate ceiling."""
+    """Encode dense scientific plots sharply without the former slow preset."""
     if args.format == 'mp4' and FFMpegWriter.isAvailable():
         path = Path(outdir)/f'{stem}.mp4'
         writer = FFMpegWriter(fps=args.fps, codec='libx264', bitrate=-1,
-                             extra_args=['-crf', '17', '-preset', 'slow',
+                             extra_args=['-crf', '18', '-preset',
+                                         getattr(args, 'movie_preset', 'medium'),
                                          '-pix_fmt', 'yuv420p', '-vf',
                                          'pad=ceil(iw/2)*2:ceil(ih/2)*2'])
-        animation.save(path, writer=writer, dpi=max(150, args.animation_dpi))
+        # 120 dpi on the 16.5 x 9.2 inch analysis canvas is already near 1080p.
+        # Higher values remain available through --animation-dpi.
+        animation.save(path, writer=writer, dpi=max(120, args.animation_dpi))
         plt.close(fig)
         return path
     return tdse_report._save_animation(animation, fig, outdir, stem,
@@ -2093,6 +2104,8 @@ def _bo3d_preparation(obs, ef, args):
         "focus_floor": args.analysis_focus_floor,
         "q_points": args.bo3d_q_points,
         "R_points": args.bo3d_R_points,
+        "movie_q_points": args.movie_bo3d_q_points,
+        "movie_R_points": args.movie_bo3d_R_points,
     }
 
 
@@ -2143,6 +2156,64 @@ def _draw_bo3d(fig, axes, obs, prep, frame, compact=False):
         _draw_bo3d_axis(axes[0], obs, prep, frame, range(prep["n_states"]), compact)
 
 
+def _setup_bo3d_movie_axis(axis, obs, prep, states):
+    """Draw time-independent BO surfaces once and return dynamic state IDs."""
+    qi, Ri = prep["q_indices"], prep["R_indices"]
+    Q, RR = np.meshgrid(obs["q"][qi], obs["R"][Ri], indexing="ij")
+    for state in states:
+        energy = prep["energies"][state][np.ix_(qi, Ri)]
+        axis.plot_surface(
+            Q, RR, energy, color=COLORS[state % len(COLORS)], alpha=0.18,
+            linewidth=0.0, antialiased=False, shade=False,
+            rcount=len(qi), ccount=len(Ri),
+        )
+    axis.set(
+        zlim=prep["energy_limits"], xlabel=r"proton $q$ ($a_0$)",
+        ylabel=r"heavy $R$ ($a_0$)", zlabel="BO energy (Hartree)",
+    )
+    axis.view_init(elev=29, azim=-132)
+    axis.tick_params(labelsize=7, pad=0)
+    state_text = ", ".join(rf"$j={j}$" for j in states)
+    axis.set_title(
+        state_text+r": fixed BOPES + physical $\rho_j$ (display lift)",
+        fontsize=9, pad=5,
+    )
+    return tuple(states)
+
+
+def _draw_bo3d_movie_packets(axis, obs, prep, frame, states):
+    """Draw only the moving density surfaces on an already initialized axis."""
+    active, indices, limits = _frame_focus(obs, frame, prep["focus_floor"])
+    qi, Ri = indices
+    qi = qi[np.linspace(
+        0, len(qi)-1, min(len(qi), prep["movie_q_points"]), dtype=int,
+    )]
+    Ri = Ri[np.linspace(
+        0, len(Ri)-1, min(len(Ri), prep["movie_R_points"]), dtype=int,
+    )]
+    Q, RR = np.meshgrid(obs["q"][qi], obs["R"][Ri], indexing="ij")
+    packets = []
+    for state in states:
+        energy = prep["energies"][state][np.ix_(qi, Ri)]
+        density = prep["channel"][frame, state][np.ix_(qi, Ri)]
+        relative = density/prep["density_max"]
+        occupied = active[np.ix_(qi, Ri)] & (relative >= prep["floor"])
+        lifted = np.where(
+            occupied, energy+prep["packet_lift"]*np.sqrt(relative), np.nan,
+        )
+        face = plt.get_cmap(JOINT_CMAP)(np.clip(relative**0.22, 0.0, 1.0))
+        face[..., 3] = np.where(
+            occupied, 0.35+0.65*np.clip(relative**0.18, 0, 1), 0,
+        )
+        packets.append(axis.plot_surface(
+            Q, RR, lifted, facecolors=face, linewidth=0.0,
+            antialiased=False, shade=False, rcount=len(qi), ccount=len(Ri),
+        ))
+    axis.set_xlim(limits[0])
+    axis.set_ylim(limits[1])
+    return packets
+
+
 def render_bo3d_channels(obs, ef, outdir, args, snapshots):
     prep = _bo3d_preparation(obs, ef, args)
     times = obs["times_fs"]
@@ -2183,17 +2254,24 @@ def render_bo3d_channels(obs, ef, outdir, args, snapshots):
         axes = [fig.add_subplot(1, prep["n_states"], j+1, projection="3d")
                 for j in range(prep["n_states"])]
         title = fig.suptitle("", fontweight="bold")
+        axis_states = []
+        for state, axis in enumerate(axes):
+            axis_states.append(_setup_bo3d_movie_axis(axis, obs, prep, (state,)))
+        packet_artists = [[] for _ in axes]
 
         def update(number):
             frame = int(frames[number])
-            for axis in axes:
-                axis.clear()
-            _draw_bo3d(fig, axes, obs, prep, frame)
+            for index, (axis, states) in enumerate(zip(axes, axis_states)):
+                for artist in packet_artists[index]:
+                    artist.remove()
+                packet_artists[index] = _draw_bo3d_movie_packets(
+                    axis, obs, prep, frame, states,
+                )
             title.set_text(
                 f"Physical BO-channel density on fixed BOPES | t={times[frame]:.4f} fs\n"
                 r"$\rho_j=|Y_j|^2$; fixed trajectory scale; display lift only"
             )
-            return (*axes, title)
+            return (*[item for group in packet_artists for item in group], title)
 
         update(0)
         animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
@@ -2258,9 +2336,13 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
         "R_limits": _support_limits(
             obs["R"], obs["heavy_density"], floor, padding=0.12,
         ),
+        "contour_q_points": int(getattr(args, "tdpes_contour_q_points", 180)),
+        "contour_R_points": int(getattr(args, "tdpes_contour_R_points", 120)),
     }
     samples, geo_samples = [], []
-    for frame in _movie_frames(obs, args.max_frames):
+    for frame in _movie_frames(obs, min(
+        args.max_frames, getattr(args, "scale_sample_frames", 32),
+    )):
         current = _tdpes1_origin_frame(obs, ef_zero, provisional, int(frame))
         support = obs['joint_density'][int(frame)] >= provisional['focus_floor']*np.max(obs['joint_density'][int(frame)])
         for key in ("total", "wbo", "gd"):
@@ -2275,7 +2357,13 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
     geo_all = np.asarray(geo_samples) if geo_samples else np.array([0.0, 1.0e-10])
     geo_bound = max(float(np.max(np.abs(geo_all))), 1.0e-10)
     geo_limits = (-geo_bound, geo_bound)
-    provisional.update({"signed_bound": signed_bound, "geo_limits": geo_limits})
+    common_bound = max(signed_bound, geo_bound)
+    provisional.update({
+        "signed_bound": signed_bound, "geo_limits": geo_limits,
+        "common_bound": common_bound,
+        "linear_threshold": max(1.0e-2*common_bound, 1.0e-12),
+        "color_scale": getattr(args, "tdpes_color_scale", "symlog"),
+    })
     return provisional
 
 
@@ -2288,26 +2376,50 @@ _TDPES1_TITLES = (
 )
 
 
+def _tdpes1_shared_norm(prep):
+    """One zero-centred norm shared by all five energy contributions."""
+    bound = prep["common_bound"]
+    if prep.get("color_scale", "symlog") == "linear":
+        return Normalize(-bound, bound)
+    return SymLogNorm(
+        linthresh=prep["linear_threshold"], linscale=0.65,
+        vmin=-bound, vmax=bound, base=10,
+    )
+
+
 def _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame, colorbars=True,
                         compact=False):
     current = _tdpes1_origin_frame(obs, ef_zero, prep, frame)
     keys = ("total", "wbo", "gd", "geo_q", "geo_R")
-    active, _, limits = _frame_focus(obs, frame, prep['focus_floor'])
-    images = []
-    extent = [obs["q"][0], obs["q"][-1], obs["R"][0], obs["R"][-1]]
+    active, indices, limits = _frame_focus(obs, frame, prep['focus_floor'])
+    qi, Ri = indices
+    active_crop = active[np.ix_(qi, Ri)]
+    images, contours = [], []
+    extent = [obs["q"][qi[0]], obs["q"][qi[-1]],
+              obs["R"][Ri[0]], obs["R"][Ri[-1]]]
+    contour_qi = qi[np.linspace(
+        0, len(qi)-1, min(len(qi), prep["contour_q_points"]), dtype=int,
+    )]
+    contour_Ri = Ri[np.linspace(
+        0, len(Ri)-1, min(len(Ri), prep["contour_R_points"]), dtype=int,
+    )]
+    shared_norm = _tdpes1_shared_norm(prep)
     for index, (axis, key, title) in enumerate(zip(axes, keys, _TDPES1_TITLES)):
-        if key in ("geo_q", "geo_R"):
-            vmin, vmax = prep["geo_limits"]
-            cmap = masked_cmap(SIGNED_CMAP)
-        else:
-            vmin, vmax = -prep["signed_bound"], prep["signed_bound"]
-            cmap = masked_cmap(SIGNED_CMAP)
+        cmap = masked_cmap(SIGNED_CMAP)
         image = axis.imshow(
-            np.ma.masked_where(~active | ~np.isfinite(current[key]), current[key]).T,
+            np.ma.masked_where(
+                ~active_crop | ~np.isfinite(current[key][np.ix_(qi, Ri)]),
+                current[key][np.ix_(qi, Ri)],
+            ).T,
             origin="lower", aspect="auto", extent=extent,
-            cmap=cmap, vmin=vmin, vmax=vmax, interpolation="nearest",
+            cmap=cmap, norm=shared_norm, interpolation="nearest",
         )
-        _joint_contours(axis, obs, current["joint_log"], -np.log10(prep['focus_floor']))
+        contours.append(_joint_contours(
+            axis, obs, current["joint_log"][np.ix_(contour_qi, contour_Ri)],
+            -np.log10(prep['focus_floor']), q=obs["q"][contour_qi],
+            R=obs["R"][contour_Ri], color="black", halo_color="white",
+            compact=compact,
+        ))
         axis.set_facecolor(MASK_COLOR)
         axis.set_title(title, loc="left", fontweight="semibold",
                        fontsize=(5.5 if compact else 8.5))
@@ -2318,11 +2430,49 @@ def _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame, colorbars=True,
         axis.tick_params(labelsize=(5 if compact else 7), direction="in")
         images.append(image)
     if colorbars:
-        fig.colorbar(images[0], ax=list(axes[:3]), pad=0.018, extend='both',
-                     format=NUMBER_FORMATTER, label="shifted energy (Hartree)")
-        fig.colorbar(images[3], ax=list(axes[3:]), pad=0.018, extend='both',
-                     format=NUMBER_FORMATTER, label="geometric energy (Hartree)")
-    return images
+        scale = "symmetric log" if prep.get("color_scale") == "symlog" else "linear"
+        fig.colorbar(
+            images[0], ax=list(axes), pad=0.018, extend='both',
+            format=NUMBER_FORMATTER,
+            label=f"energy contribution (Hartree; shared {scale} scale)",
+        )
+    return {"images": images, "contours": contours}
+
+
+def _update_tdpes1_origin(state, axes, obs, ef_zero, prep, frame):
+    """Update image buffers and density contours without rebuilding axes."""
+    current = _tdpes1_origin_frame(obs, ef_zero, prep, frame)
+    keys = ("total", "wbo", "gd", "geo_q", "geo_R")
+    active, indices, limits = _frame_focus(obs, frame, prep["focus_floor"])
+    qi, Ri = indices
+    active_crop = active[np.ix_(qi, Ri)]
+    extent = [obs["q"][qi[0]], obs["q"][qi[-1]],
+              obs["R"][Ri[0]], obs["R"][Ri[-1]]]
+    contour_qi = qi[np.linspace(
+        0, len(qi)-1, min(len(qi), prep["contour_q_points"]), dtype=int,
+    )]
+    contour_Ri = Ri[np.linspace(
+        0, len(Ri)-1, min(len(Ri), prep["contour_R_points"]), dtype=int,
+    )]
+    artists = []
+    for index, (axis, image, key) in enumerate(zip(axes, state["images"], keys)):
+        cropped = current[key][np.ix_(qi, Ri)]
+        image.set_data(np.ma.masked_where(
+            ~active_crop | ~np.isfinite(cropped), cropped,
+        ).T)
+        image.set_extent(extent)
+        axis.set_xlim(limits[0])
+        axis.set_ylim(limits[1])
+        for collection in state["contours"][index].collections:
+            collection.remove()
+        state["contours"][index] = _joint_contours(
+            axis, obs, current["joint_log"][np.ix_(contour_qi, contour_Ri)],
+            -np.log10(prep["focus_floor"]), q=obs["q"][contour_qi],
+            R=obs["R"][contour_Ri], color="black", halo_color="white",
+        )
+        artists.append(image)
+        artists.extend(state["contours"][index].collections)
+    return artists
 
 
 def _tdpes1_origin_axes(fig, slot=None):
@@ -2335,67 +2485,85 @@ def _tdpes1_origin_axes(fig, slot=None):
     ]
 
 
-def render_tdpes1_origin(obs, ef_zero, outdir, args, snapshots):
-    prep = _tdpes1_origin_preparation(obs, ef_zero, args)
+def render_tdpes1_origin(obs, ef_fields, outdir, args, snapshots, *,
+                         stem="tdpes1_origin", gauge_label=None):
+    prep = _tdpes1_origin_preparation(obs, ef_fields, args)
     times = obs["times_fs"]
+    if gauge_label is None:
+        gauge_label = (
+            "positive-density gauge" if ef_fields.get("gauge") == "positive_density"
+            else "axial zero-potential gauge"
+        )
 
     def individual(frame):
         fig = plt.figure(figsize=(16.5, 9.2), constrained_layout=True)
         axes = _tdpes1_origin_axes(fig)
-        _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame)
+        _draw_tdpes1_origin(fig, axes, obs, ef_fields, prep, frame)
         fig.suptitle(
             f"Origin of first-level TDPES structure | t={times[frame]:.4f} fs\n"
-            "axial zero-potential gauge; contours are occupied physical density; "
+            f"{gauge_label}; contours are occupied physical density; "
             "link metrics are continuum-limit diagnostics",
             fontweight="bold",
         )
         return fig
 
     products = _save_individual_frames(
-        individual, snapshots, times, Path(outdir)/"tdpes1_origin_frames",
-        "tdpes1_origin", args.dpi,
+        individual, snapshots, times, Path(outdir)/f"{stem}_frames",
+        stem, args.dpi,
     )
     fig = plt.figure(figsize=(28.0, 16.0), constrained_layout=True)
+    summary_axes = []
     for slot, frame in zip(fig.add_gridspec(2, 4), snapshots):
         axes = _tdpes1_origin_axes(fig, slot)
-        _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, int(frame),
-                            colorbars=True, compact=True)
+        _draw_tdpes1_origin(fig, axes, obs, ef_fields, prep, int(frame),
+                            colorbars=False, compact=True)
+        summary_axes.append(axes)
         axes[0].text(0.98, 0.92, f"t={times[int(frame)]:.3f} fs",
                      transform=axes[0].transAxes, ha="right", va="top",
                      fontsize=5.5)
-    fig.suptitle("First-level TDPES origin: 8 representative times", fontweight="bold")
+    all_summary_axes = [axis for axes in summary_axes for axis in axes]
+    scale = "symmetric log" if prep.get("color_scale") == "symlog" else "linear"
+    fig.colorbar(ScalarMappable(
+        norm=_tdpes1_shared_norm(prep), cmap=SIGNED_CMAP,
+    ), ax=all_summary_axes, pad=0.008, shrink=0.72, extend='both',
+        format=NUMBER_FORMATTER,
+        label=f'energy contribution (Hartree; shared {scale} scale)')
+    fig.suptitle(
+        f"First-level TDPES origin ({gauge_label}): 8 representative times",
+        fontweight="bold",
+    )
     products.append(_save_figure(
-        fig, Path(outdir)/"tdpes1_origin_snapshots.png", args.dpi,
+        fig, Path(outdir)/f"{stem}_snapshots.png", args.dpi,
     ))
     if not args.no_animation:
         frames = _movie_frames(obs, args.max_frames)
         fig = plt.figure(figsize=(16.5, 9.2), constrained_layout=True)
         axes = _tdpes1_origin_axes(fig)
         title = fig.suptitle("", fontweight="bold")
-        fig.colorbar(ScalarMappable(norm=Normalize(-prep['signed_bound'], prep['signed_bound']),
-                                   cmap=SIGNED_CMAP), ax=axes[:3],
-                     pad=0.018, extend='both', format=NUMBER_FORMATTER,
-                     label='shifted energy (Hartree)')
-        fig.colorbar(ScalarMappable(norm=Normalize(*prep['geo_limits']), cmap=SIGNED_CMAP),
-                     ax=axes[3:], pad=0.018, extend='both',
-                     format=NUMBER_FORMATTER, label='geometric energy (Hartree)')
+        scale = "symmetric log" if prep.get("color_scale") == "symlog" else "linear"
+        fig.colorbar(ScalarMappable(
+            norm=_tdpes1_shared_norm(prep), cmap=SIGNED_CMAP,
+        ), ax=axes, pad=0.018, extend='both', format=NUMBER_FORMATTER,
+            label=f'energy contribution (Hartree; shared {scale} scale)')
+        state = _draw_tdpes1_origin(
+            fig, axes, obs, ef_fields, prep, int(frames[0]), colorbars=False,
+        )
 
         def update(number):
             frame = int(frames[number])
-            for axis in axes:
-                axis.clear()
-            _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame,
-                                colorbars=False)
+            artists = _update_tdpes1_origin(
+                state, axes, obs, ef_fields, prep, frame,
+            )
             title.set_text(
                 f"Origin of first-level TDPES structure | t={times[frame]:.4f} fs\n"
-                "total / weighted BO / GD / proton geometry / heavy geometry; link-metric limits"
+                f"{gauge_label}; total / weighted BO / GD / proton geometry / heavy geometry"
             )
-            return (*axes, title)
+            return (*artists, title)
 
         update(0)
         animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
         products.append(_save_analysis_movie(
-            animation, fig, outdir, "tdpes1_origin_movie", args,
+            animation, fig, outdir, f"{stem}_movie", args,
         ))
     return products, prep
 
@@ -2462,14 +2630,16 @@ def run(args):
         if "tdpes1" in selected:
             field_keys.extend((
                 "epsilon_1", "epsilon_1_gi", "epsilon_1_wbo",
-                "epsilon_2", "a", "b", "alpha",
             ))
         field_keys = tuple(dict.fromkeys(field_keys))
         link_keys = []
-        if "nested" in selected or "tdpes1" in selected:
+        if "nested" in selected:
             link_keys.extend(("sphi_q1", "sphi_R1", "sgamma_R1"))
-        elif "heavy" in selected:
-            link_keys.append("sgamma_R1")
+        else:
+            if "tdpes1" in selected:
+                link_keys.extend(("sphi_q1", "sphi_R1"))
+            if "heavy" in selected:
+                link_keys.append("sgamma_R1")
         ef = tdse_report._load_ef_fields(
             obs, field_keys=field_keys, link_keys=tuple(link_keys),
         )
@@ -2506,6 +2676,15 @@ def run(args):
         )
         products.extend(generated)
 
+    tdpes1_positive_prep = None
+    if "tdpes1" in selected and args.tdpes_gauges in ("positive", "both"):
+        generated, tdpes1_positive_prep = render_tdpes1_origin(
+            obs, ef, output, args, snapshots,
+            stem="tdpes1_origin_positive_gauge",
+            gauge_label="positive-density gauge",
+        )
+        products.extend(generated)
+
     alpha_positive = None
     branch_turns = None
     if "heavy" in selected:
@@ -2515,8 +2694,16 @@ def run(args):
         alpha_positive = alpha_positive.copy()
 
     nested_prep = None
-    if "nested" in selected or "tdpes1" in selected:
+    zero_tdpes_requested = (
+        "tdpes1" in selected and args.tdpes_gauges in ("zero", "both")
+    )
+    if "nested" in selected:
         tdse_report.transform_to_zero_potential_gauge(obs, ef)
+    elif zero_tdpes_requested:
+        # epsilon_1 depends only on the first gauge.  Avoid loading and
+        # transforming unrelated second-level trajectory arrays in this
+        # common TDPES1-only path.
+        tdse_report.transform_first_level_to_q_axial_gauge(obs, ef)
     if "nested" in selected:
         generated, nested_prep = render_nested_factorization(
             obs, ef, output, args, snapshots,
@@ -2524,11 +2711,14 @@ def run(args):
         products.extend(generated)
 
     tdpes1_prep = None
-    if "tdpes1" in selected:
+    if zero_tdpes_requested:
         generated, tdpes1_prep = render_tdpes1_origin(
-            obs, ef, output, args, snapshots,
+            obs, ef, output, args, snapshots, stem="tdpes1_origin",
+            gauge_label="axial zero-potential gauge",
         )
         products.extend(generated)
+    elif tdpes1_positive_prep is not None:
+        tdpes1_prep = tdpes1_positive_prep
 
     heavy_prep = None
     if "heavy" in selected:
@@ -2626,8 +2816,10 @@ def run(args):
     if tdpes1_prep is not None:
         manifest.extend((
             "tdpes1_panels=total,wBO,GD,q_geo,R_geo",
-            "tdpes1_gauge=axial_zero_potential",
-            "tdpes1_discrete_identity=E_total_ZP=E_GI_native+E_GD_ZP",
+            f"tdpes1_gauges_rendered={args.tdpes_gauges}",
+            "tdpes1_zero_gauge=axial_zero_potential",
+            "tdpes1_positive_gauge=positive_density",
+            "tdpes1_discrete_identity=E_total(gauge)=E_GI_native+E_GD(gauge)",
             "tdpes1_weighted_bo=sum_all_stored_abs(C_j)^2*E_j_BO",
             "tdpes1_q_metric=(1-abs(Sphi_q1)^2)/dq^2_site_centered",
             "tdpes1_R_metric=(1-abs(Sphi_R1)^2)/dR^2_site_centered",
@@ -2635,6 +2827,10 @@ def run(args):
             "tdpes1_warning=link_metrics_are_continuum_limit_diagnostics_not_termwise_finite_difference_replacements_of_the_native_discrete_GI_scalar",
             f"tdpes1_signed_bound={tdpes1_prep['signed_bound']:.16g}",
             f"tdpes1_geo_limits={tdpes1_prep['geo_limits']}",
+            f"tdpes1_shared_bound={tdpes1_prep['common_bound']:.16g}",
+            f"tdpes1_color_scale={tdpes1_prep['color_scale']}",
+            f"tdpes1_symlog_linear_threshold={tdpes1_prep['linear_threshold']:.16g}",
+            "tdpes1_density_contours=black_with_white_halo",
         ))
     if heavy_prep is not None:
         manifest.extend((
@@ -2696,6 +2892,24 @@ def parse_args(argv=None):
     parser.add_argument("--surface-count", type=int, default=2)
     parser.add_argument("--bo3d-q-points", type=int, default=144)
     parser.add_argument("--bo3d-R-points", type=int, default=108)
+    parser.add_argument("--movie-bo3d-q-points", type=int, default=72,
+                        help="BO3D movie-only proton mesh; snapshots keep --bo3d-q-points")
+    parser.add_argument("--movie-bo3d-R-points", type=int, default=54,
+                        help="BO3D movie-only heavy mesh; snapshots keep --bo3d-R-points")
+    parser.add_argument("--tdpes-contour-q-points", type=int, default=180,
+                        help="maximum q samples used only to trace movie density contours")
+    parser.add_argument("--tdpes-contour-R-points", type=int, default=120,
+                        help="maximum R samples used only to trace movie density contours")
+    parser.add_argument("--scale-sample-frames", type=int, default=32,
+                        help="evenly spaced frames used to choose robust display limits")
+    parser.add_argument("--tdpes-color-scale", choices=("symlog", "linear"),
+                        default="symlog",
+                        help="one shared TDPES1 norm; symlog reveals small early-time structure")
+    parser.add_argument("--tdpes-gauges", choices=("both", "positive", "zero"),
+                        default="both",
+                        help="TDPES1 origin products to render; zero keeps legacy filenames")
+    parser.add_argument("--movie-preset", choices=("ultrafast", "veryfast", "fast", "medium", "slow"),
+                        default="medium", help="libx264 encoding preset for analysis movies")
     parser.add_argument('--analysis-focus-floor', type=float, default=1e-2,
                         help='bo3d/tdpes1: show joint density >= this fraction of each frame peak')
     parser.add_argument("--no-animation", action="store_true")
@@ -2707,6 +2921,9 @@ def parse_args(argv=None):
         "decades", "support_floor", "marginal_ymax", "marginal_xmax",
         "surface_count", "velocity_q_points", "velocity_R_points",
         "bo3d_q_points", "bo3d_R_points",
+        "movie_bo3d_q_points", "movie_bo3d_R_points",
+        "tdpes_contour_q_points", "tdpes_contour_R_points",
+        "scale_sample_frames",
     )
     for name in positive:
         if not np.isfinite(getattr(args, name)) or getattr(args, name) <= 0:

@@ -1118,22 +1118,26 @@ def transform_second_level_to_zero_potential_gauge(obs, ef):
     return ef
 
 
-def transform_to_zero_potential_gauge(obs, ef):
-    """Transform loaded density-gauge fields to q/R axial gauges in place.
+def transform_first_level_to_q_axial_gauge(obs, ef):
+    """Apply only the first-level q-axial gauge needed by TDPES1 plots.
 
-    The non-periodic bonds are made real-positive.  A possible periodic
-    Wilson-loop phase is left on the closing seam, which is density-masked in
-    the reported trajectories.  Scalar potentials receive the matching
-    temporal gauge derivative; mechanical momenta are retained separately as
-    gauge-invariant diagnostics.
+    This is the first-level part of :func:`transform_to_zero_potential_gauge`.
+    Keeping it separate lets a TDPES1-only renderer avoid loading the large
+    second-level fields (epsilon_2, alpha, and sgamma links) that cannot affect
+    epsilon_1.  The gauge transformation and transformed q/R links are exactly
+    the same as in the complete transformation.
     """
-    if ef.get("gauge") == "zero_potential":
+    if ef.get("gauge") in ("first_level_q_axial", "zero_potential"):
         return ef
+    if "epsilon_1" not in ef:
+        raise KeyError("first-level gauge 변환에는 epsilon_1이 필요합니다")
     theta_1, q_anchor = _q_axial_phase(obs, ef)
     times_au = np.asarray(obs["times_fs"], float)*AU_PER_FS
 
-    ef["mechanical_q"] = ef["a"]
-    ef["mechanical_R_first"] = ef["b"]
+    if "a" in ef:
+        ef["mechanical_q"] = ef["a"]
+    if "b" in ef:
+        ef["mechanical_R_first"] = ef["b"]
     _add_time_derivative_in_place(ef["epsilon_1"], theta_1, times_au)
 
     for frame in range(len(times_au)):
@@ -1146,14 +1150,34 @@ def transform_to_zero_potential_gauge(obs, ef):
                 delta = np.roll(phase_1, -offset, axis=axis)-phase_1
                 ef[key][frame] *= np.exp(1j*delta)
 
-    # Reuse the large theta_1 buffer for the transformed q connection after
-    # its temporal derivative and all link transformations are complete.
-    theta_1[:] = np.angle(ef["sphi_q1"])/float(obs["dq"])
-    ef["a"] = theta_1
-    ef["b"] = np.angle(ef["sphi_R1"])/float(obs["dR"])
+    # Reuse theta_1 only when callers requested the transformed connection.
+    if "a" in ef:
+        theta_1[:] = np.angle(ef["sphi_q1"])/float(obs["dq"])
+        ef["a"] = theta_1
+    if "b" in ef and "sphi_R1" in ef:
+        ef["b"] = np.angle(ef["sphi_R1"])/float(obs["dR"])
+    ef["gauge"] = "first_level_q_axial"
+    ef["gauge_q_anchor_index"] = q_anchor
+    ef.pop("_prepared_geometry", None)
+    ef.pop("plot_limits", None)
+    ef.pop("_tdpes_decomposition_limits", None)
+    return ef
+
+
+def transform_to_zero_potential_gauge(obs, ef):
+    """Transform loaded density-gauge fields to q/R axial gauges in place.
+
+    The non-periodic bonds are made real-positive.  A possible periodic
+    Wilson-loop phase is left on the closing seam, which is density-masked in
+    the reported trajectories.  Scalar potentials receive the matching
+    temporal gauge derivative; mechanical momenta are retained separately as
+    gauge-invariant diagnostics.
+    """
+    if ef.get("gauge") == "zero_potential":
+        return ef
+    transform_first_level_to_q_axial_gauge(obs, ef)
     transform_second_level_to_zero_potential_gauge(obs, ef)
     ef["gauge"] = "zero_potential"
-    ef["gauge_q_anchor_index"] = q_anchor
     ef.pop("_prepared_geometry", None)
     ef.pop("plot_limits", None)
     ef.pop("_tdpes_decomposition_limits", None)
