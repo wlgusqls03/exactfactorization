@@ -334,6 +334,7 @@ class TDSEReportTests(unittest.TestCase):
                 obs,
                 field_keys=(
                     "epsilon_1", "epsilon_1_gi", "epsilon_1_wbo",
+                    "bo_channel_density_qR",
                     "epsilon_2", "a", "b", "alpha",
                 ),
                 link_keys=("sphi_q1", "sphi_R1", "sgamma_R1"),
@@ -346,6 +347,15 @@ class TDSEReportTests(unittest.TestCase):
             again = render_final_visualizations._tdpes1_origin_frame(obs, ef, prep, 1)
             self.assertTrue(np.array_equal(original_wbo, ef['epsilon_1_wbo']))
             self.assertTrue(np.array_equal(frame['wbo'], again['wbo']))
+            # Panels 1/2 refer to BO indices 0/1, with no independent shifts.
+            for state, key in enumerate(("wbo_1", "wbo_2")):
+                expected = (ef["bo_channel_density_qR"][1, state]
+                            /obs["joint_density"][1]*obs["bo_energies"][state])
+                np.testing.assert_allclose(frame[key], expected)
+            ef["bo_channel_density_qR"][1, 0] = 0
+            empty = render_final_visualizations._tdpes1_origin_frame(obs, ef, prep, 1)
+            np.testing.assert_array_equal(empty["wbo_1"], 0)
+            np.testing.assert_allclose(empty["wbo_2"], frame["wbo_2"])
             self.assertTrue(np.allclose(
                 10**frame['joint_log'], obs['joint_density'][1]/obs['joint_density'][1].max()))
             self.assertTrue(np.allclose(

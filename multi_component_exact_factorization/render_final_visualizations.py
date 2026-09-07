@@ -2312,8 +2312,15 @@ def _tdpes1_origin_frame(obs, ef_zero, prep, frame):
     geo_R = _site_link_metric(
         ef_zero["sphi_R1"][frame], obs["dR"], axis=1,
     )/(2.0*prep["heavy_mass"])
+    # Use physical channel density / joint density, not global populations.
+    # Keep the archive BO energy origin and do not renormalize the two states.
+    channels = np.asarray(ef_zero["bo_channel_density_qR"][frame, :2], float)
+    weights = np.divide(channels, density[None], out=np.zeros_like(channels),
+                        where=density[None] > 0)
+    contributions = weights*np.asarray(obs["bo_energies"][:2])
     return {
         "total": total, "wbo": wbo,
+        "wbo_1": contributions[0], "wbo_2": contributions[1],
         "native_gi": native_gi,
         "gi_limit": wbo+geo_q+geo_R,
         "geo_q": geo_q, "geo_R": geo_R, "gd": gd,
@@ -2323,6 +2330,13 @@ def _tdpes1_origin_frame(obs, ef_zero, prep, frame):
 
 
 def _tdpes1_origin_preparation(obs, ef_zero, args):
+    if ("bo_channel_density_qR" not in ef_zero
+            or ef_zero["bo_channel_density_qR"].shape[1] < 2
+            or np.asarray(obs.get("bo_energies")).ndim != 3
+            or len(obs["bo_energies"]) < 2):
+        raise ValueError("TDPES channel panels require two BO energies and "
+                         "bo_channel_density_qR; rebuild EF cache with "
+                         "--channel-density-states 2 --overwrite")
     floor = float(args.support_floor)
     proton_mass = float(obs["options"].get("proton_mass", 1836.15267343))
     heavy_mass = float(obs["options"].get("heavy_mass", 1836.15267343))
@@ -2345,7 +2359,7 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
     )):
         current = _tdpes1_origin_frame(obs, ef_zero, provisional, int(frame))
         support = obs['joint_density'][int(frame)] >= provisional['focus_floor']*np.max(obs['joint_density'][int(frame)])
-        for key in ("total", "wbo", "gd"):
+        for key in ("total", "wbo_1", "wbo_2", "gd"):
             values = np.abs(current[key][support & np.isfinite(current[key])])
             if values.size:
                 samples.append(float(np.percentile(values, 99.0)))
@@ -2367,17 +2381,19 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
     return provisional
 
 
+_TDPES1_KEYS = ("total", "wbo_1", "wbo_2", "gd", "geo_q", "geo_R")
 _TDPES1_TITLES = (
-    r"Total $\epsilon_{\rm total,ZP}^{(1)}$",
-    r"Weighted BO $\epsilon_{\rm wBO}^{(1)}=\sum_j|C_j|^2E_j^{\rm BO}$",
-    r"Gauge dependent $\epsilon_{\rm GD,ZP}^{(1)}$",
+    r"Total $\epsilon_{\rm total}^{(1)}$ (shifted)",
+    r"$\epsilon_{\rm wBO,1}^{(1)}=|C_0|^2E_0^{\rm BO}$ (ground)",
+    r"$\epsilon_{\rm wBO,2}^{(1)}=|C_1|^2E_1^{\rm BO}$ (first excited)",
+    r"Gauge dependent $\epsilon_{\rm GD}^{(1)}$",
     r"Proton geometry $\epsilon_{q,\rm geo}^{(1)}$ (link-metric limit)",
     r"Heavy geometry $\epsilon_{R,\rm geo}^{(1)}$ (link-metric limit)",
 )
 
 
 def _tdpes1_shared_norm(prep):
-    """One zero-centred norm shared by all five energy contributions."""
+    """One zero-centred norm shared by all six energy contributions."""
     bound = prep["common_bound"]
     if prep.get("color_scale", "symlog") == "linear":
         return Normalize(-bound, bound)
@@ -2405,7 +2421,7 @@ def _tdpes1_colorbar(fig, prep, cax):
 def _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame, colorbars=True,
                         compact=False, colorbar_axis=None):
     current = _tdpes1_origin_frame(obs, ef_zero, prep, frame)
-    keys = ("total", "wbo", "gd", "geo_q", "geo_R")
+    keys = _TDPES1_KEYS
     active, indices, limits = _frame_focus(obs, frame, prep['focus_floor'])
     qi, Ri = indices
     active_crop = active[np.ix_(qi, Ri)]
@@ -2454,7 +2470,7 @@ def _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame, colorbars=True,
 def _update_tdpes1_origin(state, axes, obs, ef_zero, prep, frame):
     """Update image buffers and density contours without rebuilding axes."""
     current = _tdpes1_origin_frame(obs, ef_zero, prep, frame)
-    keys = ("total", "wbo", "gd", "geo_q", "geo_R")
+    keys = _TDPES1_KEYS
     active, indices, limits = _frame_focus(obs, frame, prep["focus_floor"])
     qi, Ri = indices
     active_crop = active[np.ix_(qi, Ri)]
@@ -2488,7 +2504,7 @@ def _update_tdpes1_origin(state, axes, obs, ef_zero, prep, frame):
 
 
 def _tdpes1_origin_axes(fig, slot=None):
-    """Three scalar panels above two wider geometric panels.
+    """Six equally sized panels with a reserved colorbar margin.
 
     The full-frame layout deliberately reserves the right margin for a colorbar.
     Letting constrained-layout attach one colorbar to axes from two nested
@@ -2502,14 +2518,14 @@ def _tdpes1_origin_axes(fig, slot=None):
     else:
         grid = slot.subgridspec(2, 1, hspace=0.30)
     top = grid[0].subgridspec(1, 3, wspace=0.27)
-    bottom = grid[1].subgridspec(1, 2, wspace=0.20)
+    bottom = grid[1].subgridspec(1, 3, wspace=0.27)
     return [fig.add_subplot(top[i]) for i in range(3)] + [
-        fig.add_subplot(bottom[i]) for i in range(2)
+        fig.add_subplot(bottom[i]) for i in range(3)
     ]
 
 
 def _tdpes1_full_colorbar_axis(fig):
-    """Fixed colorbar slot shared by the five full-size TDPES panels."""
+    """Fixed colorbar slot shared by the six full-size TDPES panels."""
     return fig.add_axes((0.938, 0.145, 0.014, 0.645))
 
 
@@ -2582,7 +2598,7 @@ def render_tdpes1_origin(obs, ef_fields, outdir, args, snapshots, *,
             )
             title.set_text(
                 f"Origin of first-level TDPES structure | t={times[frame]:.4f} fs\n"
-                f"{gauge_label}; total / weighted BO / GD / proton geometry / heavy geometry"
+                f"{gauge_label}; BO contributions use archive energy origin; total is shifted"
             )
             return (*artists, title)
 
@@ -2656,6 +2672,7 @@ def run(args):
         if "tdpes1" in selected:
             field_keys.extend((
                 "epsilon_1", "epsilon_1_gi", "epsilon_1_wbo",
+                "bo_channel_density_qR",
             ))
         field_keys = tuple(dict.fromkeys(field_keys))
         link_keys = []
@@ -2841,7 +2858,8 @@ def run(args):
         ))
     if tdpes1_prep is not None:
         manifest.extend((
-            "tdpes1_panels=total,wBO,GD,q_geo,R_geo",
+            "tdpes1_panels=total,wBO_1,wBO_2,GD,q_geo,R_geo",
+            "tdpes1_channel_contributions=(rho_j/rho_qR)*E_j_BO; j=0,1; archive energy origin; no two-state renormalization",
             f"tdpes1_gauges_rendered={args.tdpes_gauges}",
             "tdpes1_zero_gauge=axial_zero_potential",
             "tdpes1_positive_gauge=positive_density",

@@ -444,6 +444,15 @@ near-1080p CRF 18 / medium preset이다. 더 빠른 재생성은
 지정한다. weighted BO와 link-metric geometry는 gauge invariant하고 두 출력에서
 같으며, total과 GD 패널이 gauge transformation에 따라 달라진다.
 
+TDPES origin은 2×3 패널: total, wBO 1 (ground, BO index 0),
+wBO 2 (first excited, BO index 1), GD, q geometry, R geometry이다.
+각 wBO 기여는 `(bo_channel_density_qR[j]/joint_density)*bo_energies[j]`로
+계산한다. 두 상태를 재정규화하거나 개별 에너지 평균을 빼지 않으며,
+저장된 BO 에너지 원점을 사용한다. 다른 상태 기여는 이 두 패널에 포함되지 않는다.
+기존 total의 표시용 상수 이동은 유지한다. 모든 패널은 공통 색상 척도를 쓰며,
+`symlog`의 작은 눈금은 Hartree 단위 에너지이지 density cutoff가 아니다.
+EF cache에는 최소 2개 `bo_channel_density_qR` 채널이 필요하다.
+
 교수님 분석용 nested-factorization 4-panel만 다시 만들려면 다음을 사용한다.
 
 ```bash
