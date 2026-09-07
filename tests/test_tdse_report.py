@@ -295,8 +295,16 @@ class TDSEReportTests(unittest.TestCase):
             self.assertEqual(args.tdpes_gauges, "positive")
             self.assertEqual(args.tdpes_color_scale, "linear")
             self.assertFalse((output/"tdpes1_origin_snapshots.png").exists())
-            self.assertIn("nested_potential_gauge=positive_density",
-                          (output/"final_visualizations_manifest.txt").read_text())
+            manifest = (output/"final_visualizations_manifest.txt").read_text()
+            self.assertIn("nested_potential_gauge=positive_density", manifest)
+            self.assertIn(
+                "default_scalar_vector_gauge=positive_density", manifest,
+            )
+            self.assertIn(
+                "zero_potential_gauge_usage="
+                "heavy_force_from_minus_partial_R_epsilon_2_only",
+                manifest,
+            )
 
     def test_bo3d_and_tdpes1_only_commands_write_movies_and_snapshots(self):
         with TemporaryDirectory() as temporary:
@@ -332,7 +340,7 @@ class TDSEReportTests(unittest.TestCase):
         metric = render_final_visualizations._site_link_metric(reduced, 0.2, axis=1)
         self.assertTrue(np.all(metric > 0.0))
 
-    def test_tdpes1_origin_keeps_discrete_identity_separate_from_link_limit(self):
+    def test_tdpes1_origin_uses_one_origin_and_closes_displayed_identity(self):
         with TemporaryDirectory() as temporary:
             archive, _ = self._write_archive(temporary)
             obs = tdse_report.calculate_observables(tdse_report.load_observables(archive))
@@ -353,21 +361,37 @@ class TDSEReportTests(unittest.TestCase):
             again = render_final_visualizations._tdpes1_origin_frame(obs, ef, prep, 1)
             self.assertTrue(np.array_equal(original_wbo, ef['epsilon_1_wbo']))
             self.assertTrue(np.array_equal(frame['wbo'], again['wbo']))
-            # Panels 1/2 refer to BO indices 0/1, with no independent shifts.
-            for state, key in enumerate(("wbo_1", "wbo_2")):
-                expected = (ef["bo_channel_density_qR"][1, state]
-                            /obs["joint_density"][1]*obs["bo_energies"][state])
-                np.testing.assert_allclose(frame[key], expected)
+            p0 = ef["bo_channel_density_qR"][1, 0]/obs["joint_density"][1]
+            p1 = ef["bo_channel_density_qR"][1, 1]/obs["joint_density"][1]
+            reference = frame["energy_reference"]
+            np.testing.assert_allclose(
+                frame["wbo_1"], p0*(obs["bo_energies"][0]-reference),
+            )
+            np.testing.assert_allclose(
+                frame["wbo_2_pure"], p1*(obs["bo_energies"][1]-reference),
+            )
+            np.testing.assert_allclose(
+                frame["wbo_2"], frame["wbo"]-frame["wbo_1"],
+            )
+            np.testing.assert_allclose(
+                frame["wbo_higher"], frame["wbo_2"]-frame["wbo_2_pure"],
+            )
             ef["bo_channel_density_qR"][1, 0] = 0
             empty = render_final_visualizations._tdpes1_origin_frame(obs, ef, prep, 1)
             np.testing.assert_array_equal(empty["wbo_1"], 0)
-            np.testing.assert_allclose(empty["wbo_2"], frame["wbo_2"])
             self.assertTrue(np.allclose(
                 10**frame['joint_log'], obs['joint_density'][1]/obs['joint_density'][1].max()))
             self.assertTrue(np.allclose(
-                frame["total"], frame["native_gi"]+frame["gd"],
+                frame["native_total"], frame["native_gi"]+frame["gd_raw"],
                 rtol=0.0, atol=2.0e-15,
             ))
+            self.assertTrue(np.allclose(
+                frame["total"],
+                frame["wbo_1"]+frame["wbo_2"]+frame["gd"]
+                +frame["geo_q"]+frame["geo_R"],
+                rtol=0.0, atol=2.0e-15,
+            ))
+            self.assertLess(np.max(np.abs(frame["identity_residual"])), 2.0e-15)
             self.assertTrue(np.allclose(
                 frame["gi_limit"],
                 frame["wbo"]+frame["geo_q"]+frame["geo_R"],

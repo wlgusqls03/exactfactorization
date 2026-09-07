@@ -381,9 +381,9 @@ python -m multi_component_exact_factorization.render_tdse_tdpes_gauges \
   --dpi 180 --animation-dpi 110 --surface-count 2
 ```
 
-기본적으로 positive-density/zero-potential gauge를 모두 덮어쓴다. 하나만
-필요하면 ``--gauge positive`` 또는 ``--gauge zero``를 사용하고, 정적 PNG만
-필요하면 ``--no-animation``을 추가한다.
+기본 출력은 positive-density gauge만 사용한다. 별도의 gauge 비교 진단이
+명시적으로 필요할 때만 ``--gauge both`` 또는 ``--gauge zero``를 사용하고,
+정적 PNG만 필요하면 ``--no-animation``을 추가한다.
 
 ### 논문용 final visualization 묶음
 
@@ -428,10 +428,9 @@ BO 3D와 first-level TDPES origin 영상은 고정 artist/축을 재사용하고
 고밀도 support만 갱신한다. TDPES 첫 패널은 논문 Fig. 3과 같은 해석 문법,
 즉 signed TDPES color map 위에 physical joint density의 검은 등고선을
 중첩한다. 기본 ``--analysis-focus-floor 1e-2`` 밖의 tail은 회색으로 숨기고
-표시 범위는 점유 영역을 따라간다. 다섯 energy 패널은 하나의 공통 colorbar와
-0-centered symmetric-log scale을 써서 큰 late-time GD 구조가 있더라도 작은
-초기 BO 곡률이 흰색에 묻히지 않게 한다. 정확한 선형 비교가 필요하면
-TDPES origin의 기본 색상 척도는 ``--tdpes-color-scale linear``이다.
+표시 범위는 점유 영역을 따라간다. 여섯 energy 패널은 하나의 공통 colorbar와
+0-centered scale을 쓴다. TDPES origin의 기본 색상 척도는 항별 크기를 직접
+비교할 수 있는 ``--tdpes-color-scale linear``이다.
 작은 구조를 확대해서 확인할 때만 ``--tdpes-color-scale symlog``를 쓴다.
 속도와 선명도의 균형을 위한 기본 encoding은
 near-1080p CRF 18 / medium preset이다. 더 빠른 재생성은
@@ -446,16 +445,21 @@ near-1080p CRF 18 / medium preset이다. 더 빠른 재생성은
 지정한다. weighted BO와 link-metric geometry는 gauge invariant하고 두 출력에서
 같으며, total과 GD 패널이 gauge transformation에 따라 달라진다.
 Nested-factorization도 positive-density gauge의 TDPES를 사용한다.
-Final visualization의 heavy force 분석만 second-level zero-potential gauge로
-변환하며, 함께 표시하는 momentum은 positive gauge이다.
+기본 시각화 정책은 scalar/vector potential을 모두 positive-density gauge로
+그리는 것이다. 유일한 예외는 heavy force 분석의
+``-partial_R epsilon^(2)``로, 이 항을 평가할 때만 second-level
+zero-potential gauge로 변환한다. 같은 heavy 패널의 ``alpha``는 변환 전
+positive-gauge mechanical momentum이다.
 일반 TDSE report와 별도 TDPES gauge renderer의 기본값도 positive이다.
 
-TDPES origin은 2×3 패널: total, wBO 1 (ground, BO index 0),
-wBO 2 (first excited, BO index 1), GD, q geometry, R geometry이다.
-각 wBO 기여는 `(bo_channel_density_qR[j]/joint_density)*bo_energies[j]`로
-계산한다. 두 상태를 재정규화하거나 개별 에너지 평균을 빼지 않으며,
-저장된 BO 에너지 원점을 사용한다. 다른 상태 기여는 이 두 패널에 포함되지 않는다.
-기존 total의 표시용 상수 이동은 유지한다. 모든 패널은 공통 색상 척도를 쓰며,
+TDPES origin은 2×3 패널: reconstructed total, wBO 1 (ground),
+wBO 2+ (first excited를 포함한 모든 excited BO 채널), GD, q geometry,
+R geometry이다. 하나의 density-weighted `E_ref(t)`를 모든 BO surface와
+total에 동일하게 적용한다. 따라서 표시된 격자점마다
+`total = wBO_1 + wBO_2plus + GD + q_geo + R_geo`가 roundoff까지 성립한다.
+`wBO_1=|C_0|^2(E_0-E_ref)`이고 `wBO_2plus=sum_(j>=1)|C_j|^2(E_j-E_ref)`이다.
+두 번째 항에 함께 묶인 ``j>=2`` 기여의 최대값은 manifest에 기록한다.
+모든 패널은 공통 색상 척도를 쓰며,
 `symlog`를 명시했을 때 나타나는 작은 눈금은 Hartree 단위 에너지이지
 density cutoff가 아니다.
 EF cache에는 최소 2개 `bo_channel_density_qR` 채널이 필요하다.
@@ -469,8 +473,8 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 ```
 
 네 패널은 ``rho_ep(x,q)=int dR |Psi|^2``,
-``rho(q|R)=rho_qR/rho_R``, zero-potential-gauge ``epsilon^(1)(q,R)`` 위의
-physical joint-density contour, zero-potential-gauge ``epsilon^(2)(R)``와 heavy
+``rho(q|R)=rho_qR/rho_R``, positive-density-gauge ``epsilon^(1)(q,R)`` 위의
+physical joint-density contour, positive-density-gauge ``epsilon^(2)(R)``와 heavy
 density silhouette이다. 위의 두 density panel은 frame별 peak로 재정규화하지
 않고 전체 trajectory에 고정한 absolute linear density scale과 물리 단위를
 사용한다. 원자료를 평활화하지 않는다. 2D TDPES는 음수=파랑, 0=흰색,

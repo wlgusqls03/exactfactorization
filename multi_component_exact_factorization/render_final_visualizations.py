@@ -1122,14 +1122,14 @@ def _conditional_proton_density(obs, frame):
     return conditional
 
 
-def _nested_frame(obs, ef_zero, frame, args):
+def _nested_frame(obs, ef_positive, frame, args):
     joint = obs["joint_density"][frame]
     heavy = obs["heavy_density"][frame]
     conditional = _conditional_proton_density(obs, frame)
     heavy_opacity = density_display_alpha(heavy, args.support_floor)
     return {
         "electron_proton": np.maximum(
-            np.asarray(ef_zero["electron_proton_density"][frame], float), 0.0,
+            np.asarray(ef_positive["electron_proton_density"][frame], float), 0.0,
         ),
         "conditional": conditional,
         "conditional_opacity": np.broadcast_to(
@@ -1140,10 +1140,10 @@ def _nested_frame(obs, ef_zero, frame, args):
         ),
         "joint_opacity": density_display_alpha(joint, args.support_floor),
         "epsilon_1": density_weighted_shift(
-            ef_zero["epsilon_1"][frame], joint, args.support_floor,
+            ef_positive["epsilon_1"][frame], joint, args.support_floor,
         ),
         "epsilon_2": density_weighted_shift(
-            ef_zero["epsilon_2"][frame], heavy, args.support_floor,
+            ef_positive["epsilon_2"][frame], heavy, args.support_floor,
         ),
         "heavy_support": (
             heavy
@@ -1152,8 +1152,8 @@ def _nested_frame(obs, ef_zero, frame, args):
     }
 
 
-def _nested_preparation(obs, ef_zero, args):
-    electron_proton = np.asarray(ef_zero["electron_proton_density"], float)
+def _nested_preparation(obs, ef_positive, args):
+    electron_proton = np.asarray(ef_positive["electron_proton_density"], float)
     expected = (len(obs["times_fs"]), len(obs["x"]), len(obs["q"]))
     if electron_proton.shape != expected:
         raise ValueError(
@@ -1162,12 +1162,12 @@ def _nested_preparation(obs, ef_zero, args):
         )
     frames = _movie_frames(obs, args.max_frames)
     epsilon_1_limits = _robust_shifted_symmetric_limits(
-        [ef_zero["epsilon_1"][int(frame)] for frame in frames],
+        [ef_positive["epsilon_1"][int(frame)] for frame in frames],
         [obs["joint_density"][int(frame)] for frame in frames],
         args.support_floor,
     )
     epsilon_2_limits = _robust_shifted_limits(
-        [ef_zero["epsilon_2"][int(frame)] for frame in frames],
+        [ef_positive["epsilon_2"][int(frame)] for frame in frames],
         [obs["heavy_density"][int(frame)] for frame in frames],
         args.support_floor,
     )
@@ -1289,10 +1289,10 @@ def _heavy_silhouette(axis, R, density, compact=False):
     return fill, line
 
 
-def _draw_nested_composite(fig, axes, obs, ef_zero, prep, frame, args, *,
+def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
                            colorbars=True, compact=False):
     q, R, x = obs["q"], obs["R"], obs["x"]
-    current = _nested_frame(obs, ef_zero, frame, args)
+    current = _nested_frame(obs, ef_positive, frame, args)
     density_extent = [x[0], x[-1], q[0], q[-1]]
     qR_extent = [q[0], q[-1], R[0], R[-1]]
 
@@ -1404,8 +1404,8 @@ def _draw_nested_composite(fig, axes, obs, ef_zero, prep, frame, args, *,
     }
 
 
-def _update_nested_composite(state, obs, ef_zero, prep, frame, args):
-    current = _nested_frame(obs, ef_zero, frame, args)
+def _update_nested_composite(state, obs, ef_positive, prep, frame, args):
+    current = _nested_frame(obs, ef_positive, frame, args)
     state["electron_proton_image"].set_data(
         current["electron_proton"].T,
     )
@@ -1441,17 +1441,17 @@ def _update_nested_composite(state, obs, ef_zero, prep, frame, args):
     state["heavy_line"].set_ydata(0.23*normalized)
 
 
-def render_nested_factorization(obs, ef_zero, outdir, args, snapshots):
+def render_nested_factorization(obs, ef_positive, outdir, args, snapshots):
     if obs.get("electron_density") is None or obs.get("x") is None:
         raise KeyError(
             "nested analysis에는 electron marginal과 x grid가 필요합니다"
         )
-    prep = _nested_preparation(obs, ef_zero, args)
+    prep = _nested_preparation(obs, ef_positive, args)
     times = obs["times_fs"]
 
     def individual(frame):
         fig, axes = _new_nested_axes()
-        _draw_nested_composite(fig, axes, obs, ef_zero, prep, frame, args)
+        _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args)
         fig.suptitle(
             "Nested factorization: correlated densities and exact potentials | "
             f"t={times[frame]:.4f} fs\n"
@@ -1473,7 +1473,7 @@ def render_nested_factorization(obs, ef_zero, outdir, args, snapshots):
             compact=True, subplot_spec=slot, figure=fig,
         )
         _draw_nested_composite(
-            fig, axes, obs, ef_zero, prep, int(frame), args,
+            fig, axes, obs, ef_positive, prep, int(frame), args,
             colorbars=False, compact=True,
         )
         axes["electron_proton"].text(
@@ -1495,19 +1495,19 @@ def render_nested_factorization(obs, ef_zero, outdir, args, snapshots):
         first = int(frames[0])
         fig, axes = _new_nested_axes()
         state = _draw_nested_composite(
-            fig, axes, obs, ef_zero, prep, first, args,
+            fig, axes, obs, ef_positive, prep, first, args,
         )
         title = fig.suptitle("", fontweight="bold")
 
         def update(number):
             frame = int(frames[number])
             _update_nested_composite(
-                state, obs, ef_zero, prep, frame, args,
+                state, obs, ef_positive, prep, frame, args,
             )
             title.set_text(
                 "Nested factorization: correlated densities and exact "
                 f"potentials | t={times[frame]:.4f} fs\n"
-                "absolute densities on trajectory-fixed scales; axial "
+                "absolute densities on trajectory-fixed scales; "
                 "positive-density gauge; no smoothing"
             )
             return (
@@ -2293,37 +2293,54 @@ def _site_link_metric(link, spacing, axis):
 
 def _tdpes1_origin_frame(obs, ef_zero, prep, frame):
     density = obs["joint_density"][frame]
-    total = density_weighted_shift(
-        ef_zero["epsilon_1"][frame], density, prep["floor"],
-    )
+    native_total = np.asarray(ef_zero["epsilon_1"][frame], float)
     native_gi = np.asarray(ef_zero["epsilon_1_gi"][frame], float)
-    wbo = np.array(ef_zero["epsilon_1_wbo"][frame], dtype=float, copy=True)
-    # Match the arbitrary additive energy origin of weighted BO to total only;
-    # no spatial feature is altered.
+    wbo_raw = np.asarray(ef_zero["epsilon_1_wbo"][frame], float)
     support = density >= prep["floor"]*max(float(np.max(density)), 1.0e-300)
-    offset = np.average((native_gi-total)[support], weights=density[support]) if np.any(support) else 0.0
-    native_gi = native_gi-offset
-    # Put wBO on the same arbitrary scalar origin as the native GI term.
-    wbo -= np.average((wbo-native_gi)[support], weights=density[support]) if np.any(support) else 0.0
-    gd = total-native_gi
+    # The native discrete scalar satisfies native_total=native_gi+gd_raw.
+    # Its link magnitudes encode the continuum geometric scalar inside the
+    # hopping operator.  The plotted continuum-limit decomposition therefore
+    # reconstructs total=wBO+q_geo+R_geo+GD from one consistent origin.
+    gd_raw = native_total-native_gi
     geo_q = _site_link_metric(
         ef_zero["sphi_q1"][frame], obs["dq"], axis=0,
     )/(2.0*prep["proton_mass"])
     geo_R = _site_link_metric(
         ef_zero["sphi_R1"][frame], obs["dR"], axis=1,
     )/(2.0*prep["heavy_mass"])
+    total_raw = wbo_raw+geo_q+geo_R+gd_raw
+    energy_reference = (
+        np.average(total_raw[support], weights=density[support])
+        if np.any(support) else 0.0
+    )
+    total = total_raw-energy_reference
+
     # Use physical channel density / joint density, not global populations.
-    # Keep the archive BO energy origin and do not renormalize the two states.
+    # Apply the same energy reference to every BO surface.  The second plotted
+    # BO panel is the complete j>=1 sector, so the six displayed panels remain
+    # an exact identity even when the propagation retained more than 2 states.
     channels = np.asarray(ef_zero["bo_channel_density_qR"][frame, :2], float)
     weights = np.divide(channels, density[None], out=np.zeros_like(channels),
                         where=density[None] > 0)
-    contributions = weights*np.asarray(obs["bo_energies"][:2])
+    energies = np.asarray(obs["bo_energies"][:2], float)
+    ground = weights[0]*(energies[0]-energy_reference)
+    first_excited = weights[1]*(energies[1]-energy_reference)
+    wbo = wbo_raw-energy_reference
+    excited_sector = wbo-ground
+    higher_bo = excited_sector-first_excited
+    identity_residual = total-(
+        ground+excited_sector+gd_raw+geo_q+geo_R
+    )
     return {
         "total": total, "wbo": wbo,
-        "wbo_1": contributions[0], "wbo_2": contributions[1],
+        "wbo_1": ground, "wbo_2": excited_sector,
+        "wbo_2_pure": first_excited, "wbo_higher": higher_bo,
         "native_gi": native_gi,
         "gi_limit": wbo+geo_q+geo_R,
-        "geo_q": geo_q, "geo_R": geo_R, "gd": gd,
+        "native_total": native_total, "gd_raw": gd_raw,
+        "geo_q": geo_q, "geo_R": geo_R, "gd": gd_raw,
+        "energy_reference": energy_reference,
+        "identity_residual": identity_residual,
         "opacity": density_display_alpha(density, floor=prep["floor"]),
         "joint_log": np.log10(np.maximum(density/max(float(np.max(density)), 1e-300), 1e-300)),
     }
@@ -2354,6 +2371,7 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
         "contour_R_points": int(getattr(args, "tdpes_contour_R_points", 120)),
     }
     samples, geo_samples = [], []
+    identity_errors, higher_bo_sizes = [], []
     for frame in _movie_frames(obs, min(
         args.max_frames, getattr(args, "scale_sample_frames", 32),
     )):
@@ -2367,25 +2385,45 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
             values = current[key][support & np.isfinite(current[key])]
             if values.size:
                 geo_samples.append(float(np.percentile(values, 99.0)))
+        if np.any(support):
+            identity_errors.append(float(np.max(np.abs(
+                current["identity_residual"][support]
+            ))))
+            higher_bo_sizes.append(float(np.max(np.abs(
+                current["wbo_higher"][support]
+            ))))
     signed_bound = max(max(samples, default=0.0), 1.0e-10)
     geo_all = np.asarray(geo_samples) if geo_samples else np.array([0.0, 1.0e-10])
     geo_bound = max(float(np.max(np.abs(geo_all))), 1.0e-10)
     geo_limits = (-geo_bound, geo_bound)
     common_bound = max(signed_bound, geo_bound)
+    max_identity_residual = max(identity_errors, default=0.0)
+    closure_tolerance = 256.0*np.finfo(np.float64).eps*max(
+        common_bound, 1.0,
+    )
+    if max_identity_residual > closure_tolerance:
+        raise RuntimeError(
+            "displayed TDPES decomposition does not close: "
+            f"max residual={max_identity_residual:.6e}, "
+            f"tolerance={closure_tolerance:.6e}"
+        )
     provisional.update({
         "signed_bound": signed_bound, "geo_limits": geo_limits,
         "common_bound": common_bound,
         "linear_threshold": max(1.0e-2*common_bound, 1.0e-12),
         "color_scale": getattr(args, "tdpes_color_scale", "linear"),
+        "max_identity_residual": max_identity_residual,
+        "identity_tolerance": closure_tolerance,
+        "max_higher_bo_contribution": max(higher_bo_sizes, default=0.0),
     })
     return provisional
 
 
 _TDPES1_KEYS = ("total", "wbo_1", "wbo_2", "gd", "geo_q", "geo_R")
 _TDPES1_TITLES = (
-    r"Total $\epsilon_{\rm total}^{(1)}$ (shifted)",
-    r"$\epsilon_{\rm wBO,1}^{(1)}=|C_0|^2E_0^{\rm BO}$ (ground)",
-    r"$\epsilon_{\rm wBO,2}^{(1)}=|C_1|^2E_1^{\rm BO}$ (first excited)",
+    r"Total $\widetilde\epsilon_{\rm total}^{(1)}$ (continuum-limit reconstruction)",
+    r"$\epsilon_{\rm wBO,1}^{(1)}=|C_0|^2(E_0^{\rm BO}-E_{\rm ref})$",
+    r"$\epsilon_{\rm wBO,2+}^{(1)}=\sum_{j\geq1}|C_j|^2(E_j^{\rm BO}-E_{\rm ref})$",
     r"Gauge dependent $\epsilon_{\rm GD}^{(1)}$",
     r"Proton geometry $\epsilon_{q,\rm geo}^{(1)}$ (link-metric limit)",
     r"Heavy geometry $\epsilon_{R,\rm geo}^{(1)}$ (link-metric limit)",
@@ -2854,7 +2892,13 @@ def run(args):
     if tdpes1_prep is not None:
         manifest.extend((
             "tdpes1_panels=total,wBO_1,wBO_2,GD,q_geo,R_geo",
-            "tdpes1_channel_contributions=(rho_j/rho_qR)*E_j_BO; j=0,1; archive energy origin; no two-state renormalization",
+            "tdpes1_identity=total=wBO_1+wBO_2plus+GD+q_geo+R_geo",
+            "tdpes1_energy_origin=one_density_weighted_E_ref_applied_to_every_BO_surface_and_total",
+            "tdpes1_wBO_1=abs(C_0)^2*(E_0_BO-E_ref)",
+            "tdpes1_wBO_2plus=sum_j_ge_1_abs(C_j)^2*(E_j_BO-E_ref)",
+            f"tdpes1_max_identity_residual={tdpes1_prep['max_identity_residual']:.16g}",
+            f"tdpes1_identity_tolerance={tdpes1_prep['identity_tolerance']:.16g}",
+            f"tdpes1_max_grouped_j_ge_2_BO_contribution={tdpes1_prep['max_higher_bo_contribution']:.16g}",
             f"tdpes1_gauges_rendered={args.tdpes_gauges}",
             "tdpes1_zero_gauge=axial_zero_potential",
             "tdpes1_positive_gauge=positive_density",
@@ -2862,7 +2906,7 @@ def run(args):
             "tdpes1_weighted_bo=sum_all_stored_abs(C_j)^2*E_j_BO",
             "tdpes1_q_metric=(1-abs(Sphi_q1)^2)/dq^2_site_centered",
             "tdpes1_R_metric=(1-abs(Sphi_R1)^2)/dR^2_site_centered",
-            "tdpes1_continuum_limit_interpretation=E_wBO+q_metric/(2m_q)+R_metric/(2M)",
+            "tdpes1_continuum_limit_interpretation=E_wBO+q_metric/(2m_q)+R_metric/(2M)+GD",
             "tdpes1_warning=link_metrics_are_continuum_limit_diagnostics_not_termwise_finite_difference_replacements_of_the_native_discrete_GI_scalar",
             f"tdpes1_signed_bound={tdpes1_prep['signed_bound']:.16g}",
             f"tdpes1_geo_limits={tdpes1_prep['geo_limits']}",
@@ -2888,6 +2932,10 @@ def run(args):
             f"heavy_trap_center={heavy_prep['trap_center']:.16g}",
             f"heavy_R_limits={heavy_prep['R_limits']}",
         ))
+    manifest.extend((
+        "default_scalar_vector_gauge=positive_density",
+        "zero_potential_gauge_usage=heavy_force_from_minus_partial_R_epsilon_2_only",
+    ))
     manifest_path = output/"final_visualizations_manifest.txt"
     manifest_path.write_text("\n".join(manifest)+"\n", encoding="utf-8")
     products.append(manifest_path)
