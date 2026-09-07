@@ -2376,7 +2376,7 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
         "signed_bound": signed_bound, "geo_limits": geo_limits,
         "common_bound": common_bound,
         "linear_threshold": max(1.0e-2*common_bound, 1.0e-12),
-        "color_scale": getattr(args, "tdpes_color_scale", "symlog"),
+        "color_scale": getattr(args, "tdpes_color_scale", "linear"),
     })
     return provisional
 
@@ -2395,7 +2395,7 @@ _TDPES1_TITLES = (
 def _tdpes1_shared_norm(prep):
     """One zero-centred norm shared by all six energy contributions."""
     bound = prep["common_bound"]
-    if prep.get("color_scale", "symlog") == "linear":
+    if prep.get("color_scale", "linear") == "linear":
         return Normalize(-bound, bound)
     return SymLogNorm(
         linthresh=prep["linear_threshold"], linscale=0.65,
@@ -2942,8 +2942,8 @@ def parse_args(argv=None):
     parser.add_argument("--scale-sample-frames", type=int, default=32,
                         help="evenly spaced frames used to choose robust display limits")
     parser.add_argument("--tdpes-color-scale", choices=("symlog", "linear"),
-                        default="symlog",
-                        help="one shared TDPES1 norm; symlog reveals small early-time structure")
+                        default="linear",
+                        help="one shared TDPES1 norm; linear is the readable default, symlog reveals small structure")
     parser.add_argument("--tdpes-gauges", choices=("both", "positive", "zero"),
                         default="positive",
                         help="TDPES1 origin products to render; zero keeps legacy filenames")

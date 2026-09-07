@@ -431,7 +431,9 @@ BO 3D와 first-level TDPES origin 영상은 고정 artist/축을 재사용하고
 표시 범위는 점유 영역을 따라간다. 다섯 energy 패널은 하나의 공통 colorbar와
 0-centered symmetric-log scale을 써서 큰 late-time GD 구조가 있더라도 작은
 초기 BO 곡률이 흰색에 묻히지 않게 한다. 정확한 선형 비교가 필요하면
-``--tdpes-color-scale linear``를 쓸 수 있다. 속도와 선명도의 균형을 위한 기본 encoding은
+TDPES origin의 기본 색상 척도는 ``--tdpes-color-scale linear``이다.
+작은 구조를 확대해서 확인할 때만 ``--tdpes-color-scale symlog``를 쓴다.
+속도와 선명도의 균형을 위한 기본 encoding은
 near-1080p CRF 18 / medium preset이다. 더 빠른 재생성은
 ``--movie-preset fast --max-frames 160``을, 더 조밀한 BO movie mesh는
 ``--movie-bo3d-q-points``와 ``--movie-bo3d-R-points``를 사용한다. 이 옵션들은
@@ -454,7 +456,8 @@ wBO 2 (first excited, BO index 1), GD, q geometry, R geometry이다.
 계산한다. 두 상태를 재정규화하거나 개별 에너지 평균을 빼지 않으며,
 저장된 BO 에너지 원점을 사용한다. 다른 상태 기여는 이 두 패널에 포함되지 않는다.
 기존 total의 표시용 상수 이동은 유지한다. 모든 패널은 공통 색상 척도를 쓰며,
-`symlog`의 작은 눈금은 Hartree 단위 에너지이지 density cutoff가 아니다.
+`symlog`를 명시했을 때 나타나는 작은 눈금은 Hartree 단위 에너지이지
+density cutoff가 아니다.
 EF cache에는 최소 2개 `bo_channel_density_qR` 채널이 필요하다.
 
 교수님 분석용 nested-factorization 4-panel만 다시 만들려면 다음을 사용한다.

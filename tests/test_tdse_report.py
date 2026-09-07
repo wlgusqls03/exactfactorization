@@ -293,6 +293,7 @@ class TDSEReportTests(unittest.TestCase):
                 self.assertEqual(len(list((output/directory).glob("*.png"))), 2)
             self.assertGreaterEqual(len(products), 25)
             self.assertEqual(args.tdpes_gauges, "positive")
+            self.assertEqual(args.tdpes_color_scale, "linear")
             self.assertFalse((output/"tdpes1_origin_snapshots.png").exists())
             self.assertIn("nested_potential_gauge=positive_density",
                           (output/"final_visualizations_manifest.txt").read_text())
