@@ -72,8 +72,8 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run", help="TDSE 계산 폴더 또는 archive")
     parser.add_argument(
-        "--gauge", choices=("both", "positive", "zero"), default="both",
-        help="재생성할 gauge (기본값: both)",
+        "--gauge", choices=("both", "positive", "zero"), default="positive",
+        help="재생성할 gauge (기본값: positive)",
     )
     parser.add_argument(
         "--outdir", default="",

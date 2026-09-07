@@ -437,12 +437,16 @@ near-1080p CRF 18 / medium preset이다. 더 빠른 재생성은
 ``--movie-bo3d-q-points``와 ``--movie-bo3d-R-points``를 사용한다. 이 옵션들은
 렌더링 sampling/encoding만 바꾸며 저장된 물리량은 변경하지 않는다.
 
-``--only tdpes1``은 기본적으로 두 gauge를 모두 만든다. 기존 이름
+``--only tdpes1``은 기본적으로 positive gauge만 만든다. 기존 이름
 ``tdpes1_origin_movie.mp4``는 axial zero-potential gauge이고,
 ``tdpes1_origin_positive_gauge_movie.mp4``는 저장된 positive-density gauge이다.
-한쪽만 필요하면 ``--tdpes-gauges positive`` 또는 ``--tdpes-gauges zero``를
+두 gauge가 필요하면 ``--tdpes-gauges both``, zero만 필요하면 ``--tdpes-gauges zero``를
 지정한다. weighted BO와 link-metric geometry는 gauge invariant하고 두 출력에서
 같으며, total과 GD 패널이 gauge transformation에 따라 달라진다.
+Nested-factorization도 positive-density gauge의 TDPES를 사용한다.
+Final visualization의 heavy force 분석만 second-level zero-potential gauge로
+변환하며, 함께 표시하는 momentum은 positive gauge이다.
+일반 TDSE report와 별도 TDPES gauge renderer의 기본값도 positive이다.
 
 TDPES origin은 2×3 패널: total, wBO 1 (ground, BO index 0),
 wBO 2 (first excited, BO index 1), GD, q geometry, R geometry이다.

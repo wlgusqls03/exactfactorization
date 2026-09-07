@@ -1344,7 +1344,7 @@ def _draw_nested_composite(fig, axes, obs, ef_zero, prep, frame, args, *,
         xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
     )
     axes["epsilon_1"].set_title(
-        r"First TDPES $\epsilon_{\rm ZP}^{(1)}(q,R)$ + $\rho_{qR}$ contours "
+        r"First TDPES $\epsilon_{\rm PG}^{(1)}(q,R)$ + $\rho_{qR}$ contours "
         r"(denser inward)",
         loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
     )
@@ -1354,7 +1354,7 @@ def _draw_nested_composite(fig, axes, obs, ef_zero, prep, frame, args, *,
         axes["epsilon_2"], R,
         np.where(support, current["epsilon_2"], np.nan),
         current["epsilon_2"], support, color=COLORS[0],
-        label=r"$\epsilon_{\rm ZP}^{(2)}(R,t)$",
+        label=r"$\epsilon_{\rm PG}^{(2)}(R,t)$",
         linewidth=(1.0 if compact else 2.2),
     )
     heavy_fill, heavy_line = _heavy_silhouette(
@@ -1366,7 +1366,7 @@ def _draw_nested_composite(fig, axes, obs, ef_zero, prep, frame, args, *,
         xlabel=r"heavy $R$ ($a_0$)", ylabel="shifted energy (Hartree)",
     )
     axes["epsilon_2"].set_title(
-        r"Second TDPES $\epsilon_{\rm ZP}^{(2)}(R)$ and heavy support",
+        r"Second TDPES $\epsilon_{\rm PG}^{(2)}(R)$ and heavy support",
         loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
     )
     axes["epsilon_2"].grid(alpha=0.16)
@@ -1456,7 +1456,7 @@ def render_nested_factorization(obs, ef_zero, outdir, args, snapshots):
             "Nested factorization: correlated densities and exact potentials | "
             f"t={times[frame]:.4f} fs\n"
             r"absolute densities: trajectory-fixed linear scales; potentials: "
-            r"axial zero-potential gauge; contours: physical $\rho_{qR}$",
+            r"positive-density gauge; contours: physical $\rho_{qR}$",
             fontweight="bold",
         )
         return fig
@@ -1508,7 +1508,7 @@ def render_nested_factorization(obs, ef_zero, outdir, args, snapshots):
                 "Nested factorization: correlated densities and exact "
                 f"potentials | t={times[frame]:.4f} fs\n"
                 "absolute densities on trajectory-fixed scales; axial "
-                "zero-potential gauge; no smoothing"
+                "positive-density gauge; no smoothing"
             )
             return (
                 state["electron_proton_image"],
@@ -2741,13 +2741,6 @@ def run(args):
         "tdpes1" in selected and args.tdpes_gauges in ("zero", "both")
     )
     if "nested" in selected:
-        tdse_report.transform_to_zero_potential_gauge(obs, ef)
-    elif zero_tdpes_requested:
-        # epsilon_1 depends only on the first gauge.  Avoid loading and
-        # transforming unrelated second-level trajectory arrays in this
-        # common TDPES1-only path.
-        tdse_report.transform_first_level_to_q_axial_gauge(obs, ef)
-    if "nested" in selected:
         generated, nested_prep = render_nested_factorization(
             obs, ef, output, args, snapshots,
         )
@@ -2755,6 +2748,9 @@ def run(args):
 
     tdpes1_prep = None
     if zero_tdpes_requested:
+        # All default density/potential products have consumed positive fields.
+        # Only explicitly requested zero-gauge TDPES is transformed here.
+        tdse_report.transform_first_level_to_q_axial_gauge(obs, ef)
         generated, tdpes1_prep = render_tdpes1_origin(
             obs, ef, output, args, snapshots, stem="tdpes1_origin",
             gauge_label="axial zero-potential gauge",
@@ -2765,8 +2761,7 @@ def run(args):
 
     heavy_prep = None
     if "heavy" in selected:
-        if "nested" not in selected:
-            tdse_report.transform_second_level_to_zero_potential_gauge(obs, ef)
+        tdse_report.transform_second_level_to_zero_potential_gauge(obs, ef)
         generated, heavy_prep = render_heavy_analysis(
             obs, ef, alpha_positive, output, args, snapshots,
         )
@@ -2822,7 +2817,7 @@ def run(args):
         ))
     if nested_prep is not None:
         manifest.extend((
-            "nested_potential_gauge=axial_zero_potential",
+            "nested_potential_gauge=positive_density",
             "electron_proton_density=integral_dR_abs_Psi_squared",
             "conditional_proton_density=joint_density/heavy_density",
             "nested_density_display=absolute_linear_trajectory_fixed",
@@ -2950,7 +2945,7 @@ def parse_args(argv=None):
                         default="symlog",
                         help="one shared TDPES1 norm; symlog reveals small early-time structure")
     parser.add_argument("--tdpes-gauges", choices=("both", "positive", "zero"),
-                        default="both",
+                        default="positive",
                         help="TDPES1 origin products to render; zero keeps legacy filenames")
     parser.add_argument("--movie-preset", choices=("ultrafast", "veryfast", "fast", "medium", "slow"),
                         default="medium", help="libx264 encoding preset for analysis movies")

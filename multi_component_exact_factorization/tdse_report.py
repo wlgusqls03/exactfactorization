@@ -2493,7 +2493,7 @@ def make_coordinate_focus_animations(
 def run(archive, outdir, *, dpi=180, no_animation=False, fps=12,
         max_frames=180, animation_dpi=110, fmt="mp4", snapshot_count=6,
         marginal_ymax=1.5, marginal_xmax=12.0, surface_count=2,
-        gauge_mode="both"):
+        gauge_mode="positive"):
     outdir = Path(outdir)
     if gauge_mode == "both":
         for selected_gauge in ("positive", "zero"):

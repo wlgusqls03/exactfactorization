@@ -109,7 +109,7 @@ class TDSEReportTests(unittest.TestCase):
             report = root/"report"
             obs = tdse_report.run(
                 archive, report, no_animation=True, dpi=45,
-                snapshot_count=3,
+                snapshot_count=3, gauge_mode="both",
             )
             self.assertTrue(np.array_equal(obs["joint_density"], joint))
             for gauge in ("positive_gauge", "zero_potential_gauge"):
@@ -145,7 +145,7 @@ class TDSEReportTests(unittest.TestCase):
             tdse_report.run(
                 archive, report, no_animation=False, dpi=35,
                 snapshot_count=2, max_frames=2, animation_dpi=25,
-                fps=2, fmt="gif",
+                fps=2, fmt="gif", gauge_mode="both",
             )
             for gauge in ("positive_gauge", "zero_potential_gauge"):
                 for name in (
@@ -244,7 +244,7 @@ class TDSEReportTests(unittest.TestCase):
             output = root/"gauge_only"
             args = render_tdse_tdpes_gauges.parse_args([
                 str(root), "--outdir", str(output), "--no-animation",
-                "--dpi", "35", "--surface-count", "2",
+                "--dpi", "35", "--surface-count", "2", "--gauge", "both",
             ])
             products = render_tdse_tdpes_gauges.run(args)
             self.assertEqual(len(products), 2)
@@ -274,7 +274,7 @@ class TDSEReportTests(unittest.TestCase):
                 "heavy_analysis_snapshots.png",
                 "bo_combined_snapshots.png",
                 "bo_3d_channel_dynamics_snapshots.png",
-                "tdpes1_origin_snapshots.png",
+                "tdpes1_origin_positive_gauge_snapshots.png",
                 "final_visualizations_manifest.txt",
             ):
                 self.assertTrue((output/name).is_file(), name)
@@ -288,10 +288,14 @@ class TDSEReportTests(unittest.TestCase):
                 "heavy_analysis_frames",
                 "bo_combined_frames",
                 "bo_3d_channel_frames",
-                "tdpes1_origin_frames",
+                "tdpes1_origin_positive_gauge_frames",
             ):
                 self.assertEqual(len(list((output/directory).glob("*.png"))), 2)
             self.assertGreaterEqual(len(products), 25)
+            self.assertEqual(args.tdpes_gauges, "positive")
+            self.assertFalse((output/"tdpes1_origin_snapshots.png").exists())
+            self.assertIn("nested_potential_gauge=positive_density",
+                          (output/"final_visualizations_manifest.txt").read_text())
 
     def test_bo3d_and_tdpes1_only_commands_write_movies_and_snapshots(self):
         with TemporaryDirectory() as temporary:
@@ -300,6 +304,7 @@ class TDSEReportTests(unittest.TestCase):
             output = root/"new_analysis"
             args = render_final_visualizations.parse_args([
                 str(root), "--outdir", str(output), "--only", "bo3d", "tdpes1",
+                "--tdpes-gauges", "both",
                 "--format", "gif", "--snapshot-count", "2", "--max-frames", "2",
                 "--dpi", "30", "--animation-dpi", "25", "--fps", "2",
                 "--bo3d-q-points", "5", "--bo3d-R-points", "7",
