@@ -339,7 +339,13 @@ class TDSEReportTests(unittest.TestCase):
             tdse_report.transform_to_zero_potential_gauge(obs, ef)
             args = argparse.Namespace(support_floor=1.0e-4, decades=6.0, max_frames=3)
             prep = render_final_visualizations._tdpes1_origin_preparation(obs, ef, args)
+            original_wbo = ef['epsilon_1_wbo'].copy()
             frame = render_final_visualizations._tdpes1_origin_frame(obs, ef, prep, 1)
+            again = render_final_visualizations._tdpes1_origin_frame(obs, ef, prep, 1)
+            self.assertTrue(np.array_equal(original_wbo, ef['epsilon_1_wbo']))
+            self.assertTrue(np.array_equal(frame['wbo'], again['wbo']))
+            self.assertTrue(np.allclose(
+                10**frame['joint_log'], obs['joint_density'][1]/obs['joint_density'][1].max()))
             self.assertTrue(np.allclose(
                 frame["total"], frame["native_gi"]+frame["gd"],
                 rtol=0.0, atol=2.0e-15,
@@ -349,6 +355,20 @@ class TDSEReportTests(unittest.TestCase):
                 frame["wbo"]+frame["geo_q"]+frame["geo_R"],
                 rtol=0.0, atol=2.0e-15,
             ))
+
+    def test_analysis_focus_tracks_moving_support_and_keeps_branches(self):
+        q = np.arange(100, dtype=float)
+        R = np.arange(40, dtype=float)
+        rho = np.full((2, 100, 40), 1e-8)
+        rho[0, 20:24, 10:13] = 1
+        rho[1, 60:64, 25:28] = 1
+        rho[1, 75:78, 25:28] = .1
+        obs = {'q': q, 'R': R, 'joint_density': rho}
+        active, _, first = render_final_visualizations._frame_focus(obs, 0, .01)
+        _, _, last = render_final_visualizations._frame_focus(obs, 1, .01)
+        self.assertFalse(active[0, 0])
+        self.assertLess(first[0][1], last[0][0])
+        self.assertGreaterEqual(last[0][1], 77)
 
     def test_nested_factorization_only_command_writes_movie_and_snapshots(self):
         with TemporaryDirectory() as temporary:

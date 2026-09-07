@@ -14,7 +14,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as path_effects
-from matplotlib.animation import FuncAnimation
+from matplotlib.animation import FuncAnimation, FFMpegWriter
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 import numpy as np
@@ -2022,6 +2022,39 @@ def render_bo_combined(obs, ef, outdir, args, snapshots):
 # 6. Two physical BO-channel densities on the fixed two-dimensional BOPES
 
 
+def _frame_focus(obs, frame, floor):
+    """Bounding box of all occupied branches, with padding in grid cells."""
+    density = obs['joint_density'][frame]
+    active = np.isfinite(density) & (density >= floor*max(float(np.max(density)), 1e-300))
+    limits = []
+    indices = []
+    for coordinate, occupied in ((obs['q'], np.any(active, axis=1)),
+                                 (obs['R'], np.any(active, axis=0))):
+        found = np.flatnonzero(occupied)
+        if not found.size:
+            found = np.arange(len(coordinate))
+        pad = max(2, int(np.ceil(0.08*(found[-1]-found[0]+1))))
+        start, stop = max(0, found[0]-pad), min(len(coordinate), found[-1]+pad+1)
+        indices.append(np.arange(start, stop))
+        limits.append((float(coordinate[start]), float(coordinate[stop-1])))
+    return active, indices, limits
+
+
+def _save_analysis_movie(animation, fig, outdir, stem, args):
+    """Quality-based encoding for dense scientific plots, no bitrate ceiling."""
+    if args.format == 'mp4' and FFMpegWriter.isAvailable():
+        path = Path(outdir)/f'{stem}.mp4'
+        writer = FFMpegWriter(fps=args.fps, codec='libx264', bitrate=-1,
+                             extra_args=['-crf', '17', '-preset', 'slow',
+                                         '-pix_fmt', 'yuv420p', '-vf',
+                                         'pad=ceil(iw/2)*2:ceil(ih/2)*2'])
+        animation.save(path, writer=writer, dpi=max(150, args.animation_dpi))
+        plt.close(fig)
+        return path
+    return tdse_report._save_animation(animation, fig, outdir, stem,
+                                      args.fps, args.animation_dpi, args.format)
+
+
 def _bo3d_preparation(obs, ef, args):
     energies = np.asarray(obs.get("bo_energies"), float)
     channel = np.asarray(ef.get("bo_channel_density_qR"), float)
@@ -2057,11 +2090,17 @@ def _bo3d_preparation(obs, ef, args):
         "packet_lift": 0.30*span, "density_max": density_max,
         "q_limits": q_limits, "R_limits": R_limits,
         "floor": float(args.support_floor),
+        "focus_floor": args.analysis_focus_floor,
+        "q_points": args.bo3d_q_points,
+        "R_points": args.bo3d_R_points,
     }
 
 
 def _draw_bo3d_axis(axis, obs, prep, frame, states, compact=False):
-    qi, Ri = prep["q_indices"], prep["R_indices"]
+    active, indices, limits = _frame_focus(obs, frame, prep['focus_floor'])
+    qi, Ri = indices
+    qi = qi[np.linspace(0, len(qi)-1, min(len(qi), prep['q_points']), dtype=int)]
+    Ri = Ri[np.linspace(0, len(Ri)-1, min(len(Ri), prep['R_points']), dtype=int)]
     Q, RR = np.meshgrid(obs["q"][qi], obs["R"][Ri], indexing="ij")
     for state in states:
         energy = prep["energies"][state][np.ix_(qi, Ri)]
@@ -2069,9 +2108,10 @@ def _draw_bo3d_axis(axis, obs, prep, frame, states, compact=False):
         relative = density/prep["density_max"]
         axis.plot_surface(
             Q, RR, energy, color=COLORS[state % len(COLORS)], alpha=0.18,
-            linewidth=0.0, antialiased=False, shade=False,
+            linewidth=0.0, antialiased=True, shade=False,
+            rcount=len(qi), ccount=len(Ri),
         )
-        occupied = relative >= prep["floor"]
+        occupied = active[np.ix_(qi, Ri)] & (relative >= prep['floor'])
         lifted = np.where(
             occupied, energy+prep["packet_lift"]*np.sqrt(relative), np.nan,
         )
@@ -2079,10 +2119,10 @@ def _draw_bo3d_axis(axis, obs, prep, frame, states, compact=False):
         face[..., 3] = np.where(occupied, 0.35+0.65*np.clip(relative**0.18, 0, 1), 0)
         axis.plot_surface(
             Q, RR, lifted, facecolors=face, linewidth=0.0,
-            antialiased=False, shade=False,
+            antialiased=True, shade=False, rcount=len(qi), ccount=len(Ri),
         )
     axis.set(
-        xlim=prep["q_limits"], ylim=prep["R_limits"],
+        xlim=limits[0], ylim=limits[1],
         zlim=prep["energy_limits"], xlabel=r"proton $q$ ($a_0$)",
         ylabel=r"heavy $R$ ($a_0$)", zlabel="BO energy (Hartree)",
     )
@@ -2157,9 +2197,8 @@ def render_bo3d_channels(obs, ef, outdir, args, snapshots):
 
         update(0)
         animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
-        products.append(tdse_report._save_animation(
-            animation, fig, outdir, "bo_3d_channel_dynamics_movie",
-            args.fps, args.animation_dpi, args.format,
+        products.append(_save_analysis_movie(
+            animation, fig, outdir, "bo_3d_channel_dynamics_movie", args,
         ))
     return products, prep
 
@@ -2180,7 +2219,7 @@ def _tdpes1_origin_frame(obs, ef_zero, prep, frame):
         ef_zero["epsilon_1"][frame], density, prep["floor"],
     )
     native_gi = np.asarray(ef_zero["epsilon_1_gi"][frame], float)
-    wbo = np.asarray(ef_zero["epsilon_1_wbo"][frame], float)
+    wbo = np.array(ef_zero["epsilon_1_wbo"][frame], dtype=float, copy=True)
     # Match the arbitrary additive energy origin of weighted BO to total only;
     # no spatial feature is altered.
     support = density >= prep["floor"]*max(float(np.max(density)), 1.0e-300)
@@ -2201,7 +2240,7 @@ def _tdpes1_origin_frame(obs, ef_zero, prep, frame):
         "gi_limit": wbo+geo_q+geo_R,
         "geo_q": geo_q, "geo_R": geo_R, "gd": gd,
         "opacity": density_display_alpha(density, floor=prep["floor"]),
-        "joint_log": tdse_collision_report._relative_log(density, 6.0),
+        "joint_log": np.log10(np.maximum(density/max(float(np.max(density)), 1e-300), 1e-300)),
     }
 
 
@@ -2212,6 +2251,7 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
     provisional = {
         "floor": floor, "proton_mass": proton_mass, "heavy_mass": heavy_mass,
         "decades": float(args.decades),
+        "focus_floor": getattr(args, 'analysis_focus_floor', 1e-2),
         "q_limits": _support_limits(
             obs["q"], obs["proton_density"], floor, padding=0.08,
         ),
@@ -2222,66 +2262,65 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
     samples, geo_samples = [], []
     for frame in _movie_frames(obs, args.max_frames):
         current = _tdpes1_origin_frame(obs, ef_zero, provisional, int(frame))
-        support = current["opacity"] > 0.05
-        for key in ("total", "wbo", "gi_limit", "gd"):
+        support = obs['joint_density'][int(frame)] >= provisional['focus_floor']*np.max(obs['joint_density'][int(frame)])
+        for key in ("total", "wbo"):
             values = np.abs(current[key][support & np.isfinite(current[key])])
             if values.size:
-                samples.append(values)
+                samples.append(float(np.percentile(values, 99.0)))
         for key in ("geo_q", "geo_R"):
             values = current[key][support & np.isfinite(current[key])]
             if values.size:
-                geo_samples.append(values)
-    signed_bound = max(float(np.percentile(np.concatenate(samples), 99.0)), 1.0e-10)
-    geo_all = np.concatenate(geo_samples) if geo_samples else np.array([0.0, 1.0e-10])
-    geo_limits = (float(np.percentile(geo_all, 1.0)),
-                  max(float(np.percentile(geo_all, 99.0)), 1.0e-10))
+                geo_samples.append(float(np.percentile(values, 99.0)))
+    signed_bound = max(max(samples, default=0.0), 1.0e-10)
+    geo_all = np.asarray(geo_samples) if geo_samples else np.array([0.0, 1.0e-10])
+    geo_bound = max(float(np.max(np.abs(geo_all))), 1.0e-10)
+    geo_limits = (-geo_bound, geo_bound)
     provisional.update({"signed_bound": signed_bound, "geo_limits": geo_limits})
     return provisional
 
 
 _TDPES1_TITLES = (
-    r"Discrete total $E_{\rm total,ZP}^{(1)}=E_{\rm GI,d}^{(1)}+E_{\rm GD,ZP}^{(1)}$",
-    r"Weighted BO $E_{\rm wBO}^{(1)}=\sum_j|C_j|^2E_j^{\rm BO}$",
-    r"Continuum-limit GI diagnostic $E_{\rm wBO}^{(1)}+\epsilon_{q,geo}^{(1)}+\epsilon_{R,geo}^{(1)}$",
-    r"$\epsilon_{q,geo}^{(1)}\simeq(1-|S_q^\Phi|^2)/(2m_q\,dq^2)$",
-    r"$\epsilon_{R,geo}^{(1)}\simeq(1-|S_R^\Phi|^2)/(2M\,dR^2)$",
-    r"Discrete GD $E_{\rm GD,ZP}^{(1)}=E_{\rm total,ZP}^{(1)}-E_{\rm GI,d}^{(1)}$",
+    r"Total $\epsilon_{\rm total,ZP}^{(1)}$",
+    r"Weighted BO $\epsilon_{\rm wBO}^{(1)}=\sum_j|C_j|^2E_j^{\rm BO}$",
+    r"Proton geometry $\epsilon_{q,\rm geo}^{(1)}$ (link-metric limit)",
+    r"Heavy geometry $\epsilon_{R,\rm geo}^{(1)}$ (link-metric limit)",
 )
 
 
 def _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame, colorbars=True,
                         compact=False):
     current = _tdpes1_origin_frame(obs, ef_zero, prep, frame)
-    keys = ("total", "wbo", "gi_limit", "geo_q", "geo_R", "gd")
+    keys = ("total", "wbo", "geo_q", "geo_R")
+    active, _, limits = _frame_focus(obs, frame, prep['focus_floor'])
     images = []
     extent = [obs["q"][0], obs["q"][-1], obs["R"][0], obs["R"][-1]]
     for index, (axis, key, title) in enumerate(zip(axes, keys, _TDPES1_TITLES)):
         if key in ("geo_q", "geo_R"):
             vmin, vmax = prep["geo_limits"]
-            cmap = "magma"
+            cmap = masked_cmap(SIGNED_CMAP)
         else:
             vmin, vmax = -prep["signed_bound"], prep["signed_bound"]
             cmap = masked_cmap(SIGNED_CMAP)
         image = axis.imshow(
-            current[key].T, origin="lower", aspect="auto", extent=extent,
+            np.ma.masked_where(~active | ~np.isfinite(current[key]), current[key]).T,
+            origin="lower", aspect="auto", extent=extent,
             cmap=cmap, vmin=vmin, vmax=vmax, interpolation="nearest",
-            alpha=current["opacity"].T,
         )
-        _joint_contours(axis, obs, current["joint_log"], prep["decades"])
+        _joint_contours(axis, obs, current["joint_log"], -np.log10(prep['focus_floor']))
         axis.set_facecolor(MASK_COLOR)
         axis.set_title(title, loc="left", fontweight="semibold",
                        fontsize=(5.5 if compact else 8.5))
         axis.set_xlabel(r"proton $q$ ($a_0$)")
         axis.set_ylabel(r"heavy $R$ ($a_0$)")
-        axis.set_xlim(prep["q_limits"])
-        axis.set_ylim(prep["R_limits"])
+        axis.set_xlim(limits[0])
+        axis.set_ylim(limits[1])
         axis.tick_params(labelsize=(5 if compact else 7), direction="in")
         images.append(image)
     if colorbars:
-        fig.colorbar(images[0], ax=list(axes[:3])+[axes[5]], pad=0.012,
+        fig.colorbar(images[0], ax=list(axes[:2]), pad=0.018, extend='both',
                      format=NUMBER_FORMATTER, label="shifted energy (Hartree)")
-        fig.colorbar(images[3], ax=list(axes[3:5]), pad=0.012,
-                     format=NUMBER_FORMATTER, label="link-metric energy (Hartree)")
+        fig.colorbar(images[2], ax=list(axes[2:]), pad=0.018, extend='both',
+                     format=NUMBER_FORMATTER, label="geometric energy (Hartree)")
     return images
 
 
@@ -2290,7 +2329,7 @@ def render_tdpes1_origin(obs, ef_zero, outdir, args, snapshots):
     times = obs["times_fs"]
 
     def individual(frame):
-        fig, axes = plt.subplots(2, 3, figsize=(16.5, 9.2), constrained_layout=True)
+        fig, axes = plt.subplots(2, 2, figsize=(13.2, 9.2), constrained_layout=True)
         _draw_tdpes1_origin(fig, axes.ravel(), obs, ef_zero, prep, frame)
         fig.suptitle(
             f"Origin of first-level TDPES structure | t={times[frame]:.4f} fs\n"
@@ -2306,10 +2345,10 @@ def render_tdpes1_origin(obs, ef_zero, outdir, args, snapshots):
     )
     fig = plt.figure(figsize=(28.0, 16.0), constrained_layout=True)
     for slot, frame in zip(fig.add_gridspec(2, 4), snapshots):
-        inner = slot.subgridspec(2, 3, wspace=0.05, hspace=0.15)
-        axes = [fig.add_subplot(inner[i, j]) for i in range(2) for j in range(3)]
+        inner = slot.subgridspec(2, 2, wspace=0.05, hspace=0.15)
+        axes = [fig.add_subplot(inner[i, j]) for i in range(2) for j in range(2)]
         _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, int(frame),
-                            colorbars=False, compact=True)
+                            colorbars=True, compact=True)
         axes[0].text(0.98, 0.92, f"t={times[int(frame)]:.3f} fs",
                      transform=axes[0].transAxes, ha="right", va="top",
                      fontsize=5.5)
@@ -2319,8 +2358,15 @@ def render_tdpes1_origin(obs, ef_zero, outdir, args, snapshots):
     ))
     if not args.no_animation:
         frames = _movie_frames(obs, args.max_frames)
-        fig, axes = plt.subplots(2, 3, figsize=(16.5, 9.2), constrained_layout=True)
+        fig, axes = plt.subplots(2, 2, figsize=(13.2, 9.2), constrained_layout=True)
         title = fig.suptitle("", fontweight="bold")
+        fig.colorbar(ScalarMappable(norm=Normalize(-prep['signed_bound'], prep['signed_bound']),
+                                   cmap=SIGNED_CMAP), ax=list(axes[0]),
+                     pad=0.018, extend='both', format=NUMBER_FORMATTER,
+                     label='shifted energy (Hartree)')
+        fig.colorbar(ScalarMappable(norm=Normalize(*prep['geo_limits']), cmap=SIGNED_CMAP),
+                     ax=list(axes[1]), pad=0.018, extend='both',
+                     format=NUMBER_FORMATTER, label='geometric energy (Hartree)')
 
         def update(number):
             frame = int(frames[number])
@@ -2330,15 +2376,14 @@ def render_tdpes1_origin(obs, ef_zero, outdir, args, snapshots):
                                 colorbars=False)
             title.set_text(
                 f"Origin of first-level TDPES structure | t={times[frame]:.4f} fs\n"
-                "exact discrete total/wBO/GD; q/R link metrics are continuum-limit diagnostics"
+                "total / weighted BO / proton geometry / heavy geometry; link-metric limits"
             )
             return (*axes.ravel(), title)
 
         update(0)
         animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
-        products.append(tdse_report._save_animation(
-            animation, fig, outdir, "tdpes1_origin_movie",
-            args.fps, args.animation_dpi, args.format,
+        products.append(_save_analysis_movie(
+            animation, fig, outdir, "tdpes1_origin_movie", args,
         ))
     return products, prep
 
@@ -2493,6 +2538,8 @@ def run(args):
 
     manifest = [
         f"source_archive={archive}",
+        f"analysis_focus_floor={args.analysis_focus_floor}",
+        "analysis_focus=per_frame_joint_density_peak_relative_bounding_box",
         "snapshot_frames="+",".join(str(int(frame)) for frame in snapshots),
         "snapshot_times_fs="+",".join(
             f"{obs['times_fs'][int(frame)]:.12g}" for frame in snapshots
@@ -2566,6 +2613,7 @@ def run(args):
         ))
     if tdpes1_prep is not None:
         manifest.extend((
+            "tdpes1_panels=total,wBO,q_geo,R_geo",
             "tdpes1_gauge=axial_zero_potential",
             "tdpes1_discrete_identity=E_total_ZP=E_GI_native+E_GD_ZP",
             "tdpes1_weighted_bo=sum_all_stored_abs(C_j)^2*E_j_BO",
@@ -2634,10 +2682,14 @@ def parse_args(argv=None):
     parser.add_argument("--heavy-min", type=float, default=5.0)
     parser.add_argument("--heavy-max", type=float, default=15.0)
     parser.add_argument("--surface-count", type=int, default=2)
-    parser.add_argument("--bo3d-q-points", type=int, default=72)
-    parser.add_argument("--bo3d-R-points", type=int, default=54)
+    parser.add_argument("--bo3d-q-points", type=int, default=144)
+    parser.add_argument("--bo3d-R-points", type=int, default=108)
+    parser.add_argument('--analysis-focus-floor', type=float, default=1e-2,
+                        help='bo3d/tdpes1: show joint density >= this fraction of each frame peak')
     parser.add_argument("--no-animation", action="store_true")
     args = parser.parse_args(argv)
+    if not 0 < args.analysis_focus_floor < 1:
+        parser.error('--analysis-focus-floor must lie strictly between 0 and 1')
     positive = (
         "fps", "max_frames", "snapshot_count", "dpi", "animation_dpi",
         "decades", "support_floor", "marginal_ymax", "marginal_xmax",
