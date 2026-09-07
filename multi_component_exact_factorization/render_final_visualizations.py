@@ -2263,7 +2263,7 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
     for frame in _movie_frames(obs, args.max_frames):
         current = _tdpes1_origin_frame(obs, ef_zero, provisional, int(frame))
         support = obs['joint_density'][int(frame)] >= provisional['focus_floor']*np.max(obs['joint_density'][int(frame)])
-        for key in ("total", "wbo"):
+        for key in ("total", "wbo", "gd"):
             values = np.abs(current[key][support & np.isfinite(current[key])])
             if values.size:
                 samples.append(float(np.percentile(values, 99.0)))
@@ -2282,6 +2282,7 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
 _TDPES1_TITLES = (
     r"Total $\epsilon_{\rm total,ZP}^{(1)}$",
     r"Weighted BO $\epsilon_{\rm wBO}^{(1)}=\sum_j|C_j|^2E_j^{\rm BO}$",
+    r"Gauge dependent $\epsilon_{\rm GD,ZP}^{(1)}$",
     r"Proton geometry $\epsilon_{q,\rm geo}^{(1)}$ (link-metric limit)",
     r"Heavy geometry $\epsilon_{R,\rm geo}^{(1)}$ (link-metric limit)",
 )
@@ -2290,7 +2291,7 @@ _TDPES1_TITLES = (
 def _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame, colorbars=True,
                         compact=False):
     current = _tdpes1_origin_frame(obs, ef_zero, prep, frame)
-    keys = ("total", "wbo", "geo_q", "geo_R")
+    keys = ("total", "wbo", "gd", "geo_q", "geo_R")
     active, _, limits = _frame_focus(obs, frame, prep['focus_floor'])
     images = []
     extent = [obs["q"][0], obs["q"][-1], obs["R"][0], obs["R"][-1]]
@@ -2317,11 +2318,21 @@ def _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame, colorbars=True,
         axis.tick_params(labelsize=(5 if compact else 7), direction="in")
         images.append(image)
     if colorbars:
-        fig.colorbar(images[0], ax=list(axes[:2]), pad=0.018, extend='both',
+        fig.colorbar(images[0], ax=list(axes[:3]), pad=0.018, extend='both',
                      format=NUMBER_FORMATTER, label="shifted energy (Hartree)")
-        fig.colorbar(images[2], ax=list(axes[2:]), pad=0.018, extend='both',
+        fig.colorbar(images[3], ax=list(axes[3:]), pad=0.018, extend='both',
                      format=NUMBER_FORMATTER, label="geometric energy (Hartree)")
     return images
+
+
+def _tdpes1_origin_axes(fig, slot=None):
+    """Three scalar panels above two wider geometric panels."""
+    grid = fig.add_gridspec(2, 1) if slot is None else slot.subgridspec(2, 1)
+    top = grid[0].subgridspec(1, 3)
+    bottom = grid[1].subgridspec(1, 2)
+    return [fig.add_subplot(top[i]) for i in range(3)] + [
+        fig.add_subplot(bottom[i]) for i in range(2)
+    ]
 
 
 def render_tdpes1_origin(obs, ef_zero, outdir, args, snapshots):
@@ -2329,8 +2340,9 @@ def render_tdpes1_origin(obs, ef_zero, outdir, args, snapshots):
     times = obs["times_fs"]
 
     def individual(frame):
-        fig, axes = plt.subplots(2, 2, figsize=(13.2, 9.2), constrained_layout=True)
-        _draw_tdpes1_origin(fig, axes.ravel(), obs, ef_zero, prep, frame)
+        fig = plt.figure(figsize=(16.5, 9.2), constrained_layout=True)
+        axes = _tdpes1_origin_axes(fig)
+        _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame)
         fig.suptitle(
             f"Origin of first-level TDPES structure | t={times[frame]:.4f} fs\n"
             "axial zero-potential gauge; contours are occupied physical density; "
@@ -2345,8 +2357,7 @@ def render_tdpes1_origin(obs, ef_zero, outdir, args, snapshots):
     )
     fig = plt.figure(figsize=(28.0, 16.0), constrained_layout=True)
     for slot, frame in zip(fig.add_gridspec(2, 4), snapshots):
-        inner = slot.subgridspec(2, 2, wspace=0.05, hspace=0.15)
-        axes = [fig.add_subplot(inner[i, j]) for i in range(2) for j in range(2)]
+        axes = _tdpes1_origin_axes(fig, slot)
         _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, int(frame),
                             colorbars=True, compact=True)
         axes[0].text(0.98, 0.92, f"t={times[int(frame)]:.3f} fs",
@@ -2358,27 +2369,28 @@ def render_tdpes1_origin(obs, ef_zero, outdir, args, snapshots):
     ))
     if not args.no_animation:
         frames = _movie_frames(obs, args.max_frames)
-        fig, axes = plt.subplots(2, 2, figsize=(13.2, 9.2), constrained_layout=True)
+        fig = plt.figure(figsize=(16.5, 9.2), constrained_layout=True)
+        axes = _tdpes1_origin_axes(fig)
         title = fig.suptitle("", fontweight="bold")
         fig.colorbar(ScalarMappable(norm=Normalize(-prep['signed_bound'], prep['signed_bound']),
-                                   cmap=SIGNED_CMAP), ax=list(axes[0]),
+                                   cmap=SIGNED_CMAP), ax=axes[:3],
                      pad=0.018, extend='both', format=NUMBER_FORMATTER,
                      label='shifted energy (Hartree)')
         fig.colorbar(ScalarMappable(norm=Normalize(*prep['geo_limits']), cmap=SIGNED_CMAP),
-                     ax=list(axes[1]), pad=0.018, extend='both',
+                     ax=axes[3:], pad=0.018, extend='both',
                      format=NUMBER_FORMATTER, label='geometric energy (Hartree)')
 
         def update(number):
             frame = int(frames[number])
-            for axis in axes.ravel():
+            for axis in axes:
                 axis.clear()
-            _draw_tdpes1_origin(fig, axes.ravel(), obs, ef_zero, prep, frame,
+            _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame,
                                 colorbars=False)
             title.set_text(
                 f"Origin of first-level TDPES structure | t={times[frame]:.4f} fs\n"
-                "total / weighted BO / proton geometry / heavy geometry; link-metric limits"
+                "total / weighted BO / GD / proton geometry / heavy geometry; link-metric limits"
             )
-            return (*axes.ravel(), title)
+            return (*axes, title)
 
         update(0)
         animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
@@ -2613,7 +2625,7 @@ def run(args):
         ))
     if tdpes1_prep is not None:
         manifest.extend((
-            "tdpes1_panels=total,wBO,q_geo,R_geo",
+            "tdpes1_panels=total,wBO,GD,q_geo,R_geo",
             "tdpes1_gauge=axial_zero_potential",
             "tdpes1_discrete_identity=E_total_ZP=E_GI_native+E_GD_ZP",
             "tdpes1_weighted_bo=sum_all_stored_abs(C_j)^2*E_j_BO",

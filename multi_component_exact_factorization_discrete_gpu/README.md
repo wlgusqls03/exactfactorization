@@ -402,9 +402,11 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 `bo3d` places the physical `rho_0` and `rho_1` channel packets above the two
 fixed two-dimensional BOPES. Its vertical packet lift is visual only and is
 fixed over the trajectory; neither density nor energy is altered in storage.
-`tdpes1` gives a four-panel origin audit in the axial zero-potential gauge:
-total, weighted BO, proton geometric energy and heavy geometric energy.
-GI sum and GD panels are omitted. The total remains the stored native scalar
+`tdpes1` gives a five-panel origin audit in the axial zero-potential gauge:
+total, weighted BO and gauge-dependent GD on the top row; proton geometric
+energy and heavy geometric energy on the bottom row. GD is computed from
+native total minus native GI, with the existing additive display shifts.
+The GI sum panel is omitted. The total remains the stored native scalar
 in axial zero-potential gauge; the geometric panels use the link expressions
 `(1-|S_mu|^2)/(2 M_mu dmu^2)` are explicitly labelled continuum-limit
 diagnostics: finite-grid link geometry must not be presented as a termwise
@@ -414,7 +416,7 @@ Both `bo3d` and `tdpes1` follow the occupied joint-density region at each
 frame (default `--analysis-focus-floor 0.01`, relative to that frame's peak),
 including all branches above the threshold. Low-density values are hidden,
 not smoothed. TDPES movies and snapshots include a fixed shared energy
-colorbars (total/wBO share one scale, q/R geometry share another).
+colorbars (total/wBO/GD share one scale, q/R geometry share another).
 These two MP4 products use at least 150 DPI and H.264 CRF 17 rather
 than a fixed low bitrate. Existing EF caches can be reused for this change.
 
