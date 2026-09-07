@@ -406,7 +406,7 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 기본 출력은 해당 계산 폴더의 ``report/final_visualizations/`` 아래에 모인다.
 별도 위치가 필요한 경우에만 ``--outdir PATH``를 명시한다.
 
-``--only marginal joint velocity vector current nested heavy bo bo3d tdpes1``로 필요한 묶음만
+``--only marginal joint velocity vector current nested heavy bo bo3d tdpes1 tdpes2``로 필요한 묶음만
 고를 수 있고,
 ``--no-animation``을 주면 같은 plotting function으로 8개 개별 PNG와 2x4
 summary만 다시 만든다. 특히 joint density 위의 속도 화살표만 다시 만들려면
@@ -438,13 +438,13 @@ near-1080p CRF 18 / medium preset이다. 더 빠른 재생성은
 ``--movie-bo3d-q-points``와 ``--movie-bo3d-R-points``를 사용한다. 이 옵션들은
 렌더링 sampling/encoding만 바꾸며 저장된 물리량은 변경하지 않는다.
 
-``--only tdpes1``은 기본적으로 positive gauge만 만든다. 기존 이름
-``tdpes1_origin_movie.mp4``는 axial zero-potential gauge이고,
-``tdpes1_origin_positive_gauge_movie.mp4``는 저장된 positive-density gauge이다.
-두 gauge가 필요하면 ``--tdpes-gauges both``, zero만 필요하면 ``--tdpes-gauges zero``를
-지정한다. weighted BO와 link-metric geometry는 gauge invariant하고 두 출력에서
-같으며, total과 GD 패널이 gauge transformation에 따라 달라진다.
+``--only tdpes1``은 저장된 positive-density gauge만 사용하며 결과 이름은
+``tdpes1_origin_positive_gauge_movie.mp4``이다. Final visualization에서는
+zero-potential TDPES를 만들지 않는다. 별도의 gauge 비교 자체가 필요할 때만
+``render_tdse_tdpes_gauges --gauge both`` 진단 명령을 사용한다.
 Nested-factorization도 positive-density gauge의 TDPES를 사용한다.
+이 그림의 밀도 heatmap은 일반 선형 밀도이고, TDPES 위 joint-density
+등고선도 최대밀도의 2.5--90%를 나타내는 아주 얇은 검은 실선이다.
 기본 시각화 정책은 scalar/vector potential을 모두 positive-density gauge로
 그리는 것이다. 유일한 예외는 heavy force 분석의
 ``-partial_R epsilon^(2)``로, 이 항을 평가할 때만 second-level
@@ -464,6 +464,28 @@ total에 동일하게 적용한다. 따라서 표시된 격자점마다
 density cutoff가 아니다.
 EF cache에는 최소 2개 `bo_channel_density_qR` 채널이 필요하다.
 
+두 번째 TDPES의 1D origin decomposition은 ``--only tdpes2``로 만든다.
+positive-density gauge에서 여섯 패널
+``total, wBO_1, wBO_2plus, GD, q_geo, R_geo``를 그리고, 모든 패널은 하나의
+density-weighted ``E_ref(t)``와 공통 y축을 사용한다. 따라서 각 heavy-grid
+점에서
+``total = wBO_1 + wBO_2plus + GD + q_geo + R_geo``가 roundoff까지 정확히
+성립하며, 폐합 오차가 허용범위를 넘으면 렌더링을 중단한다.
+``q_geo``는 native ``epsilon_2_GI``에서 proton-averaged ``epsilon_1_wBO``를
+뺀 완전한 internal-proton kinetic/link contribution이고, ``R_geo``는
+``(1-|S_Gamma,R1|^2)/(2 M dR^2)``의 site-centred continuum limit이다.
+각 패널의 파랑/주황 점선은
+``bar(E_j)(R,t)=int dq rho(q|R,t)[E_j_BO(q,R)-E_ref(t)]``이며, 해당 BO
+surface의 proton-conditioned reference이지 각 decomposition term의 일부를
+추가로 더한 선은 아니다. x축은 frame별 heavy-density support를 따라간다.
+
+```bash
+python -m multi_component_exact_factorization.render_final_visualizations \
+  results/YYYYMMDD/RUN_NAME --only tdpes2 \
+  --format mp4 --fps 12 --max-frames 240 --snapshot-count 8 \
+  --dpi 180 --animation-dpi 120 --movie-preset fast
+```
+
 교수님 분석용 nested-factorization 4-panel만 다시 만들려면 다음을 사용한다.
 
 ```bash
@@ -480,9 +502,12 @@ density silhouette이다. 위의 두 density panel은 frame별 peak로 재정규
 사용한다. 원자료를 평활화하지 않는다. 2D TDPES는 음수=파랑, 0=흰색,
 양수=빨강의 0 중심 대칭 color scale을 쓰며, joint density가 peak의
 ``1e-4`` 이상이면 완전히 보이고 ``1e-6``까지 부드럽게 회색 배경으로
-사라진다. TDPES 위에는 physical joint density의 ``1e-5``부터 ``0.6``까지
-half-decade 간격의 최대 열한 개 relative contour를 겹친다. 각 닫힌 contour
-묶음은 일반적으로 안쪽으로 갈수록 밀도가 높고, 높은 밀도선일수록 굵다. 오래된
+사라진다. Nested TDPES 위의 physical joint density contour도 로그 간격이
+아닌 일반 선형 상대밀도를 사용하며, peak의 2.5%부터 90%까지 12개 level로
+얇은 검은색 실선으로 촘촘하게 표시한다. 각 닫힌 contour 묶음은 일반적으로 안쪽으로 갈수록 밀도가
+높고, 높은 밀도선일수록 굵다. TDPES1 origin 그림은 넓은 dynamic range를
+보존하기 위해 quarter-decade 간격과 두 개의 고밀도 core contour를 사용한다.
+두 경우 모두 contour만 계산할 뿐 원래 density를 평활화하지 않는다. 오래된
 ``tdse_exact_factorization_fields.npz``에
 ``electron_proton_density``가 없다면 아래 TDSE 후처리를 ``--overwrite``로 한
 번 다시 실행해야 한다. dynamics 자체를 다시 전파할 필요는 없다.

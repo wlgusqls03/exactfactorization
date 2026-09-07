@@ -275,6 +275,7 @@ class TDSEReportTests(unittest.TestCase):
                 "bo_combined_snapshots.png",
                 "bo_3d_channel_dynamics_snapshots.png",
                 "tdpes1_origin_positive_gauge_snapshots.png",
+                "tdpes2_origin_positive_gauge_snapshots.png",
                 "final_visualizations_manifest.txt",
             ):
                 self.assertTrue((output/name).is_file(), name)
@@ -289,10 +290,10 @@ class TDSEReportTests(unittest.TestCase):
                 "bo_combined_frames",
                 "bo_3d_channel_frames",
                 "tdpes1_origin_positive_gauge_frames",
+                "tdpes2_origin_positive_gauge_frames",
             ):
                 self.assertEqual(len(list((output/directory).glob("*.png"))), 2)
             self.assertGreaterEqual(len(products), 25)
-            self.assertEqual(args.tdpes_gauges, "positive")
             self.assertEqual(args.tdpes_color_scale, "linear")
             self.assertFalse((output/"tdpes1_origin_snapshots.png").exists())
             manifest = (output/"final_visualizations_manifest.txt").read_text()
@@ -305,6 +306,8 @@ class TDSEReportTests(unittest.TestCase):
                 "heavy_force_from_minus_partial_R_epsilon_2_only",
                 manifest,
             )
+            self.assertIn("tdpes2_gauge=positive_density", manifest)
+            self.assertIn("tdpes2_max_identity_residual=", manifest)
 
     def test_bo3d_and_tdpes1_only_commands_write_movies_and_snapshots(self):
         with TemporaryDirectory() as temporary:
@@ -313,7 +316,6 @@ class TDSEReportTests(unittest.TestCase):
             output = root/"new_analysis"
             args = render_final_visualizations.parse_args([
                 str(root), "--outdir", str(output), "--only", "bo3d", "tdpes1",
-                "--tdpes-gauges", "both",
                 "--format", "gif", "--snapshot-count", "2", "--max-frames", "2",
                 "--dpi", "30", "--animation-dpi", "25", "--fps", "2",
                 "--bo3d-q-points", "5", "--bo3d-R-points", "7",
@@ -324,8 +326,6 @@ class TDSEReportTests(unittest.TestCase):
                 "bo_3d_channel_dynamics_snapshots.png",
                 "tdpes1_origin_positive_gauge_movie.gif",
                 "tdpes1_origin_positive_gauge_snapshots.png",
-                "tdpes1_origin_movie.gif",
-                "tdpes1_origin_snapshots.png",
             ):
                 self.assertTrue((output/name).is_file(), name)
             manifest = (output/"final_visualizations_manifest.txt").read_text()
@@ -353,7 +353,7 @@ class TDSEReportTests(unittest.TestCase):
                 ),
                 link_keys=("sphi_q1", "sphi_R1", "sgamma_R1"),
             )
-            tdse_report.transform_to_zero_potential_gauge(obs, ef)
+            self.assertEqual(ef["gauge"], "positive_density")
             args = argparse.Namespace(support_floor=1.0e-4, decades=6.0, max_frames=3)
             prep = render_final_visualizations._tdpes1_origin_preparation(obs, ef, args)
             original_wbo = ef['epsilon_1_wbo'].copy()
@@ -397,6 +397,46 @@ class TDSEReportTests(unittest.TestCase):
                 frame["wbo"]+frame["geo_q"]+frame["geo_R"],
                 rtol=0.0, atol=2.0e-15,
             ))
+
+    def test_tdpes2_origin_uses_positive_gauge_and_closes_identity(self):
+        with TemporaryDirectory() as temporary:
+            archive, _ = self._write_archive(temporary)
+            obs = tdse_report.calculate_observables(
+                tdse_report.load_observables(archive)
+            )
+            ef = tdse_report._load_ef_fields(
+                obs,
+                field_keys=(
+                    "epsilon_2", "epsilon_2_gi", "epsilon_1_wbo",
+                    "bo_channel_density_qR",
+                ),
+                link_keys=("sgamma_R1",),
+            )
+            self.assertEqual(ef["gauge"], "positive_density")
+            args = argparse.Namespace(
+                support_floor=1.0e-4, analysis_focus_floor=1.0e-2,
+                max_frames=3, scale_sample_frames=3,
+            )
+            prep = render_final_visualizations._tdpes2_origin_preparation(
+                obs, ef, args,
+            )
+            frame = render_final_visualizations._tdpes2_origin_frame(
+                obs, ef, prep, 1,
+            )
+            np.testing.assert_allclose(
+                frame["native_total"], frame["native_gi"]+frame["gd"],
+                rtol=0.0, atol=2.0e-15,
+            )
+            np.testing.assert_allclose(
+                frame["total"],
+                frame["wbo_1"]+frame["wbo_2"]+frame["gd"]
+                +frame["geo_q"]+frame["geo_R"],
+                rtol=0.0, atol=2.0e-15,
+            )
+            self.assertLess(
+                np.max(np.abs(frame["identity_residual"])), 2.0e-15,
+            )
+            self.assertEqual(frame["bo_reference"].shape, (2, len(obs["R"])))
 
     def test_first_level_only_gauge_matches_complete_zero_gauge(self):
         with TemporaryDirectory() as temporary:

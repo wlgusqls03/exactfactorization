@@ -39,7 +39,7 @@ from .visualize import NUMBER_FORMATTER, selected_frames
 
 FINAL_PRODUCTS = (
     "marginal", "joint", "velocity", "vector", "current", "nested",
-    "heavy", "bo", "bo3d", "tdpes1",
+    "heavy", "bo", "bo3d", "tdpes1", "tdpes2",
 )
 
 
@@ -1135,9 +1135,7 @@ def _nested_frame(obs, ef_positive, frame, args):
         "conditional_opacity": np.broadcast_to(
             heavy_opacity[None, :], conditional.shape,
         ),
-        "joint_log": tdse_collision_report._relative_log_frame(
-            joint, args.decades,
-        ),
+        "joint_density": np.maximum(np.asarray(joint, float), 0.0),
         "joint_opacity": density_display_alpha(joint, args.support_floor),
         "epsilon_1": density_weighted_shift(
             ef_positive["epsilon_1"][frame], joint, args.support_floor,
@@ -1243,14 +1241,14 @@ def _new_nested_axes(figsize=(15.4, 10.2), *, compact=False,
 
 def _joint_contours(axis, obs, log_density, decades, compact=False, *,
                     q=None, R=None, color="white", halo_color="0.08"):
-    # Half-decade spacing resolves shoulders and weakly connected branches
-    # without changing or smoothing the underlying physical density.  The
-    # final two contours make the high-density core easy to identify.
-    canonical = np.array([
-        -5.0, -4.5, -4.0, -3.5, -3.0, -2.5,
-        -2.0, -1.5, -1.0, -0.5, np.log10(0.6),
-    ])
-    levels = canonical[canonical >= -float(decades)]
+    # Quarter-decade spacing resolves shoulders and weakly connected branches
+    # without changing or smoothing the underlying physical density.  Two
+    # additional core contours distinguish the dense centre of each lobe.
+    lower = np.ceil(-float(decades)*4.0)/4.0
+    levels = np.arange(lower, -0.24, 0.25)
+    levels = np.unique(np.concatenate((
+        levels, np.log10(np.array((0.65, 0.82))),
+    )))
     if levels.size < 3:
         levels = np.linspace(-0.9*float(decades), -0.1*float(decades), 3)
     contours = axis.contour(
@@ -1270,6 +1268,29 @@ def _joint_contours(axis, obs, log_density, decades, compact=False, *,
             ),
             path_effects.Normal(),
         ))
+    return contours
+
+
+def _joint_linear_contours(axis, obs, density, compact=False, *,
+                           color="black"):
+    """Draw nested-analysis density contours on an ordinary linear scale."""
+    density = np.maximum(np.asarray(density, float), 0.0)
+    peak = max(float(np.max(density)), 1.0e-300)
+    relative = density/peak
+    levels = np.array((
+        0.025, 0.05, 0.075, 0.10, 0.15, 0.20,
+        0.30, 0.40, 0.50, 0.60, 0.75, 0.90,
+    ))
+    contours = axis.contour(
+        obs["q"], obs["R"], relative.T, levels=levels,
+        colors=color,
+        linewidths=np.linspace(
+            0.24 if compact else 0.34,
+            0.50 if compact else 0.68,
+            len(levels),
+        ),
+        linestyles="solid", alpha=(0.72 if compact else 0.84),
+    )
     return contours
 
 
@@ -1336,8 +1357,8 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         vmax=prep["epsilon_1_limits"][1],
         alpha=current["joint_opacity"].T,
     )
-    contours = _joint_contours(
-        axes["epsilon_1"], obs, current["joint_log"], args.decades, compact,
+    contours = _joint_linear_contours(
+        axes["epsilon_1"], obs, current["joint_density"], compact,
     )
     axes["epsilon_1"].set(
         xlim=prep["q_limits"], ylim=prep["R_limits"],
@@ -1345,7 +1366,7 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
     )
     axes["epsilon_1"].set_title(
         r"First TDPES $\epsilon_{\rm PG}^{(1)}(q,R)$ + $\rho_{qR}$ contours "
-        r"(denser inward)",
+        r"(linear density contours; denser inward)",
         loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
     )
 
@@ -1417,9 +1438,8 @@ def _update_nested_composite(state, obs, ef_positive, prep, frame, args):
     state["epsilon_1_image"].set_alpha(current["joint_opacity"].T)
     for collection in state["contours"].collections:
         collection.remove()
-    state["contours"] = _joint_contours(
-        state["axes"]["epsilon_1"], obs, current["joint_log"],
-        args.decades,
+    state["contours"] = _joint_linear_contours(
+        state["axes"]["epsilon_1"], obs, current["joint_density"],
     )
     support = current["heavy_support"]
     state["epsilon_2_line"].set_ydata(
@@ -2568,14 +2588,14 @@ def _tdpes1_full_colorbar_axis(fig):
 
 
 def render_tdpes1_origin(obs, ef_fields, outdir, args, snapshots, *,
-                         stem="tdpes1_origin", gauge_label=None):
+                         stem="tdpes1_origin_positive_gauge",
+                         gauge_label="positive-density gauge"):
+    if ef_fields.get("gauge") != "positive_density":
+        raise ValueError(
+            "final TDPES1 visualization requires positive-density gauge"
+        )
     prep = _tdpes1_origin_preparation(obs, ef_fields, args)
     times = obs["times_fs"]
-    if gauge_label is None:
-        gauge_label = (
-            "positive-density gauge" if ef_fields.get("gauge") == "positive_density"
-            else "axial zero-potential gauge"
-        )
 
     def individual(frame):
         fig = plt.figure(figsize=(16.5, 9.2), constrained_layout=False)
@@ -2636,7 +2656,334 @@ def render_tdpes1_origin(obs, ef_fields, outdir, args, snapshots, *,
             )
             title.set_text(
                 f"Origin of first-level TDPES structure | t={times[frame]:.4f} fs\n"
-                f"{gauge_label}; BO contributions use archive energy origin; total is shifted"
+                f"{gauge_label}; one shared density-weighted energy origin; "
+                "displayed decomposition closes exactly"
+            )
+            return (*artists, title)
+
+        update(0)
+        animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
+        products.append(_save_analysis_movie(
+            animation, fig, outdir, f"{stem}_movie", args,
+        ))
+    return products, prep
+
+
+# ---------------------------------------------------------------------------
+# 8. Second-level TDPES origin on the heavy coordinate
+
+
+def _frame_heavy_focus(obs, frame, floor):
+    """Return the padded heavy-density support used as the live R window."""
+    density = np.asarray(obs["heavy_density"][frame], float)
+    active = np.isfinite(density) & (
+        density >= float(floor)*max(float(np.max(density)), 1.0e-300)
+    )
+    found = np.flatnonzero(active)
+    if not found.size:
+        found = np.arange(len(obs["R"]))
+    pad = max(2, int(np.ceil(0.12*(found[-1]-found[0]+1))))
+    start = max(0, int(found[0])-pad)
+    stop = min(len(obs["R"]), int(found[-1])+pad+1)
+    return active, np.arange(start, stop), (
+        float(obs["R"][start]), float(obs["R"][stop-1]),
+    )
+
+
+def _tdpes2_origin_frame(obs, ef_positive, prep, frame):
+    """Exact displayed continuum-limit decomposition of epsilon^(2).
+
+    At finite spacing the native second GI scalar contains the BO average and
+    the complete internal q kinetic/link contribution.  The outer R metric is
+    carried by S^Gamma and is restored explicitly for the continuum-limit
+    diagnostic.  One scalar E_ref is then subtracted from total and every BO
+    energy, leaving the geometric and GD terms unchanged.
+    """
+    joint = np.asarray(obs["joint_density"][frame], float)
+    heavy = np.asarray(obs["heavy_density"][frame], float)
+    conditional = np.divide(
+        joint, heavy[None, :], out=np.zeros_like(joint),
+        where=heavy[None, :] > np.finfo(np.float64).tiny,
+    )
+    native_total = np.asarray(ef_positive["epsilon_2"][frame], float)
+    native_gi = np.asarray(ef_positive["epsilon_2_gi"][frame], float)
+    gd = native_total-native_gi
+    wbo_raw = np.sum(
+        conditional*np.asarray(ef_positive["epsilon_1_wbo"][frame], float),
+        axis=0, dtype=np.float64,
+    )*obs["dq"]
+    # This residual is the exact native internal-q contribution.  For the
+    # finite BO-link backend it is <Gamma|T_q|Gamma>; for the spectral backend
+    # it is the corresponding full spectral conditional kinetic energy.
+    geo_q = native_gi-wbo_raw
+    geo_R = _site_link_metric(
+        ef_positive["sgamma_R1"][frame], obs["dR"], axis=0,
+    )/(2.0*prep["heavy_mass"])
+    total_raw = wbo_raw+geo_q+geo_R+gd
+    support = heavy >= prep["floor"]*max(float(np.max(heavy)), 1.0e-300)
+    energy_reference = (
+        np.average(total_raw[support], weights=heavy[support])
+        if np.any(support) else 0.0
+    )
+    total = total_raw-energy_reference
+    wbo = wbo_raw-energy_reference
+
+    channels = np.asarray(
+        ef_positive["bo_channel_density_qR"][frame, :2], float,
+    )
+    energies = np.asarray(obs["bo_energies"][:2], float)
+    ground = np.sum(
+        np.divide(
+            channels[0], heavy[None, :], out=np.zeros_like(channels[0]),
+            where=heavy[None, :] > np.finfo(np.float64).tiny,
+        )*(energies[0]-energy_reference),
+        axis=0, dtype=np.float64,
+    )*obs["dq"]
+    first_excited = np.sum(
+        np.divide(
+            channels[1], heavy[None, :], out=np.zeros_like(channels[1]),
+            where=heavy[None, :] > np.finfo(np.float64).tiny,
+        )*(energies[1]-energy_reference),
+        axis=0, dtype=np.float64,
+    )*obs["dq"]
+    excited_sector = wbo-ground
+    higher_bo = excited_sector-first_excited
+
+    # Dotted reference curves: bare BO surfaces averaged only over the
+    # conditional proton density, without electronic-channel weighting.
+    bo_reference = np.sum(
+        conditional[None, :, :]*(energies-energy_reference),
+        axis=1, dtype=np.float64,
+    )*obs["dq"]
+    identity_residual = total-(ground+excited_sector+gd+geo_q+geo_R)
+    return {
+        "total": total, "wbo": wbo,
+        "wbo_1": ground, "wbo_2": excited_sector,
+        "wbo_2_pure": first_excited, "wbo_higher": higher_bo,
+        "gd": gd, "geo_q": geo_q, "geo_R": geo_R,
+        "native_total": native_total, "native_gi": native_gi,
+        "energy_reference": energy_reference,
+        "bo_reference": bo_reference,
+        "identity_residual": identity_residual,
+        "support": support,
+    }
+
+
+_TDPES2_KEYS = ("total", "wbo_1", "wbo_2", "gd", "geo_q", "geo_R")
+_TDPES2_TITLES = (
+    r"Total $\widetilde\epsilon_{\rm total}^{(2)}$",
+    r"$\epsilon_{\rm wBO,1}^{(2)}$ (ground, $j=0$)",
+    r"$\epsilon_{\rm wBO,2+}^{(2)}$ (all $j\geq1$)",
+    r"Gauge dependent $\epsilon_{\rm GD}^{(2)}$",
+    r"Internal proton $\epsilon_{q,\rm geo}^{(2)}$",
+    r"Outer heavy $\epsilon_{R,\rm geo}^{(2)}$ (link-metric limit)",
+)
+
+
+def _tdpes2_origin_preparation(obs, ef_positive, args):
+    required = (
+        "epsilon_2", "epsilon_2_gi", "epsilon_1_wbo",
+        "bo_channel_density_qR", "sgamma_R1",
+    )
+    missing = [key for key in required if key not in ef_positive]
+    if missing:
+        raise KeyError(
+            "TDPES2 decomposition requires: " + ", ".join(missing)
+            + "; rebuild the EF cache with --channel-density-states 2 "
+              "--link-output nearest --overwrite"
+        )
+    if ef_positive["bo_channel_density_qR"].shape[1] < 2:
+        raise ValueError("TDPES2 BO panels require at least two channel densities")
+    provisional = {
+        "floor": float(args.support_floor),
+        "focus_floor": float(args.analysis_focus_floor),
+        "heavy_mass": float(obs["options"].get("heavy_mass", 1836.15267343)),
+    }
+    samples, identity_errors, higher_sizes = [], [], []
+    frames = _movie_frames(obs, min(
+        args.max_frames, getattr(args, "scale_sample_frames", 32),
+    ))
+    for frame in frames:
+        frame = int(frame)
+        current = _tdpes2_origin_frame(obs, ef_positive, provisional, frame)
+        support = (
+            obs["heavy_density"][frame]
+            >= provisional["focus_floor"]
+            *max(float(np.max(obs["heavy_density"][frame])), 1.0e-300)
+        )
+        for key in _TDPES2_KEYS:
+            selected = np.abs(current[key][support & np.isfinite(current[key])])
+            if selected.size:
+                samples.append(float(np.percentile(selected, 99.0)))
+        for reference in current["bo_reference"]:
+            selected = np.abs(reference[support & np.isfinite(reference)])
+            if selected.size:
+                samples.append(float(np.percentile(selected, 99.0)))
+        if np.any(support):
+            identity_errors.append(float(np.max(np.abs(
+                current["identity_residual"][support]
+            ))))
+            higher_sizes.append(float(np.max(np.abs(
+                current["wbo_higher"][support]
+            ))))
+    bound = max(
+        float(np.percentile(samples, 98.0)) if samples else 0.0, 1.0e-10,
+    )
+    bound *= 1.06
+    maximum_residual = max(identity_errors, default=0.0)
+    tolerance = 256.0*np.finfo(np.float64).eps*max(bound, 1.0)
+    if maximum_residual > tolerance:
+        raise RuntimeError(
+            "displayed TDPES2 decomposition does not close: "
+            f"max residual={maximum_residual:.6e}, tolerance={tolerance:.6e}"
+        )
+    provisional.update({
+        "energy_limits": (-bound, bound),
+        "max_identity_residual": maximum_residual,
+        "identity_tolerance": tolerance,
+        "max_higher_bo_contribution": max(higher_sizes, default=0.0),
+    })
+    return provisional
+
+
+def _tdpes2_axes(fig, slot=None):
+    if slot is None:
+        grid = fig.add_gridspec(
+            2, 3, left=0.065, right=0.975, bottom=0.085, top=0.855,
+            wspace=0.27, hspace=0.38,
+        )
+    else:
+        grid = slot.subgridspec(2, 3, wspace=0.30, hspace=0.40)
+    return [fig.add_subplot(grid[row, column])
+            for row in range(2) for column in range(3)]
+
+
+def _draw_tdpes2_origin(axes, obs, ef_positive, prep, frame, *, compact=False):
+    current = _tdpes2_origin_frame(obs, ef_positive, prep, frame)
+    active, _, limits = _frame_heavy_focus(
+        obs, frame, prep["focus_floor"],
+    )
+    R = obs["R"]
+    lines, reference_lines = [], []
+    for axis, key, title in zip(axes, _TDPES2_KEYS, _TDPES2_TITLES):
+        line, = axis.plot(
+            R, np.where(active, current[key], np.nan),
+            color="0.08", lw=(1.15 if compact else 2.2), zorder=4,
+        )
+        refs = []
+        for state, (color, label) in enumerate((
+            (COLORS[0], r"$\overline{E}_0^{\rm BO}(R,t)$"),
+            (COLORS[1], r"$\overline{E}_1^{\rm BO}(R,t)$"),
+        )):
+            reference, = axis.plot(
+                R, np.where(active, current["bo_reference"][state], np.nan),
+                color=color, lw=(0.65 if compact else 1.25), ls="--",
+                alpha=0.82, label=label, zorder=3,
+            )
+            refs.append(reference)
+        axis.axhline(0.0, color="0.70", lw=0.55, zorder=0)
+        axis.set(
+            xlim=limits, ylim=prep["energy_limits"],
+            xlabel=r"heavy $R$ ($a_0$)", ylabel="energy (Hartree)",
+        )
+        axis.set_title(
+            title, loc="left", fontweight="semibold",
+            fontsize=(5.2 if compact else 8.5),
+        )
+        axis.tick_params(labelsize=(4.8 if compact else 7), direction="in")
+        axis.grid(alpha=0.16)
+        lines.append(line)
+        reference_lines.append(refs)
+    axes[0].legend(
+        handles=reference_lines[0], frameon=False,
+        fontsize=(4.2 if compact else 7), loc="best",
+    )
+    return {"lines": lines, "reference_lines": reference_lines}
+
+
+def _update_tdpes2_origin(state, axes, obs, ef_positive, prep, frame):
+    current = _tdpes2_origin_frame(obs, ef_positive, prep, frame)
+    active, _, limits = _frame_heavy_focus(
+        obs, frame, prep["focus_floor"],
+    )
+    artists = []
+    for index, (axis, key) in enumerate(zip(axes, _TDPES2_KEYS)):
+        state["lines"][index].set_ydata(
+            np.where(active, current[key], np.nan),
+        )
+        axis.set_xlim(limits)
+        artists.append(state["lines"][index])
+        for bo_state, reference in enumerate(state["reference_lines"][index]):
+            reference.set_ydata(np.where(
+                active, current["bo_reference"][bo_state], np.nan,
+            ))
+            artists.append(reference)
+    return artists
+
+
+def render_tdpes2_origin(obs, ef_positive, outdir, args, snapshots):
+    prep = _tdpes2_origin_preparation(obs, ef_positive, args)
+    times = obs["times_fs"]
+
+    def individual(frame):
+        fig = plt.figure(figsize=(16.5, 9.2), constrained_layout=False)
+        axes = _tdpes2_axes(fig)
+        _draw_tdpes2_origin(axes, obs, ef_positive, prep, frame)
+        fig.suptitle(
+            "Origin of second-level TDPES structure | "
+            f"t={times[frame]:.4f} fs\npositive-density gauge; "
+            "one shared energy origin and y scale; dashed curves are "
+            "proton-conditioned bare BO references",
+            fontweight="bold",
+        )
+        return fig
+
+    stem = "tdpes2_origin_positive_gauge"
+    products = _save_individual_frames(
+        individual, snapshots, times, Path(outdir)/f"{stem}_frames",
+        stem, args.dpi,
+    )
+    fig = plt.figure(figsize=(28.0, 16.0), constrained_layout=False)
+    outer = fig.add_gridspec(
+        2, 4, left=0.025, right=0.985, bottom=0.04, top=0.92,
+        wspace=0.18, hspace=0.22,
+    )
+    for slot, frame in zip(outer, snapshots):
+        axes = _tdpes2_axes(fig, slot)
+        _draw_tdpes2_origin(
+            axes, obs, ef_positive, prep, int(frame), compact=True,
+        )
+        axes[0].text(
+            0.98, 0.92, f"t={times[int(frame)]:.3f} fs",
+            transform=axes[0].transAxes, ha="right", va="top", fontsize=5.2,
+        )
+    fig.suptitle(
+        "Second-level TDPES origin (positive-density gauge): "
+        "8 representative times",
+        fontweight="bold",
+    )
+    products.append(_save_figure(
+        fig, Path(outdir)/f"{stem}_snapshots.png", args.dpi,
+    ))
+    if not args.no_animation:
+        frames = _movie_frames(obs, args.max_frames)
+        fig = plt.figure(figsize=(16.5, 9.2), constrained_layout=False)
+        axes = _tdpes2_axes(fig)
+        state = _draw_tdpes2_origin(
+            axes, obs, ef_positive, prep, int(frames[0]),
+        )
+        title = fig.suptitle("", fontweight="bold")
+
+        def update(number):
+            frame = int(frames[number])
+            artists = _update_tdpes2_origin(
+                state, axes, obs, ef_positive, prep, frame,
+            )
+            title.set_text(
+                "Origin of second-level TDPES structure | "
+                f"t={times[frame]:.4f} fs\npositive-density gauge; "
+                "one shared energy origin and y scale; dashed curves are "
+                "proton-conditioned bare BO references"
             )
             return (*artists, title)
 
@@ -2684,7 +3031,7 @@ def run(args):
         name in selected
         for name in (
             "velocity", "vector", "current", "nested", "heavy", "bo",
-            "bo3d", "tdpes1",
+            "bo3d", "tdpes1", "tdpes2",
         )
     )
     ef = None
@@ -2712,6 +3059,11 @@ def run(args):
                 "epsilon_1", "epsilon_1_gi", "epsilon_1_wbo",
                 "bo_channel_density_qR",
             ))
+        if "tdpes2" in selected:
+            field_keys.extend((
+                "epsilon_2", "epsilon_2_gi", "epsilon_1_wbo",
+                "bo_channel_density_qR",
+            ))
         field_keys = tuple(dict.fromkeys(field_keys))
         link_keys = []
         if "nested" in selected:
@@ -2719,6 +3071,8 @@ def run(args):
         else:
             if "tdpes1" in selected:
                 link_keys.extend(("sphi_q1", "sphi_R1"))
+            if "tdpes2" in selected:
+                link_keys.append("sgamma_R1")
             if "heavy" in selected:
                 link_keys.append("sgamma_R1")
         ef = tdse_report._load_ef_fields(
@@ -2758,11 +3112,16 @@ def run(args):
         products.extend(generated)
 
     tdpes1_positive_prep = None
-    if "tdpes1" in selected and args.tdpes_gauges in ("positive", "both"):
+    if "tdpes1" in selected:
         generated, tdpes1_positive_prep = render_tdpes1_origin(
             obs, ef, output, args, snapshots,
-            stem="tdpes1_origin_positive_gauge",
-            gauge_label="positive-density gauge",
+        )
+        products.extend(generated)
+
+    tdpes2_prep = None
+    if "tdpes2" in selected:
+        generated, tdpes2_prep = render_tdpes2_origin(
+            obs, ef, output, args, snapshots,
         )
         products.extend(generated)
 
@@ -2775,27 +3134,13 @@ def run(args):
         alpha_positive = alpha_positive.copy()
 
     nested_prep = None
-    zero_tdpes_requested = (
-        "tdpes1" in selected and args.tdpes_gauges in ("zero", "both")
-    )
     if "nested" in selected:
         generated, nested_prep = render_nested_factorization(
             obs, ef, output, args, snapshots,
         )
         products.extend(generated)
 
-    tdpes1_prep = None
-    if zero_tdpes_requested:
-        # All default density/potential products have consumed positive fields.
-        # Only explicitly requested zero-gauge TDPES is transformed here.
-        tdse_report.transform_first_level_to_q_axial_gauge(obs, ef)
-        generated, tdpes1_prep = render_tdpes1_origin(
-            obs, ef, output, args, snapshots, stem="tdpes1_origin",
-            gauge_label="axial zero-potential gauge",
-        )
-        products.extend(generated)
-    elif tdpes1_positive_prep is not None:
-        tdpes1_prep = tdpes1_positive_prep
+    tdpes1_prep = tdpes1_positive_prep
 
     heavy_prep = None
     if "heavy" in selected:
@@ -2868,6 +3213,8 @@ def run(args):
                 f"{nested_prep['conditional_vmax']:.16g}"
             ),
             "epsilon_1_overlay=physical_joint_density_relative_contours",
+            "nested_density_contours=12_linear_relative_levels_from_0.025_to_0.90",
+            "nested_density_contour_style=thin_black_solid",
             (
                 "electron_proton_mass_error="
                 f"{nested_prep['electron_proton_mass_error']:.16g}"
@@ -2899,9 +3246,7 @@ def run(args):
             f"tdpes1_max_identity_residual={tdpes1_prep['max_identity_residual']:.16g}",
             f"tdpes1_identity_tolerance={tdpes1_prep['identity_tolerance']:.16g}",
             f"tdpes1_max_grouped_j_ge_2_BO_contribution={tdpes1_prep['max_higher_bo_contribution']:.16g}",
-            f"tdpes1_gauges_rendered={args.tdpes_gauges}",
-            "tdpes1_zero_gauge=axial_zero_potential",
-            "tdpes1_positive_gauge=positive_density",
+            "tdpes1_gauge=positive_density",
             "tdpes1_discrete_identity=E_total(gauge)=E_GI_native+E_GD(gauge)",
             "tdpes1_weighted_bo=sum_all_stored_abs(C_j)^2*E_j_BO",
             "tdpes1_q_metric=(1-abs(Sphi_q1)^2)/dq^2_site_centered",
@@ -2914,6 +3259,23 @@ def run(args):
             f"tdpes1_color_scale={tdpes1_prep['color_scale']}",
             f"tdpes1_symlog_linear_threshold={tdpes1_prep['linear_threshold']:.16g}",
             "tdpes1_density_contours=black_with_white_halo",
+        ))
+    if tdpes2_prep is not None:
+        manifest.extend((
+            "tdpes2_gauge=positive_density",
+            "tdpes2_panels=total,wBO_1,wBO_2plus,GD,q_geo,R_geo",
+            "tdpes2_identity=total=wBO_1+wBO_2plus+GD+q_geo+R_geo",
+            "tdpes2_energy_origin=one_density_weighted_E_ref_applied_to_every_BO_surface_and_total",
+            "tdpes2_wBO_1=integral_dq_rho_0_over_rho_R_times_(E_0_BO-E_ref)",
+            "tdpes2_wBO_2plus=all_j_ge_1_sector_of_integral_dq_rho_conditional_times_(epsilon_1_wBO-E_ref)",
+            "tdpes2_q_geo=native_epsilon_2_GI-minus-proton_average_epsilon_1_wBO",
+            "tdpes2_R_geo=(1-abs(SGamma_R1)^2)/(2M*dR^2)_site_centered",
+            "tdpes2_BO_reference_j=integral_dq_rho(q_given_R)*(E_j_BO-E_ref)",
+            f"tdpes2_max_identity_residual={tdpes2_prep['max_identity_residual']:.16g}",
+            f"tdpes2_identity_tolerance={tdpes2_prep['identity_tolerance']:.16g}",
+            f"tdpes2_max_grouped_j_ge_2_BO_contribution={tdpes2_prep['max_higher_bo_contribution']:.16g}",
+            f"tdpes2_energy_limits={tdpes2_prep['energy_limits']}",
+            "tdpes2_x_window=per_frame_heavy_density_support",
         ))
     if heavy_prep is not None:
         manifest.extend((
@@ -2992,13 +3354,10 @@ def parse_args(argv=None):
     parser.add_argument("--tdpes-color-scale", choices=("symlog", "linear"),
                         default="linear",
                         help="one shared TDPES1 norm; linear is the readable default, symlog reveals small structure")
-    parser.add_argument("--tdpes-gauges", choices=("both", "positive", "zero"),
-                        default="positive",
-                        help="TDPES1 origin products to render; zero keeps legacy filenames")
     parser.add_argument("--movie-preset", choices=("ultrafast", "veryfast", "fast", "medium", "slow"),
                         default="medium", help="libx264 encoding preset for analysis movies")
     parser.add_argument('--analysis-focus-floor', type=float, default=1e-2,
-                        help='bo3d/tdpes1: show joint density >= this fraction of each frame peak')
+                        help='bo3d/tdpes1/tdpes2: focus on density >= this fraction of each frame peak')
     parser.add_argument("--no-animation", action="store_true")
     args = parser.parse_args(argv)
     if not 0 < args.analysis_focus_floor < 1:
