@@ -574,7 +574,7 @@ class TDSEReportTests(unittest.TestCase):
                     geometry[geometry_key], decomposition[decomposition_key],
                     rtol=0.0, atol=0.0,
                 )
-            self.assertGreater(prep["bound"], prep["linthresh"])
+            self.assertGreater(prep["bound"], prep["lower"])
 
     def test_first_level_only_gauge_matches_complete_zero_gauge(self):
         with TemporaryDirectory() as temporary:

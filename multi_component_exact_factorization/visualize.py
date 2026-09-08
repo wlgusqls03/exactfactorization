@@ -22,12 +22,15 @@ from result_paths import dated_results_dir
 
 
 def readable_number(value, _position=None):
-    """1e-3 order 이하는 과학 표기, 나머지는 소수점 둘째 자리까지 표시."""
+    """Use decimals when readable and math notation instead of ``1e-4``."""
     if not np.isfinite(value):
         return ""
-    # 두 자리 고정소수점에서 0.00으로 뭉개지는 10^-3 order부터 e 표기를 쓴다.
-    if value != 0.0 and abs(value) < 1.0e-2:
-        return f"{value:.2e}"
+    magnitude = abs(value)
+    if value != 0.0 and (magnitude < 1.0e-3 or magnitude >= 1.0e4):
+        mantissa, exponent = f"{value:.2e}".split("e")
+        return rf"${mantissa}\times10^{{{int(exponent)}}}$"
+    if value != 0.0 and magnitude < 1.0e-2:
+        return f"{value:.3f}"
     return f"{value:.2f}"
 
 

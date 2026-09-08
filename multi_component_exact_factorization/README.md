@@ -505,11 +505,13 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 ```
 
 위 행은 첫 번째 TDPES의 ``q_geo(q,R), R_geo(q,R)``와 두 번째 TDPES의
-``q_geo(R), R_geo(R)``를 2×2로 묶는다. 네 패널은 하나의 Hartree 크기와
-``SymLog`` 척도를 공유하므로 부호와 상대적 크기를 모두 보존한다. 2D 패널은
-음수=파랑, 0 부근=흰색, 양수=빨강이며 physical joint-density support만
-표시한다. 1D 패널도 같은 bound와 linear threshold를 쓰고 heavy-density
-support만 표시한다. 원자료에는 smoothing이나 energy shift를 적용하지 않는다.
+``q_geo(R), R_geo(R)``를 2×2로 묶는다. 네 geometry energy는 정의상
+nonnegative이므로 하나의 양의 Hartree ``LogNorm`` 척도를 공유한다. 2D 패널은
+검정/보라에서 주황/노랑/흰색으로 밝아지며 physical joint-density support만
+표시하고, 1D 패널은 같은 상·하한의 log y축과 heavy-density support를 쓴다.
+수치 roundoff 등으로 생긴 non-positive 값은 절댓값으로 뒤집지 않고 표시에서
+제외하며 실제 최소값은 manifest에 기록한다. 원자료에는 smoothing이나 energy
+shift를 적용하지 않는다.
 척도 밖의 극소수 값은 color endpoint에서 포화되며 colorbar의 extend marker로
 표시되고, 저장된 수치 자체는 자르거나 변경하지 않는다.
 

@@ -17,7 +17,8 @@ import matplotlib.pyplot as plt
 import matplotlib.patheffects as path_effects
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 from matplotlib.cm import ScalarMappable
-from matplotlib.colors import Normalize, SymLogNorm
+from matplotlib.colors import LogNorm, Normalize, SymLogNorm
+from matplotlib.ticker import LogFormatterMathtext, LogLocator
 import numpy as np
 
 from . import tdse_collision_report, tdse_report
@@ -57,6 +58,12 @@ def _movie_frames(obs, maximum):
 
 def _time_tag(time_fs):
     return f"{float(time_fs):09.4f}fs".replace(".", "p")
+
+
+def _math_scientific(value, digits=2):
+    """Scientific notation fragment for insertion inside a mathtext string."""
+    mantissa, exponent = f"{float(value):.{int(digits)}e}".split("e")
+    return rf"{mantissa}\times10^{{{int(exponent)}}}"
 
 
 def _save_figure(fig, path, dpi):
@@ -487,7 +494,8 @@ def _draw_joint_velocity(axis, obs, ef, prep, frame, args, *, compact=False):
     if not compact:
         axis.quiverkey(
             arrows, 0.985, 1.025, prep["reference_speed"],
-            rf"$v_{{95}}={prep['reference_speed']:.2e}\ a_0/t_{{\rm au}}$",
+            rf"$v_{{95}}={_math_scientific(prep['reference_speed'])}"
+            rf"\ a_0/t_{{\rm au}}$",
             labelpos="W", coordinates="axes", color="#102A30",
             labelcolor="#102A30", fontproperties={"size": 8},
         )
@@ -3065,7 +3073,7 @@ def render_tdpes2_origin(obs, ef_positive, outdir, args, snapshots):
 
 
 # ---------------------------------------------------------------------------
-# 9. Four geometry contributions on one shared symmetric-logarithmic scale
+# 9. Four nonnegative geometry contributions on one shared logarithmic scale
 
 
 def _tdpes_geometry_frame(obs, ef_positive, prep, frame):
@@ -3134,12 +3142,11 @@ def _tdpes_geometry_preparation(obs, ef_positive, args):
                              ("geo2_q", support1d), ("geo2_R", support1d)):
             values = current[key][support & np.isfinite(current[key])]
             if values.size:
-                magnitudes = np.abs(values)
-                magnitudes = magnitudes[magnitudes > 0.0]
-                if magnitudes.size:
+                positive = values[values > 0.0]
+                if positive.size:
                     # Keep scale selection O(number of sampled frames), not
                     # O(full q-R trajectory), for multi-GiB production grids.
-                    samples.append(float(np.percentile(magnitudes, 99.5)))
+                    samples.append(float(np.percentile(positive, 99.5)))
                 negative_minima[key] = min(
                     negative_minima[key], float(np.min(values)),
                 )
@@ -3149,10 +3156,10 @@ def _tdpes_geometry_preparation(obs, ef_positive, args):
         float(np.percentile(samples, 98.0)) if samples.size else 1.0e-12
     )
     bound = max(1.06*bound, 1.0e-14)
-    linthresh = max(bound*10.0**(-prep["decades"]), 1.0e-18)
+    lower = max(bound*10.0**(-prep["decades"]), 1.0e-18)
     prep.update({
         "bound": bound,
-        "linthresh": linthresh,
+        "lower": lower,
         "negative_minima": negative_minima,
         "reference_dependence": "none",
     })
@@ -3160,10 +3167,7 @@ def _tdpes_geometry_preparation(obs, ef_positive, args):
 
 
 def _tdpes_geometry_norm(prep):
-    return SymLogNorm(
-        linthresh=prep["linthresh"], linscale=0.7,
-        vmin=-prep["bound"], vmax=prep["bound"], base=10,
-    )
+    return LogNorm(vmin=prep["lower"], vmax=prep["bound"], clip=False)
 
 
 def _tdpes_geometry_axes(fig):
@@ -3205,9 +3209,12 @@ def _draw_tdpes_geometry(fig, axes, obs, ef_positive, prep, frame,
             axes[:2], ("geo1_q", "geo1_R"), _TDPES_GEOMETRY_TITLES[:2]):
         values = current[key][np.ix_(qi, Ri)]
         image = axis.imshow(
-            np.ma.masked_where(~cropped_active | ~np.isfinite(values), values).T,
+            np.ma.masked_where(
+                ~cropped_active | ~np.isfinite(values) | (values <= 0.0),
+                values,
+            ).T,
             origin="lower", aspect="auto", extent=extent,
-            cmap=masked_cmap(SIGNED_CMAP), norm=norm, interpolation="nearest",
+            cmap=masked_cmap(JOINT_CMAP), norm=norm, interpolation="nearest",
         )
         contours.append(_joint_contours(
             axis, obs, current["joint_log"][np.ix_(cq, cR)],
@@ -3227,37 +3234,35 @@ def _draw_tdpes_geometry(fig, axes, obs, ef_positive, prep, frame,
         obs, frame, prep["focus_floor"],
     )
     lines = []
-    for axis, key, title in zip(
-            axes[2:], ("geo2_q", "geo2_R"), _TDPES_GEOMETRY_TITLES[2:]):
+    for axis, key, title, color in zip(
+            axes[2:], ("geo2_q", "geo2_R"), _TDPES_GEOMETRY_TITLES[2:],
+            (PARTICLE_COLORS["proton"], PARTICLE_COLORS["heavy"])):
         values = np.where(active1d, current[key], np.nan)
-        positive, = axis.plot(
-            obs["R"], np.where(values >= 0.0, values, np.nan),
-            color="#c62828", lw=2.0, label="positive",
+        line, = axis.plot(
+            obs["R"], np.where(values > 0.0, values, np.nan),
+            color=color, lw=2.2,
         )
-        negative, = axis.plot(
-            obs["R"], np.where(values < 0.0, values, np.nan),
-            color="#1565c0", lw=2.0, label="negative",
-        )
-        axis.axhline(0.0, color="0.55", lw=0.7)
-        axis.set_yscale(
-            "symlog", linthresh=prep["linthresh"], linscale=0.7, base=10,
-        )
+        axis.set_yscale("log", base=10)
         axis.set(
-            xlim=limits1d, ylim=(-prep["bound"], prep["bound"]),
+            xlim=limits1d, ylim=(prep["lower"], prep["bound"]),
             xlabel=r"heavy $R$ ($a_0$)", ylabel="geometry energy (Hartree)",
         )
+        axis.yaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0,)))
+        axis.yaxis.set_major_formatter(LogFormatterMathtext(base=10.0))
         axis.set_title(title, loc="left", fontweight="semibold", fontsize=9)
         axis.tick_params(labelsize=7, direction="in")
-        axis.grid(alpha=0.17)
-        lines.append((positive, negative))
-    axes[2].legend(frameon=False, fontsize=7, loc="best")
+        axis.grid(which="major", alpha=0.20)
+        axis.grid(which="minor", alpha=0.07)
+        lines.append(line)
     if colorbar:
         cax = fig.add_axes((0.925, 0.515, 0.014, 0.285))
         bar = fig.colorbar(
-            ScalarMappable(norm=norm, cmap=SIGNED_CMAP), cax=cax,
-            extend="both", format=NUMBER_FORMATTER,
+            ScalarMappable(norm=norm, cmap=JOINT_CMAP), cax=cax,
+            extend="both", format=LogFormatterMathtext(base=10.0),
         )
-        bar.set_label("geometry energy (Hartree; shared symmetric log)")
+        bar.locator = LogLocator(base=10.0, subs=(1.0,))
+        bar.update_ticks()
+        bar.set_label("geometry energy (Hartree; shared log scale)")
         bar.ax.tick_params(labelsize=7)
     return {"images": images, "contours": contours, "lines": lines}
 
@@ -3282,7 +3287,7 @@ def _update_tdpes_geometry(state, axes, obs, ef_positive, prep, frame):
             axes[:2], state["images"], ("geo1_q", "geo1_R"))):
         values = current[key][np.ix_(qi, Ri)]
         image.set_data(np.ma.masked_where(
-            ~cropped_active | ~np.isfinite(values), values,
+            ~cropped_active | ~np.isfinite(values) | (values <= 0.0), values,
         ).T)
         image.set_extent(extent)
         axis.set_xlim(limits2d[0])
@@ -3299,13 +3304,12 @@ def _update_tdpes_geometry(state, axes, obs, ef_positive, prep, frame):
     active1d, _, limits1d = _frame_heavy_focus(
         obs, frame, prep["focus_floor"],
     )
-    for axis, lines, key in zip(
+    for axis, line, key in zip(
             axes[2:], state["lines"], ("geo2_q", "geo2_R")):
         values = np.where(active1d, current[key], np.nan)
-        lines[0].set_ydata(np.where(values >= 0.0, values, np.nan))
-        lines[1].set_ydata(np.where(values < 0.0, values, np.nan))
+        line.set_ydata(np.where(values > 0.0, values, np.nan))
         axis.set_xlim(limits1d)
-        artists.extend(lines)
+        artists.append(line)
     return artists
 
 
@@ -3323,7 +3327,7 @@ def render_tdpes_geometry_log(obs, ef_positive, outdir, args, snapshots):
         fig.suptitle(
             "First- and second-level geometry energies | "
             f"t={times[frame]:.4f} fs\n"
-            "one shared symmetric-log Hartree scale; energy-reference independent",
+            "one shared positive-log Hartree scale; energy-reference independent",
             fontweight="bold",
         )
         return fig
@@ -3349,7 +3353,7 @@ def render_tdpes_geometry_log(obs, ef_positive, outdir, args, snapshots):
             title.set_text(
                 "First- and second-level geometry energies | "
                 f"t={times[frame]:.4f} fs\n"
-                "shared symmetric-log scale; independent of fixed/framewise E_ref"
+                "shared positive-log scale; independent of fixed/framewise E_ref"
             )
             return (*artists, title)
 
@@ -3699,12 +3703,13 @@ def run(args):
             "geometry_gauge=positive_density_input_but_all_four_terms_are_gauge_invariant",
             "geometry_energy_reference_dependence=none",
             "geometry_fixed_and_framewise_movies=identical_aliases_by_definition",
-            "geometry_scale=one_shared_symmetric_log_Hartree_scale",
+            "geometry_scale=one_shared_positive_log_Hartree_scale",
             f"geometry_decades={geometry_prep['decades']:.16g}",
             f"geometry_shared_bound={geometry_prep['bound']:.16g}",
-            f"geometry_linear_threshold={geometry_prep['linthresh']:.16g}",
+            f"geometry_lower_positive_limit={geometry_prep['lower']:.16g}",
             f"geometry_negative_minima={geometry_prep['negative_minima']}",
-            "geometry_display_values=raw_unsmoothed_no_energy_reference_subtraction",
+            "geometry_nonpositive_display=masked_and_reported_not_absolute_valued",
+            "geometry_display_values=raw_positive_unsmoothed_no_energy_reference_subtraction",
             "geometry_2d_window=per_frame_joint_density_support",
             "geometry_1d_window=per_frame_heavy_density_support",
         ))
@@ -3758,7 +3763,7 @@ def parse_args(argv=None):
     parser.add_argument("--decades", type=float, default=6.0)
     parser.add_argument(
         "--geometry-decades", type=float, default=8.0,
-        help="symmetric-log dynamic range reserved for the four geometry terms",
+        help="positive-log dynamic range reserved for the four geometry terms",
     )
     parser.add_argument("--support-floor", type=float, default=1.0e-4)
     parser.add_argument(
