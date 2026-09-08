@@ -177,6 +177,7 @@ def run(args):
     decomposed = _frame_fields(
         y, gpu_model, gpu_bases["fused"],
         action_cpu=tdse_action_reference,
+        tdpes_decomposition=True,
     )
     dy = -1j*tdse_action_reference
     drho = 2.0*np.real(np.sum(np.conj(y)*dy, axis=0))
@@ -227,6 +228,21 @@ def run(args):
         worst = max(worst, relative)
         print(
             f"  {name:17s}: max_abs={absolute:.6e}, "
+            f"max_relative={relative:.6e}"
+        )
+    print("[stored TDPES1/TDPES2 component closure]")
+    for level in (1, 2):
+        expected = decomposed[f"tdpes{level}_total"]
+        actual = sum(
+            decomposed[f"tdpes{level}_{name}"]
+            for name in (
+                "wbo_0", "wbo_excited", "gd", "geo_q", "geo_R",
+            )
+        )
+        absolute, relative = _relative_error(expected, actual)
+        worst = max(worst, relative)
+        print(
+            f"  level {level}: max_abs={absolute:.6e}, "
             f"max_relative={relative:.6e}"
         )
     stepped = {}

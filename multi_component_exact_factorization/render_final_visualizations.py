@@ -405,6 +405,7 @@ def _joint_velocity_preparation(obs, ef, args):
     heavy_mass = float(obs["options"].get("heavy_mass", 1836.15267343))
 
     supported_speeds = []
+    focus_floor = getattr(args, "analysis_focus_floor", args.support_floor)
     # Robust trajectory-wide limits do not need an expensive full-resolution
     # decomposition pass over every movie frame.  Evenly sample the complete
     # trajectory; the plotted physical arrays themselves are never sampled or
@@ -414,7 +415,7 @@ def _joint_velocity_preparation(obs, ef, args):
     )):
         frame = int(frame)
         density = obs["joint_density"][frame][np.ix_(q_indices, R_indices)]
-        support = density >= args.support_floor*max(
+        support = density >= focus_floor*max(
             float(np.max(obs["joint_density"][frame])), 1.0e-300,
         )
         velocity_q = (
@@ -480,7 +481,7 @@ def _draw_joint_velocity(axis, obs, ef, prep, frame, args, *, compact=False):
         axis, obs, frame, args.decades, compact=compact,
     )
     velocity_q, velocity_R = _joint_velocity_frame(
-        obs, ef, prep, frame, args.support_floor,
+        obs, ef, prep, frame, args.analysis_focus_floor,
     )
     arrows = axis.quiver(
         prep["q_mesh"], prep["R_mesh"], velocity_q, velocity_R,
@@ -562,7 +563,7 @@ def render_joint_velocity(obs, ef, outdir, args, snapshots):
                 obs["joint_density"][frame], args.decades,
             ).T)
             velocity_q, velocity_R = _joint_velocity_frame(
-                obs, ef, prep, frame, args.support_floor,
+                obs, ef, prep, frame, args.analysis_focus_floor,
             )
             arrows.set_UVC(velocity_q, velocity_R)
             title.set_text(
@@ -578,7 +579,7 @@ def render_joint_velocity(obs, ef, outdir, args, snapshots):
             animation, fig, outdir, "joint_velocity_movie",
             args.fps, args.animation_dpi, args.format,
         ))
-    prep["arrow_support_floor"] = float(args.support_floor)
+    prep["arrow_support_floor"] = float(args.analysis_focus_floor)
     return products, prep
 
 
@@ -587,7 +588,7 @@ def render_joint_velocity(obs, ef, outdir, args, snapshots):
 
 
 def _vector_preparation(obs, ef, args):
-    floor = args.support_floor
+    floor = getattr(args, "analysis_focus_floor", args.support_floor)
     frames = _movie_frames(obs, args.max_frames)
     densities = [obs["joint_density"][int(frame)] for frame in frames]
     a_values = [ef["a"][int(frame)] for frame in frames]
@@ -596,7 +597,10 @@ def _vector_preparation(obs, ef, args):
         a_values+b_values, densities+densities, floor,
     )
     alpha_lifted, heavy_support, _ = tdse_report.support_aware_temporal_lift_1d(
-        ef["alpha"], obs["heavy_density"], obs["dR"], floor,
+        ef["alpha"], obs["heavy_density"], obs["dR"], args.support_floor,
+    )
+    heavy_support = obs["heavy_density"] >= floor*np.maximum(
+        np.max(obs["heavy_density"], axis=1, keepdims=True), 1.0e-300,
     )
     alpha_limits = _symmetric_support_bound(
         [alpha_lifted[int(frame)] for frame in frames],
@@ -682,7 +686,10 @@ def _draw_vector_composite(fig, axes, obs, ef, prep, frame, args, *,
     )
 
     density = obs["joint_density"][frame]
-    opacity = density_display_alpha(density, args.support_floor)
+    active, _, frame_limits = _frame_focus(
+        obs, frame, args.analysis_focus_floor,
+    )
+    opacity = active.astype(float)
     extent = [q[0], q[-1], R[0], R[-1]]
     images = []
     for key, label in (("a", r"$a(q,R,t)$"), ("b", r"$b(q,R,t)$")):
@@ -696,7 +703,7 @@ def _draw_vector_composite(fig, axes, obs, ef, prep, frame, args, *,
             vmax=prep["connection_limits"][1], alpha=opacity.T,
         )
         axis.set(
-            xlim=prep["q_limits"], ylim=prep["R_limits"],
+            xlim=frame_limits[0], ylim=frame_limits[1],
             xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
         )
         axis.set_title(label+" | positive-density gauge", fontsize=(7 if compact else 9))
@@ -729,6 +736,7 @@ def _draw_vector_composite(fig, axes, obs, ef, prep, frame, args, *,
         "alpha_line": alpha_line,
         "alpha_tail": alpha_tail,
         "density_line": density_line,
+        "axes": axes,
     }
 
 
@@ -737,10 +745,16 @@ def _update_vector_composite(state, obs, ef, prep, frame, args):
         obs["electron_density"], obs["proton_density"], obs["heavy_density"],
     )):
         line.set_ydata(density[frame])
-    opacity = density_display_alpha(obs["joint_density"][frame], args.support_floor)
+    active, _, frame_limits = _frame_focus(
+        obs, frame, args.analysis_focus_floor,
+    )
+    opacity = active.astype(float)
     for image, key in state["images"]:
         image.set_data(ef[key][frame].T)
         image.set_alpha(opacity.T)
+    for axis_name in ("a", "b"):
+        state["axes"][axis_name].set_xlim(frame_limits[0])
+        state["axes"][axis_name].set_ylim(frame_limits[1])
     support = prep["heavy_support"][frame]
     alpha = prep["alpha_lifted"][frame]
     state["alpha_line"].set_ydata(np.where(support, alpha, np.nan))
@@ -862,6 +876,10 @@ def _current_preparation(obs, ef, args):
     alpha_lifted, heavy_support, _ = tdse_report.support_aware_temporal_lift_1d(
         ef["alpha"], obs["heavy_density"], obs["dR"], args.support_floor,
     )
+    display_floor = getattr(args, "analysis_focus_floor", args.support_floor)
+    heavy_support = obs["heavy_density"] >= display_floor*np.maximum(
+        np.max(obs["heavy_density"], axis=1, keepdims=True), 1.0e-300,
+    )
     proton_bounds, heavy_joint_bounds, heavy_marginal_bounds = [], [], []
     for frame in frames:
         frame = int(frame)
@@ -871,13 +889,13 @@ def _current_preparation(obs, ef, args):
         heavy_joint_current = density*ef["b"][frame]/heavy_mass
         heavy_marginal_current = heavy*alpha_lifted[frame]/heavy_mass
         proton_bounds.append(_supported_percentile_bound(
-            proton_current, density, args.support_floor,
+            proton_current, density, display_floor,
         ))
         heavy_joint_bounds.append(_supported_percentile_bound(
-            heavy_joint_current, density, args.support_floor,
+            heavy_joint_current, density, display_floor,
         ))
         heavy_marginal_bounds.append(_supported_percentile_bound(
-            heavy_marginal_current, heavy, args.support_floor,
+            heavy_marginal_current, heavy, display_floor,
         ))
 
     def limits(bounds):
@@ -896,10 +914,10 @@ def _current_preparation(obs, ef, args):
         "heavy_joint_limits": limits(heavy_joint_bounds),
         "heavy_marginal_limits": limits(heavy_marginal_bounds),
         "q_limits": _support_limits(
-            obs["q"], obs["proton_density"], args.support_floor,
+            obs["q"], obs["proton_density"], display_floor,
         ),
         "R_limits": _support_limits(
-            obs["R"], obs["heavy_density"], args.support_floor,
+            obs["R"], obs["heavy_density"], display_floor,
         ),
     }
 
@@ -924,7 +942,10 @@ def _draw_current_composite(fig, axes, obs, ef, prep, frame, args, *,
     )
     current = _current_frame(obs, ef, prep, frame)
     density = obs["joint_density"][frame]
-    opacity = density_display_alpha(density, args.support_floor)
+    active, _, frame_limits = _frame_focus(
+        obs, frame, args.analysis_focus_floor,
+    )
+    opacity = active.astype(float)
     extent = [q[0], q[-1], R[0], R[-1]]
     specifications = (
         (
@@ -947,7 +968,7 @@ def _draw_current_composite(fig, axes, obs, ef, prep, frame, args, *,
             vmin=value_limits[0], vmax=value_limits[1], alpha=opacity.T,
         )
         axis.set(
-            xlim=prep["q_limits"], ylim=prep["R_limits"],
+            xlim=frame_limits[0], ylim=frame_limits[1],
             xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
         )
         axis.set_title(label, fontsize=(5.8 if compact else 8.5))
@@ -987,6 +1008,7 @@ def _draw_current_composite(fig, axes, obs, ef, prep, frame, args, *,
         "current_line": current_line,
         "current_tail": current_tail,
         "density_line": density_line,
+        "axes": axes,
     }
 
 
@@ -996,12 +1018,16 @@ def _update_current_composite(state, obs, ef, prep, frame, args):
     )):
         line.set_ydata(density[frame])
     current = _current_frame(obs, ef, prep, frame)
-    opacity = density_display_alpha(
-        obs["joint_density"][frame], args.support_floor,
+    active, _, frame_limits = _frame_focus(
+        obs, frame, args.analysis_focus_floor,
     )
+    opacity = active.astype(float)
     for image, key in state["images"]:
         image.set_data(current[key].T)
         image.set_alpha(opacity.T)
+    for axis_name in ("proton", "heavy_joint"):
+        state["axes"][axis_name].set_xlim(frame_limits[0])
+        state["axes"][axis_name].set_ylim(frame_limits[1])
     support = prep["heavy_support"][frame]
     heavy_marginal = current["heavy_marginal"]
     state["current_line"].set_ydata(
@@ -1156,27 +1182,32 @@ def _nested_frame(obs, ef_positive, frame, args):
     joint = obs["joint_density"][frame]
     heavy = obs["heavy_density"][frame]
     conditional = _conditional_proton_density(obs, frame)
-    heavy_opacity = density_display_alpha(heavy, args.support_floor)
+    focus_floor = getattr(args, "analysis_focus_floor", args.support_floor)
+    heavy_support = heavy >= focus_floor*max(
+        float(np.max(heavy)), 1.0e-300,
+    )
+    joint_support = joint >= focus_floor*max(
+        float(np.max(joint)), 1.0e-300,
+    )
     return {
         "electron_proton": np.maximum(
             np.asarray(ef_positive["electron_proton_density"][frame], float), 0.0,
         ),
         "conditional": conditional,
         "conditional_opacity": np.broadcast_to(
-            heavy_opacity[None, :], conditional.shape,
+            heavy_support[None, :].astype(float), conditional.shape,
         ),
         "joint_density": np.maximum(np.asarray(joint, float), 0.0),
-        "joint_opacity": density_display_alpha(joint, args.support_floor),
+        "joint_opacity": joint_support.astype(float),
         "epsilon_1": density_weighted_shift(
-            ef_positive["epsilon_1"][frame], joint, args.support_floor,
+            ef_positive.get("tdpes1_total", ef_positive["epsilon_1"])[frame],
+            joint, focus_floor,
         ),
         "epsilon_2": density_weighted_shift(
-            ef_positive["epsilon_2"][frame], heavy, args.support_floor,
+            ef_positive.get("tdpes2_total", ef_positive["epsilon_2"])[frame],
+            heavy, focus_floor,
         ),
-        "heavy_support": (
-            heavy
-            >= args.support_floor*max(float(np.max(heavy)), 1.0e-300)
-        ),
+        "heavy_support": heavy_support,
     }
 
 
@@ -1189,15 +1220,17 @@ def _nested_preparation(obs, ef_positive, args):
             f"{electron_proton.shape} != {expected}"
         )
     frames = _movie_frames(obs, args.max_frames)
+    epsilon_1_source = ef_positive.get("tdpes1_total", ef_positive["epsilon_1"])
+    epsilon_2_source = ef_positive.get("tdpes2_total", ef_positive["epsilon_2"])
     epsilon_1_limits = _robust_shifted_symmetric_limits(
-        [ef_positive["epsilon_1"][int(frame)] for frame in frames],
+        [epsilon_1_source[int(frame)] for frame in frames],
         [obs["joint_density"][int(frame)] for frame in frames],
-        args.support_floor,
+        args.analysis_focus_floor,
     )
     epsilon_2_limits = _robust_shifted_limits(
-        [ef_positive["epsilon_2"][int(frame)] for frame in frames],
+        [epsilon_2_source[int(frame)] for frame in frames],
         [obs["heavy_density"][int(frame)] for frame in frames],
-        args.support_floor,
+        args.analysis_focus_floor,
     )
     dx = float(obs["x"][1]-obs["x"][0])
     electron_proton_vmax = max(
@@ -1344,6 +1377,12 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
                            colorbars=True, compact=False):
     q, R, x = obs["q"], obs["R"], obs["x"]
     current = _nested_frame(obs, ef_positive, frame, args)
+    _, _, joint_limits = _frame_focus(
+        obs, frame, args.analysis_focus_floor,
+    )
+    _, _, heavy_limits = _frame_heavy_focus(
+        obs, frame, args.analysis_focus_floor,
+    )
     density_extent = [x[0], x[-1], q[0], q[-1]]
     qR_extent = [q[0], q[-1], R[0], R[-1]]
 
@@ -1369,7 +1408,7 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         alpha=current["conditional_opacity"].T,
     )
     axes["conditional"].set(
-        xlim=prep["q_limits"], ylim=prep["R_limits"],
+        xlim=joint_limits[0], ylim=joint_limits[1],
         xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
     )
     axes["conditional"].set_title(
@@ -1391,7 +1430,7 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         axes["epsilon_1"], obs, current["joint_density"], compact,
     )
     axes["epsilon_1"].set(
-        xlim=prep["q_limits"], ylim=prep["R_limits"],
+        xlim=joint_limits[0], ylim=joint_limits[1],
         xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
     )
     axes["epsilon_1"].set_title(
@@ -1413,7 +1452,7 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
     )
     axes["epsilon_2"].axhline(0.0, color="0.72", lw=0.65, zorder=0)
     axes["epsilon_2"].set(
-        xlim=prep["R_limits"], ylim=prep["epsilon_2_limits"],
+        xlim=heavy_limits, ylim=prep["epsilon_2_limits"],
         xlabel=r"heavy $R$ ($a_0$)", ylabel="shifted energy (Hartree)",
     )
     axes["epsilon_2"].set_title(
@@ -1457,6 +1496,12 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
 
 def _update_nested_composite(state, obs, ef_positive, prep, frame, args):
     current = _nested_frame(obs, ef_positive, frame, args)
+    _, _, joint_limits = _frame_focus(
+        obs, frame, args.analysis_focus_floor,
+    )
+    _, _, heavy_limits = _frame_heavy_focus(
+        obs, frame, args.analysis_focus_floor,
+    )
     state["electron_proton_image"].set_data(
         current["electron_proton"].T,
     )
@@ -1466,6 +1511,10 @@ def _update_nested_composite(state, obs, ef_positive, prep, frame, args):
     )
     state["epsilon_1_image"].set_data(current["epsilon_1"].T)
     state["epsilon_1_image"].set_alpha(current["joint_opacity"].T)
+    for axis_name in ("conditional", "epsilon_1"):
+        state["axes"][axis_name].set_xlim(joint_limits[0])
+        state["axes"][axis_name].set_ylim(joint_limits[1])
+    state["axes"]["epsilon_2"].set_xlim(heavy_limits)
     for collection in state["contours"].collections:
         collection.remove()
     state["contours"] = _joint_linear_contours(
@@ -2347,18 +2396,36 @@ def _tdpes1_origin_frame(obs, ef_zero, prep, frame):
     native_gi = np.asarray(ef_zero["epsilon_1_gi"][frame], float)
     wbo_raw = np.asarray(ef_zero["epsilon_1_wbo"][frame], float)
     support = density >= prep["floor"]*max(float(np.max(density)), 1.0e-300)
-    # The native discrete scalar satisfies native_total=native_gi+gd_raw.
-    # Its link magnitudes encode the continuum geometric scalar inside the
-    # hopping operator.  The plotted continuum-limit decomposition therefore
-    # reconstructs total=wBO+q_geo+R_geo+GD from one consistent origin.
-    gd_raw = native_total-native_gi
-    geo_q = _site_link_metric(
-        ef_zero["sphi_q1"][frame], obs["dq"], axis=0,
-    )/(2.0*prep["proton_mass"])
-    geo_R = _site_link_metric(
-        ef_zero["sphi_R1"][frame], obs["dR"], axis=1,
-    )/(2.0*prep["heavy_mass"])
-    total_raw = wbo_raw+geo_q+geo_R+gd_raw
+    stored = all(key in ef_zero for key in (
+        "tdpes1_total", "tdpes1_wbo_0", "tdpes1_wbo_excited",
+        "tdpes1_gd", "tdpes1_geo_q", "tdpes1_geo_R",
+    ))
+    if stored:
+        # New caches are self-contained: plotting reads all six raw fields
+        # calculated at EF-postprocessing time and performs no physical
+        # reconstruction.
+        total_raw = np.asarray(ef_zero["tdpes1_total"][frame], float)
+        ground_raw = np.asarray(ef_zero["tdpes1_wbo_0"][frame], float)
+        excited_raw = np.asarray(
+            ef_zero["tdpes1_wbo_excited"][frame], float,
+        )
+        gd_raw = np.asarray(ef_zero["tdpes1_gd"][frame], float)
+        geo_q = np.asarray(ef_zero["tdpes1_geo_q"][frame], float)
+        geo_R = np.asarray(ef_zero["tdpes1_geo_R"][frame], float)
+        wbo_raw = ground_raw+excited_raw
+    else:
+        # Compatibility for older caches.  Regenerate the cache to eliminate
+        # this plotting-time continuum-limit reconstruction.
+        gd_raw = native_total-native_gi
+        geo_q = _site_link_metric(
+            ef_zero["sphi_q1"][frame], obs["dq"], axis=0,
+        )/(2.0*prep["proton_mass"])
+        geo_R = _site_link_metric(
+            ef_zero["sphi_R1"][frame], obs["dR"], axis=1,
+        )/(2.0*prep["heavy_mass"])
+        total_raw = wbo_raw+geo_q+geo_R+gd_raw
+        ground_raw = None
+        excited_raw = None
     # Preparation fixes this value once from frame zero.  The fallback is used
     # only by that bootstrap call, so every subsequently rendered frame keeps
     # the same physical energy zero and retains genuine temporal offsets.
@@ -2383,10 +2450,17 @@ def _tdpes1_origin_frame(obs, ef_zero, prep, frame):
     weights = np.divide(channels, density[None], out=np.zeros_like(channels),
                         where=density[None] > 0)
     energies = np.asarray(obs["bo_energies"][:2], float)
-    ground = weights[0]*(energies[0]-energy_reference)
+    ground = (
+        ground_raw-weights[0]*energy_reference
+        if ground_raw is not None else
+        weights[0]*(energies[0]-energy_reference)
+    )
     first_excited = weights[1]*(energies[1]-energy_reference)
     wbo = wbo_raw-energy_reference
-    excited_sector = wbo-ground
+    excited_sector = (
+        excited_raw-(1.0-weights[0])*energy_reference
+        if excited_raw is not None else wbo-ground
+    )
     higher_bo = excited_sector-first_excited
     identity_residual = total-(
         ground+excited_sector+gd_raw+geo_q+geo_R
@@ -2401,6 +2475,7 @@ def _tdpes1_origin_frame(obs, ef_zero, prep, frame):
         "geo_q": geo_q, "geo_R": geo_R, "gd": gd_raw,
         "energy_reference": energy_reference,
         "identity_residual": identity_residual,
+        "stored_decomposition": stored,
         "opacity": density_display_alpha(density, floor=prep["floor"]),
         "joint_log": np.log10(np.maximum(density/max(float(np.max(density)), 1e-300), 1e-300)),
     }
@@ -2423,7 +2498,7 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
             args, "tdpes_energy_reference", "initial",
         ),
         "decades": float(args.decades),
-        "focus_floor": getattr(args, 'analysis_focus_floor', 1e-2),
+        "focus_floor": getattr(args, 'analysis_focus_floor', 1e-3),
         "q_limits": _support_limits(
             obs["q"], obs["proton_density"], floor, padding=0.08,
         ),
@@ -2432,6 +2507,10 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
         ),
         "contour_q_points": int(getattr(args, "tdpes_contour_q_points", 180)),
         "contour_R_points": int(getattr(args, "tdpes_contour_R_points", 120)),
+        "stored_decomposition": all(key in ef_zero for key in (
+            "tdpes1_total", "tdpes1_wbo_0", "tdpes1_wbo_excited",
+            "tdpes1_gd", "tdpes1_geo_q", "tdpes1_geo_R",
+        )),
     }
     if provisional["energy_reference_mode"] == "initial":
         initial = _tdpes1_origin_frame(obs, ef_zero, provisional, 0)
@@ -2487,7 +2566,7 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
 
 _TDPES1_KEYS = ("total", "wbo_1", "wbo_2", "gd", "geo_q", "geo_R")
 _TDPES1_TITLES = (
-    r"Total $\widetilde\epsilon_{\rm total}^{(1)}$ (continuum-limit reconstruction)",
+    r"Total $\widetilde\epsilon_{\rm total}^{(1)}$ (stored EF decomposition)",
     r"$\epsilon_{\rm wBO,1}^{(1)}=|C_0|^2(E_0^{\rm BO}-E_{\rm ref})$",
     r"$\epsilon_{\rm wBO,2+}^{(1)}=\sum_{j\geq1}|C_j|^2(E_j^{\rm BO}-E_{\rm ref})$",
     r"Gauge dependent $\epsilon_{\rm GD}^{(1)}$",
@@ -2539,7 +2618,13 @@ def _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame, colorbars=True,
         0, len(Ri)-1, min(len(Ri), prep["contour_R_points"]), dtype=int,
     )]
     shared_norm = _tdpes1_shared_norm(prep)
-    for index, (axis, key, title) in enumerate(zip(axes, keys, _TDPES1_TITLES)):
+    titles = list(_TDPES1_TITLES)
+    if not prep.get("stored_decomposition", False):
+        titles[0] = (
+            r"Total $\widetilde\epsilon_{\rm total}^{(1)}$ "
+            r"(legacy plotting reconstruction)"
+        )
+    for index, (axis, key, title) in enumerate(zip(axes, keys, titles)):
         cmap = masked_cmap(SIGNED_CMAP)
         image = axis.imshow(
             np.ma.masked_where(
@@ -2763,19 +2848,36 @@ def _tdpes2_origin_frame(obs, ef_positive, prep, frame):
     )
     native_total = np.asarray(ef_positive["epsilon_2"][frame], float)
     native_gi = np.asarray(ef_positive["epsilon_2_gi"][frame], float)
-    gd = native_total-native_gi
-    wbo_raw = np.sum(
-        conditional*np.asarray(ef_positive["epsilon_1_wbo"][frame], float),
-        axis=0, dtype=np.float64,
-    )*obs["dq"]
-    # This residual is the exact native internal-q contribution.  For the
-    # finite BO-link backend it is <Gamma|T_q|Gamma>; for the spectral backend
-    # it is the corresponding full spectral conditional kinetic energy.
-    geo_q = native_gi-wbo_raw
-    geo_R = _site_link_metric(
-        ef_positive["sgamma_R1"][frame], obs["dR"], axis=0,
-    )/(2.0*prep["heavy_mass"])
-    total_raw = wbo_raw+geo_q+geo_R+gd
+    stored = all(key in ef_positive for key in (
+        "tdpes2_total", "tdpes2_wbo_0", "tdpes2_wbo_excited",
+        "tdpes2_gd", "tdpes2_geo_q", "tdpes2_geo_R",
+    ))
+    if stored:
+        total_raw = np.asarray(ef_positive["tdpes2_total"][frame], float)
+        ground_raw = np.asarray(ef_positive["tdpes2_wbo_0"][frame], float)
+        excited_raw = np.asarray(
+            ef_positive["tdpes2_wbo_excited"][frame], float,
+        )
+        gd = np.asarray(ef_positive["tdpes2_gd"][frame], float)
+        geo_q = np.asarray(ef_positive["tdpes2_geo_q"][frame], float)
+        geo_R = np.asarray(ef_positive["tdpes2_geo_R"][frame], float)
+        wbo_raw = ground_raw+excited_raw
+    else:
+        gd = native_total-native_gi
+        wbo_raw = np.sum(
+            conditional*np.asarray(
+                ef_positive["epsilon_1_wbo"][frame], float,
+            ), axis=0, dtype=np.float64,
+        )*obs["dq"]
+        # Exact native internal-q contribution plus the continuum outer-R
+        # metric.  This branch exists only for legacy caches.
+        geo_q = native_gi-wbo_raw
+        geo_R = _site_link_metric(
+            ef_positive["sgamma_R1"][frame], obs["dR"], axis=0,
+        )/(2.0*prep["heavy_mass"])
+        total_raw = wbo_raw+geo_q+geo_R+gd
+        ground_raw = None
+        excited_raw = None
     support = heavy >= prep["floor"]*max(float(np.max(heavy)), 1.0e-300)
     reference_mode = prep.get("energy_reference_mode", "initial")
     energy_reference = (
@@ -2795,13 +2897,23 @@ def _tdpes2_origin_frame(obs, ef_positive, prep, frame):
         ef_positive["bo_channel_density_qR"][frame, :2], float,
     )
     energies = np.asarray(obs["bo_energies"][:2], float)
-    ground = np.sum(
+    ground_from_channels = np.sum(
         np.divide(
             channels[0], heavy[None, :], out=np.zeros_like(channels[0]),
             where=heavy[None, :] > np.finfo(np.float64).tiny,
         )*(energies[0]-energy_reference),
         axis=0, dtype=np.float64,
     )*obs["dq"]
+    ground_probability = np.sum(
+        np.divide(
+            channels[0], heavy[None, :], out=np.zeros_like(channels[0]),
+            where=heavy[None, :] > np.finfo(np.float64).tiny,
+        ), axis=0, dtype=np.float64,
+    )*obs["dq"]
+    ground = (
+        ground_raw-ground_probability*energy_reference
+        if ground_raw is not None else ground_from_channels
+    )
     first_excited = np.sum(
         np.divide(
             channels[1], heavy[None, :], out=np.zeros_like(channels[1]),
@@ -2809,7 +2921,10 @@ def _tdpes2_origin_frame(obs, ef_positive, prep, frame):
         )*(energies[1]-energy_reference),
         axis=0, dtype=np.float64,
     )*obs["dq"]
-    excited_sector = wbo-ground
+    excited_sector = (
+        excited_raw-(1.0-ground_probability)*energy_reference
+        if excited_raw is not None else wbo-ground
+    )
     higher_bo = excited_sector-first_excited
 
     # Dotted reference curves: bare BO surfaces averaged only over the
@@ -2829,6 +2944,7 @@ def _tdpes2_origin_frame(obs, ef_positive, prep, frame):
         "energy_reference": energy_reference,
         "bo_reference": bo_reference,
         "identity_residual": identity_residual,
+        "stored_decomposition": stored,
         "support": support,
     }
 
@@ -2862,6 +2978,10 @@ def _tdpes2_origin_preparation(obs, ef_positive, args):
         "floor": float(args.support_floor),
         "focus_floor": float(args.analysis_focus_floor),
         "heavy_mass": float(obs["options"].get("heavy_mass", 1836.15267343)),
+        "stored_decomposition": all(key in ef_positive for key in (
+            "tdpes2_total", "tdpes2_wbo_0", "tdpes2_wbo_excited",
+            "tdpes2_gd", "tdpes2_geo_q", "tdpes2_geo_R",
+        )),
         "energy_reference_mode": getattr(
             args, "tdpes_energy_reference", "initial",
         ),
@@ -3079,25 +3199,39 @@ def render_tdpes2_origin(obs, ef_positive, outdir, args, snapshots):
 def _tdpes_geometry_frame(obs, ef_positive, prep, frame):
     """Return reference-independent first/second-level geometry energies."""
     joint = np.asarray(obs["joint_density"][frame], float)
-    heavy = np.asarray(obs["heavy_density"][frame], float)
-    conditional = np.divide(
-        joint, heavy[None, :], out=np.zeros_like(joint),
-        where=heavy[None, :] > np.finfo(np.float64).tiny,
-    )
-    geo1_q = _site_link_metric(
-        ef_positive["sphi_q1"][frame], obs["dq"], axis=0,
-    )/(2.0*prep["proton_mass"])
-    geo1_R = _site_link_metric(
-        ef_positive["sphi_R1"][frame], obs["dR"], axis=1,
-    )/(2.0*prep["heavy_mass"])
-    wbo2 = np.sum(
-        conditional*np.asarray(ef_positive["epsilon_1_wbo"][frame], float),
-        axis=0, dtype=np.float64,
-    )*obs["dq"]
-    geo2_q = np.asarray(ef_positive["epsilon_2_gi"][frame], float)-wbo2
-    geo2_R = _site_link_metric(
-        ef_positive["sgamma_R1"][frame], obs["dR"], axis=0,
-    )/(2.0*prep["heavy_mass"])
+    if prep["stored_decomposition"]:
+        # Keep the standalone geometry diagnostic on exactly the same stored
+        # arrays as the six-panel TDPES figures.  No plot-time reconstruction
+        # is performed for a newly generated EF cache.
+        geo1_q = np.asarray(ef_positive["tdpes1_geo_q"][frame], float)
+        geo1_R = np.asarray(ef_positive["tdpes1_geo_R"][frame], float)
+        geo2_q = np.asarray(ef_positive["tdpes2_geo_q"][frame], float)
+        geo2_R = np.asarray(ef_positive["tdpes2_geo_R"][frame], float)
+    else:
+        # Compatibility path for caches created before the decomposed fields
+        # were stored.  Rebuilding the cache removes this branch.
+        heavy = np.asarray(obs["heavy_density"][frame], float)
+        conditional = np.divide(
+            joint, heavy[None, :], out=np.zeros_like(joint),
+            where=heavy[None, :] > np.finfo(np.float64).tiny,
+        )
+        geo1_q = _site_link_metric(
+            ef_positive["sphi_q1"][frame], obs["dq"], axis=0,
+        )/(2.0*prep["proton_mass"])
+        geo1_R = _site_link_metric(
+            ef_positive["sphi_R1"][frame], obs["dR"], axis=1,
+        )/(2.0*prep["heavy_mass"])
+        wbo2 = np.sum(
+            conditional*np.asarray(
+                ef_positive["epsilon_1_wbo"][frame], float,
+            ), axis=0, dtype=np.float64,
+        )*obs["dq"]
+        geo2_q = np.asarray(
+            ef_positive["epsilon_2_gi"][frame], float,
+        )-wbo2
+        geo2_R = _site_link_metric(
+            ef_positive["sgamma_R1"][frame], obs["dR"], axis=0,
+        )/(2.0*prep["heavy_mass"])
     peak = max(float(np.max(joint)), 1.0e-300)
     return {
         "geo1_q": geo1_q, "geo1_R": geo1_R,
@@ -3107,7 +3241,12 @@ def _tdpes_geometry_frame(obs, ef_positive, prep, frame):
 
 
 def _tdpes_geometry_preparation(obs, ef_positive, args):
-    required = (
+    stored_keys = (
+        "tdpes1_geo_q", "tdpes1_geo_R",
+        "tdpes2_geo_q", "tdpes2_geo_R",
+    )
+    stored_decomposition = all(key in ef_positive for key in stored_keys)
+    required = stored_keys if stored_decomposition else (
         "epsilon_2_gi", "epsilon_1_wbo",
         "sphi_q1", "sphi_R1", "sgamma_R1",
     )
@@ -3120,6 +3259,7 @@ def _tdpes_geometry_preparation(obs, ef_positive, args):
     prep = {
         "floor": float(args.support_floor),
         "focus_floor": float(args.analysis_focus_floor),
+        "stored_decomposition": stored_decomposition,
         "proton_mass": float(obs["options"].get("proton_mass", 1836.15267343)),
         "heavy_mass": float(obs["options"].get("heavy_mass", 1836.15267343)),
         "decades": float(getattr(args, "geometry_decades", 8.0)),
@@ -3413,6 +3553,25 @@ def run(args):
     )
     ef = None
     if ef_needed:
+        ef_cache_path = run_dir/"tdse_exact_factorization_fields.npz"
+        decomposition_keys = ()
+        if ef_cache_path.is_file():
+            with np.load(ef_cache_path, allow_pickle=False) as stored:
+                available = set(stored.files)
+            candidates = (
+                "tdpes1_total", "tdpes1_wbo_0",
+                "tdpes1_wbo_excited", "tdpes1_gd",
+                "tdpes1_geo_q", "tdpes1_geo_R",
+                "tdpes2_total", "tdpes2_wbo_0",
+                "tdpes2_wbo_excited", "tdpes2_gd",
+                "tdpes2_geo_q", "tdpes2_geo_R",
+                "tdpes1_closure_defect", "tdpes2_closure_defect",
+                "tdpes1_native_representation_difference",
+                "tdpes2_native_representation_difference",
+            )
+            decomposition_keys = tuple(
+                key for key in candidates if key in available
+            )
         field_keys = []
         if "velocity" in selected:
             field_keys.extend(("a", "b"))
@@ -3436,13 +3595,31 @@ def run(args):
                 "epsilon_1", "epsilon_1_gi", "epsilon_1_wbo",
                 "bo_channel_density_qR",
             ))
+            field_keys.extend(
+                key for key in decomposition_keys if key.startswith("tdpes1_")
+            )
         if "tdpes2" in selected:
             field_keys.extend((
                 "epsilon_2", "epsilon_2_gi", "epsilon_1_wbo",
                 "bo_channel_density_qR",
             ))
+            field_keys.extend(
+                key for key in decomposition_keys if key.startswith("tdpes2_")
+            )
         if "geometry" in selected:
             field_keys.extend(("epsilon_2_gi", "epsilon_1_wbo"))
+            field_keys.extend(
+                key for key in decomposition_keys
+                if key in (
+                    "tdpes1_geo_q", "tdpes1_geo_R",
+                    "tdpes2_geo_q", "tdpes2_geo_R",
+                )
+            )
+        if "nested" in selected:
+            field_keys.extend(
+                key for key in decomposition_keys
+                if key in ("tdpes1_total", "tdpes2_total")
+            )
         field_keys = tuple(dict.fromkeys(field_keys))
         link_keys = []
         if "nested" in selected:
@@ -3453,7 +3630,14 @@ def run(args):
             if "tdpes2" in selected:
                 link_keys.append("sgamma_R1")
             if "geometry" in selected:
-                link_keys.extend(("sphi_q1", "sphi_R1", "sgamma_R1"))
+                stored_geometry = all(
+                    key in decomposition_keys for key in (
+                        "tdpes1_geo_q", "tdpes1_geo_R",
+                        "tdpes2_geo_q", "tdpes2_geo_R",
+                    )
+                )
+                if not stored_geometry:
+                    link_keys.extend(("sphi_q1", "sphi_R1", "sgamma_R1"))
             if "heavy" in selected:
                 link_keys.append("sgamma_R1")
         ef = tdse_report._load_ef_fields(
@@ -3804,8 +3988,14 @@ def parse_args(argv=None):
     )
     parser.add_argument("--movie-preset", choices=("ultrafast", "veryfast", "fast", "medium", "slow"),
                         default="medium", help="libx264 encoding preset for analysis movies")
-    parser.add_argument('--analysis-focus-floor', type=float, default=1e-2,
-                        help='bo3d/tdpes1/tdpes2: focus on density >= this fraction of each frame peak')
+    parser.add_argument(
+        '--analysis-focus-floor', type=float, default=1e-3,
+        help=(
+            'shared visible support for BO/TDPES/vector/current/nested and '
+            'velocity arrows: density >= this fraction of each frame peak '
+            '(default: 1e-3 = 0.1%%)'
+        ),
+    )
     parser.add_argument("--no-animation", action="store_true")
     args = parser.parse_args(argv)
     if not 0 < args.analysis_focus_floor < 1:

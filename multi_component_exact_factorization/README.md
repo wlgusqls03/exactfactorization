@@ -452,7 +452,7 @@ zero-potential gauge로 변환한다. 같은 heavy 패널의 ``alpha``는 변환
 positive-gauge mechanical momentum이다.
 일반 TDSE report와 별도 TDPES gauge renderer의 기본값도 positive이다.
 
-TDPES origin은 2×3 패널: reconstructed total, wBO 1 (ground),
+TDPES origin은 2×3 패널: stored decomposed total, wBO 1 (ground),
 wBO 2+ (first excited를 포함한 모든 excited BO 채널), GD, q geometry,
 R geometry이다. 기본적으로 (t=0)의 occupied-density-weighted mean인
 고정된 `E_ref_fixed`를 한 번 계산하여 모든 시간의 BO surface와 total에
@@ -465,6 +465,22 @@ R geometry이다. 기본적으로 (t=0)의 occupied-density-weighted mean인
 `symlog`를 명시했을 때 나타나는 작은 눈금은 Hartree 단위 에너지이지
 density cutoff가 아니다.
 EF cache에는 최소 2개 `bo_channel_density_qR` 채널이 필요하다.
+새 EF cache는 위 여섯 개의 raw first-level field와 여섯 개의 raw
+second-level field를 각 저장 시각에 직접 보관한다. Renderer는 이 배열을
+읽기만 하며 물리 항을 다시 구성하지 않는다. 각 level의 저장 직전에
+`total-(wBO_1+wBO_2plus+GD+q_geo+R_geo)`를 검사하고, roundoff 허용범위를
+넘으면 cache 생성을 중단한다. BO=2 계산에서는 `wBO_2plus`가 정확히
+첫 excited channel 하나다. 예전 cache만 호환을 위해 기존 link 기반
+plot-time reconstruction을 사용하므로, 정식 분석에는 EF cache를
+`--overwrite`로 한 번 갱신한다.
+
+표시 support는 모든 BO/TDPES/vector/current/nested/velocity 분석에서
+동일하게 frame 최대밀도의 `1e-3`(0.1%) 이상을 기본으로 한다. 이는 1%보다
+약한 branch를 더 보존하면서 empty-tail ratio noise가 색 범위와 축을
+지배하지 않게 하는 절충값이다. 이 기준은 masking, 화살표, 동적 축 및
+robust display scale에만 적용되며 저장된 potential/current/density 값은
+clip, smoothing 또는 rescale하지 않는다. 필요하면
+`--analysis-focus-floor 1e-2`로 과거 1% 표시와 직접 비교할 수 있다.
 
 두 번째 TDPES의 1D origin decomposition은 ``--only tdpes2``로 만든다.
 positive-density gauge에서 여섯 패널

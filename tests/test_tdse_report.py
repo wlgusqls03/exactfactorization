@@ -15,6 +15,27 @@ from multi_component_exact_factorization import (
 
 
 class TDSEReportTests(unittest.TestCase):
+    def test_final_visualization_uses_shared_point_one_percent_focus(self):
+        args = render_final_visualizations.parse_args(["dummy-run"])
+        self.assertEqual(args.analysis_focus_floor, 1.0e-3)
+
+        density = np.array([[
+            [1.0, 9.9e-4],
+            [1.0e-3, 2.0e-3],
+        ]])
+        obs = {
+            "q": np.array([0.0, 1.0]),
+            "R": np.array([2.0, 3.0]),
+            "joint_density": density,
+        }
+        active, _, _ = render_final_visualizations._frame_focus(
+            obs, 0, args.analysis_focus_floor,
+        )
+        np.testing.assert_array_equal(
+            active,
+            np.array([[True, False], [True, True]]),
+        )
+
     def _write_archive(self, root):
         root = Path(root)
         q = np.linspace(-2.0, 2.0, 5, endpoint=False)
@@ -170,7 +191,15 @@ class TDSEReportTests(unittest.TestCase):
             obs = tdse_report.calculate_observables(
                 tdse_report.load_observables(archive)
             )
-            ef = tdse_report._load_ef_fields(obs)
+            ef = tdse_report._load_ef_fields(
+                obs,
+                field_keys=(
+                    "epsilon_1", "epsilon_1_gi", "epsilon_1_wbo",
+                    "epsilon_2", "epsilon_2_gi", "a", "b", "alpha",
+                    "bo_channel_density_qR", "electron_proton_density",
+                ),
+                link_keys=("sphi_q1", "sphi_R1", "sgamma_R1"),
+            )
             positive = [
                 tdse_report._ef_frame(obs, ef, frame)
                 for frame in range(len(obs["times_fs"]))
@@ -415,6 +444,82 @@ class TDSEReportTests(unittest.TestCase):
                 frame["wbo"]+frame["geo_q"]+frame["geo_R"],
                 rtol=0.0, atol=2.0e-15,
             ))
+
+    def test_origin_and_nested_prefer_stored_tdpes_decomposition(self):
+        with TemporaryDirectory() as temporary:
+            archive, _ = self._write_archive(temporary)
+            obs = tdse_report.calculate_observables(
+                tdse_report.load_observables(archive)
+            )
+            ef = tdse_report._load_ef_fields(
+                obs,
+                field_keys=(
+                    "epsilon_1", "epsilon_1_gi", "epsilon_1_wbo",
+                    "epsilon_2", "epsilon_2_gi", "a", "b", "alpha",
+                    "bo_channel_density_qR", "electron_proton_density",
+                ),
+                link_keys=("sphi_q1", "sphi_R1", "sgamma_R1"),
+            )
+            shape = obs["joint_density"].shape
+            line_shape = obs["heavy_density"].shape
+            components_1 = {
+                "tdpes1_wbo_0": np.full(shape, 0.11),
+                "tdpes1_wbo_excited": np.full(shape, 0.07),
+                "tdpes1_gd": np.full(shape, -0.03),
+                "tdpes1_geo_q": np.full(shape, 0.02),
+                "tdpes1_geo_R": np.full(shape, 0.01),
+            }
+            components_2 = {
+                "tdpes2_wbo_0": np.full(line_shape, 0.13),
+                "tdpes2_wbo_excited": np.full(line_shape, 0.05),
+                "tdpes2_gd": np.full(line_shape, -0.02),
+                "tdpes2_geo_q": np.full(line_shape, 0.03),
+                "tdpes2_geo_R": np.full(line_shape, 0.01),
+            }
+            ef.update(components_1)
+            ef.update(components_2)
+            ef["tdpes1_total"] = sum(components_1.values())
+            ef["tdpes2_total"] = sum(components_2.values())
+            args = argparse.Namespace(
+                support_floor=1.0e-4, analysis_focus_floor=1.0e-2,
+                decades=6.0, max_frames=3,
+                tdpes_energy_reference="initial",
+            )
+            prep_1 = render_final_visualizations._tdpes1_origin_preparation(
+                obs, ef, args,
+            )
+            frame_1 = render_final_visualizations._tdpes1_origin_frame(
+                obs, ef, prep_1, 1,
+            )
+            self.assertTrue(frame_1["stored_decomposition"])
+            np.testing.assert_allclose(
+                frame_1["total_raw"], ef["tdpes1_total"][1],
+            )
+            prep_2 = render_final_visualizations._tdpes2_origin_preparation(
+                obs, ef, args,
+            )
+            frame_2 = render_final_visualizations._tdpes2_origin_frame(
+                obs, ef, prep_2, 1,
+            )
+            self.assertTrue(frame_2["stored_decomposition"])
+            np.testing.assert_allclose(
+                frame_2["total_raw"], ef["tdpes2_total"][1],
+            )
+            nested = render_final_visualizations._nested_frame(obs, ef, 1, args)
+            expected_1 = report_plot_style.density_weighted_shift(
+                ef["tdpes1_total"][1], obs["joint_density"][1],
+                args.support_floor,
+            )
+            expected_2 = report_plot_style.density_weighted_shift(
+                ef["tdpes2_total"][1], obs["heavy_density"][1],
+                args.support_floor,
+            )
+            np.testing.assert_allclose(
+                nested["epsilon_1"], expected_1, rtol=0.0, atol=1.0e-15,
+            )
+            np.testing.assert_allclose(
+                nested["epsilon_2"], expected_2, rtol=0.0, atol=1.0e-15,
+            )
 
     def test_tdpes2_origin_uses_positive_gauge_and_closes_identity(self):
         with TemporaryDirectory() as temporary:

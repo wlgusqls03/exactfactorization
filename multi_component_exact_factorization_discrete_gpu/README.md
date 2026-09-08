@@ -378,6 +378,13 @@ It saves `tdse_exact_factorization_fields.npz` beside the TDSE archive with
 - `epsilon_1_wbo=sum_j |C_j|^2 E_j_BO`, stored separately from the native GI
   scalar so spectral and finite-grid archives have an unambiguous weighted-BO
   diagnostic.
+- for a BO-RK4 archive, twelve raw positive-density-gauge decomposition fields:
+  `tdpes{1,2}_{total,wbo_0,wbo_excited,gd,geo_q,geo_R}`.  Each stored total is
+  checked before writing against the exact sum of its other five stored
+  fields.  With a two-state propagation, `wbo_excited` is exactly the single
+  first-excited contribution.  Spectral-split archives intentionally omit
+  this finite-BO six-term decomposition because their propagated electronic
+  Hamiltonian is not the cached finite-grid BO eigenproblem.
 
 Electronic reduced-density reconstruction is exact but expensive because every
 saved frame must stream the large cached BO eigenstate tensor. The electron
@@ -402,23 +409,22 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 `bo3d` places the physical `rho_0` and `rho_1` channel packets above the two
 fixed two-dimensional BOPES. Its vertical packet lift is visual only and is
 fixed over the trajectory; neither density nor energy is altered in storage.
-`tdpes1` gives a five-panel origin audit in the axial zero-potential gauge:
-total, weighted BO and gauge-dependent GD on the top row; proton geometric
-energy and heavy geometric energy on the bottom row. GD is computed from
-native total minus native GI, with the existing additive display shifts.
-The GI sum panel is omitted. The total remains the stored native scalar
-in axial zero-potential gauge; the geometric panels use the link expressions
-`(1-|S_mu|^2)/(2 M_mu dmu^2)` are explicitly labelled continuum-limit
-diagnostics: finite-grid link geometry must not be presented as a termwise
-finite-difference replacement of the native discrete scalar.
+`tdpes1` and `tdpes2` each give a six-panel positive-density-gauge origin
+audit: total, ground-BO, excited-BO sector, GD, q geometry and R geometry.
+For a refreshed BO-RK4 EF cache the renderer reads these stored arrays and
+does no plot-time physical reconstruction.  The same stored geometry arrays
+also feed the standalone logarithmic geometry diagnostic.  Legacy caches
+retain a compatibility reconstruction path and should be regenerated before
+quantitative use.
 
-Both `bo3d` and `tdpes1` follow the occupied joint-density region at each
-frame (default `--analysis-focus-floor 0.01`, relative to that frame's peak),
-including all branches above the threshold. Low-density values are hidden,
-not smoothed. TDPES movies and snapshots include a fixed shared energy
-colorbars (total/wBO/GD share one scale, q/R geometry share another).
-These two MP4 products use at least 150 DPI and H.264 CRF 17 rather
-than a fixed low bitrate. Existing EF caches can be reused for this change.
+BO/TDPES/vector/current/nested/velocity products use one occupied-support
+threshold (default `--analysis-focus-floor 1e-3`, or 0.1% of each frame's
+peak).  The threshold controls only visible masks, moving coordinate windows,
+arrow support and robust display limits; it never clips, smooths or rescales
+the archived physics arrays.  This default retains weaker branches than the
+former 1% window while rejecting empty-tail ratio noise.  Pass `1e-2` to make
+a direct legacy 1% comparison.  TDPES movies and snapshots use one shared
+energy colorbar for all six panels.
 
 Run the standard renderer again.  It automatically finds this field cache
 and creates complete `report/positive_gauge/` and

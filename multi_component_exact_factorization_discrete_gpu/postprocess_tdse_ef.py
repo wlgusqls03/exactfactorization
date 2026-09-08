@@ -112,6 +112,7 @@ def _safe_density_gauge_factorization(y, action, model):
 def _frame_fields(
     y_cpu, model, basis, link_keys=(), action_cpu=None,
     spectral_analyzer=None, channel_density_states=0,
+    tdpes_decomposition=False,
 ):
     y = cp.ascontiguousarray(cp.asarray(y_cpu, dtype=cp.complex128))
     action = (
@@ -254,6 +255,89 @@ def _frame_fields(
             dtype=model.reduction_real_dtype,
         )*model.dq*model.dR),
     }
+    if tdpes_decomposition:
+        # Store the continuum EF decomposition once, at the same frame and in
+        # the same positive-density gauge as the factorization above.  These
+        # are raw (unshifted) energies; plotting is allowed to choose an
+        # additive reference but must not reconstruct the physical terms.
+        #
+        # The nearest-neighbour overlap magnitude is the gauge-invariant
+        # Fubini--Study metric estimator used by the continuum-limit EF
+        # interpretation.  Site centring symmetrizes the forward/backward
+        # bonds without smoothing the field.
+        def site_metric(link, spacing, axis):
+            forward = (1.0-cp.abs(link)**2)/(float(spacing)**2)
+            return 0.5*(forward+cp.roll(forward, 1, axis=axis))
+
+        state_bo = (
+            cp.real(cp.conj(c)*basis.energies*c)
+            /c_norm_safe[None, :, :]
+        )
+        t1_wbo_0 = state_bo[0]
+        t1_wbo_excited = cp.sum(
+            state_bo[1:], axis=0, dtype=model.reduction_real_dtype,
+        )
+        t1_gd = epsilon_1_gd_complex.real
+        t1_geo_q = site_metric(
+            sphi_q[1], model.dq, axis=0,
+        )/(2.0*model.proton_mass)
+        t1_geo_R = site_metric(
+            sphi_R[1], model.dR, axis=1,
+        )/(2.0*model.heavy_mass)
+        t1_total = t1_wbo_0+t1_wbo_excited+t1_gd+t1_geo_q+t1_geo_R
+
+        conditional_weight = (
+            cp.real(lam*cp.conj(lam))*model.dq
+            /lam_norm_safe[None, :]
+        )
+        t2_wbo_0 = cp.sum(
+            conditional_weight*t1_wbo_0, axis=0,
+            dtype=model.reduction_real_dtype,
+        )
+        t2_wbo_excited = cp.sum(
+            conditional_weight*t1_wbo_excited, axis=0,
+            dtype=model.reduction_real_dtype,
+        )
+        proton_wbo = t2_wbo_0+t2_wbo_excited
+        # epsilon_2_gi is the exact native internal-q expectation.  Removing
+        # its weighted BO part leaves the complete finite-grid proton/link
+        # contribution; it is not replaced by a continuum product rule.
+        t2_geo_q = epsilon_2_gi_complex.real-proton_wbo
+        t2_geo_R = site_metric(
+            sgamma_R[1], model.dR, axis=0,
+        )/(2.0*model.heavy_mass)
+        t2_gd = epsilon_2_gd_complex.real
+        t2_total = t2_wbo_0+t2_wbo_excited+t2_gd+t2_geo_q+t2_geo_R
+
+        result.update({
+            "tdpes1_total": t1_total,
+            "tdpes1_wbo_0": t1_wbo_0,
+            "tdpes1_wbo_excited": t1_wbo_excited,
+            "tdpes1_gd": t1_gd,
+            "tdpes1_geo_q": t1_geo_q,
+            "tdpes1_geo_R": t1_geo_R,
+            "tdpes2_total": t2_total,
+            "tdpes2_wbo_0": t2_wbo_0,
+            "tdpes2_wbo_excited": t2_wbo_excited,
+            "tdpes2_gd": t2_gd,
+            "tdpes2_geo_q": t2_geo_q,
+            "tdpes2_geo_R": t2_geo_R,
+            "tdpes1_closure_defect": cp.max(cp.abs(
+                t1_total-(t1_wbo_0+t1_wbo_excited+t1_gd+t1_geo_q+t1_geo_R)
+            )),
+            "tdpes2_closure_defect": cp.max(cp.abs(
+                t2_total-(t2_wbo_0+t2_wbo_excited+t2_gd+t2_geo_q+t2_geo_R)
+            )),
+            # This is a representation diagnostic, not a closure error: the
+            # native link Hamiltonian keeps metric magnitudes in its hopping
+            # operator, whereas tdpes*_total is its continuum EF scalar form.
+            "tdpes1_native_representation_difference": cp.max(cp.abs(
+                t1_total-epsilon_1_complex.real
+            )),
+            "tdpes2_native_representation_difference": cp.max(cp.abs(
+                t2_total-epsilon_2_complex.real
+            )),
+        })
     if channel_density_states:
         # Physical BO-channel joint densities.  Unlike |C_j|^2 these vanish
         # with the nuclear support and therefore do not promote empty-tail
@@ -285,6 +369,17 @@ def run(args):
 
     metadata = _metadata(archive)
     options = metadata["args"]
+    spectral_source = "spectral_split" in metadata["source_kind"]
+    store_tdpes_decomposition = bool(
+        args.tdpes_decomposition and not spectral_source
+    )
+    if args.tdpes_decomposition and spectral_source:
+        print(
+            "주의: spectral-split TDSE에서는 저장된 finite-grid BO energies가 "
+            "전파 전자 Hamiltonian의 고유기저가 아니므로 BO-channel별 exact "
+            "six-term closure를 저장하지 않습니다. native total/GI/GD는 "
+            "그대로 저장합니다."
+        )
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
         with tempfile.NamedTemporaryFile(
@@ -304,6 +399,12 @@ def run(args):
     estimated_bytes += (
         nt*channel_density_states*nq*nR*np.dtype(np.float64).itemsize
     )
+    if store_tdpes_decomposition:
+        # Six first-level maps plus six inexpensive second-level lines and
+        # four scalar audit histories.  All saved TDSE frames are retained.
+        estimated_bytes += nt*(
+            6*nq*nR+6*nR+4
+        )*np.dtype(np.float64).itemsize
     link_keys = ()
     if args.link_output == "nearest":
         link_keys = ("sphi_q1", "sphi_R1", "sgamma_R1")
@@ -342,7 +443,6 @@ def run(args):
         cpu_model, metadata["bo_states"], cache_dir=cache_dir,
     )
     model = make_discrete_gpu_model(cpu_model)
-    spectral_source = "spectral_split" in metadata["source_kind"]
     compact_states = (
         basis_cpu.states
         if args.electron_density or args.electron_proton_density or spectral_source
@@ -396,6 +496,23 @@ def run(args):
         "epsilon_2_imaginary_defect": np.empty(nt, dtype=np.float64),
         "factorization_residual": np.empty(nt, dtype=np.float64),
     }
+    if store_tdpes_decomposition:
+        for key in (
+            "tdpes1_total", "tdpes1_wbo_0", "tdpes1_wbo_excited",
+            "tdpes1_gd", "tdpes1_geo_q", "tdpes1_geo_R",
+        ):
+            fields[key] = np.empty((nt, nq, nR), dtype=np.float64)
+        for key in (
+            "tdpes2_total", "tdpes2_wbo_0", "tdpes2_wbo_excited",
+            "tdpes2_gd", "tdpes2_geo_q", "tdpes2_geo_R",
+        ):
+            fields[key] = np.empty((nt, nR), dtype=np.float64)
+        for key in (
+            "tdpes1_closure_defect", "tdpes2_closure_defect",
+            "tdpes1_native_representation_difference",
+            "tdpes2_native_representation_difference",
+        ):
+            fields[key] = np.empty(nt, dtype=np.float64)
     if channel_density_states:
         fields["bo_channel_density_qR"] = np.empty(
             (nt, channel_density_states, nq, nR), dtype=np.float64,
@@ -456,6 +573,7 @@ def run(args):
             current = _frame_fields(
                 y_frame, model, basis, link_keys, action_frame,
                 spectral_analyzer, channel_density_states,
+                store_tdpes_decomposition,
             )
             reconstruct_marginal = (
                 args.electron_density and metadata["electron_density"] is None
@@ -491,6 +609,24 @@ def run(args):
             -metadata["bo_populations"][:, :channel_density_states]
         )
 
+    closure_1 = closure_2 = None
+    if store_tdpes_decomposition:
+        closure_1 = float(np.max(fields["tdpes1_closure_defect"]))
+        closure_2 = float(np.max(fields["tdpes2_closure_defect"]))
+        decomposition_scale = max(
+            abs(float(np.nanmin(fields["tdpes1_total"]))),
+            abs(float(np.nanmax(fields["tdpes1_total"]))),
+            abs(float(np.nanmin(fields["tdpes2_total"]))),
+            abs(float(np.nanmax(fields["tdpes2_total"]))), 1.0,
+        )
+        tolerance = 512.0*np.finfo(np.float64).eps*decomposition_scale
+        if closure_1 > tolerance or closure_2 > tolerance:
+            raise RuntimeError(
+                "stored TDPES decomposition failed exact closure before save: "
+                f"({closure_1:.6e}, {closure_2:.6e}); "
+                f"tolerance={tolerance:.6e}"
+            )
+
     np.savez_compressed(
         output,
         **fields,
@@ -504,6 +640,12 @@ def run(args):
         ),
         epsilon_1_wbo_definition=np.array(
             "sum_over_all_stored_BO_states_abs_Cj_squared_times_Ej_BO"
+        ),
+        tdpes_decomposition=np.array(store_tdpes_decomposition),
+        tdpes_decomposition_definition=np.array(
+            "positive_density_gauge_raw_unshifted; "
+            "total=wbo_0+wbo_excited+gd+geo_q+geo_R"
+            if store_tdpes_decomposition else "not_stored"
         ),
         scalar_time_derivative=np.array(
             "saved_instantaneous_full_spectral_action_projection"
@@ -534,6 +676,16 @@ def run(args):
         print(
             "  max channel-density/population residual: "
             f"{np.max(np.abs(fields['bo_channel_population_residual'])):.3e}"
+        )
+    if store_tdpes_decomposition:
+        print(
+            "  stored TDPES closure defects (level 1,2): "
+            f"({closure_1:.3e}, {closure_2:.3e})"
+        )
+        print(
+            "  native-link/continuum representation differences (level 1,2): "
+            f"({np.max(fields['tdpes1_native_representation_difference']):.3e}, "
+            f"{np.max(fields['tdpes2_native_representation_difference']):.3e})"
         )
     return output
 
@@ -576,6 +728,15 @@ def parse_args(argv=None):
         help=(
             "store physical rho_j(q,R)=|Y_j(q,R)|^2 for the first N BO "
             "channels; use 0 to disable (default: 2)"
+        ),
+    )
+    parser.set_defaults(tdpes_decomposition=True)
+    parser.add_argument(
+        "--no-tdpes-decomposition", action="store_false",
+        dest="tdpes_decomposition",
+        help=(
+            "do not store the twelve raw TDPES1/TDPES2 decomposition fields; "
+            "enabled by default for a self-contained plotting cache"
         ),
     )
     args = parser.parse_args(argv)
