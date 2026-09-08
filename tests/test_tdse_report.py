@@ -357,10 +357,28 @@ class TDSEReportTests(unittest.TestCase):
             args = argparse.Namespace(support_floor=1.0e-4, decades=6.0, max_frames=3)
             prep = render_final_visualizations._tdpes1_origin_preparation(obs, ef, args)
             original_wbo = ef['epsilon_1_wbo'].copy()
+            initial = render_final_visualizations._tdpes1_origin_frame(
+                obs, ef, prep, 0,
+            )
             frame = render_final_visualizations._tdpes1_origin_frame(obs, ef, prep, 1)
             again = render_final_visualizations._tdpes1_origin_frame(obs, ef, prep, 1)
             self.assertTrue(np.array_equal(original_wbo, ef['epsilon_1_wbo']))
             self.assertTrue(np.array_equal(frame['wbo'], again['wbo']))
+            self.assertEqual(prep["energy_reference_mode"], "initial")
+            self.assertEqual(
+                initial["energy_reference"], frame["energy_reference"],
+            )
+            support = (
+                obs["joint_density"][0]
+                >= args.support_floor*np.max(obs["joint_density"][0])
+            )
+            self.assertAlmostEqual(
+                prep["fixed_energy_reference"],
+                np.average(
+                    initial["total_raw"][support],
+                    weights=obs["joint_density"][0][support],
+                ),
+            )
             p0 = ef["bo_channel_density_qR"][1, 0]/obs["joint_density"][1]
             p1 = ef["bo_channel_density_qR"][1, 1]/obs["joint_density"][1]
             reference = frame["energy_reference"]
@@ -420,8 +438,26 @@ class TDSEReportTests(unittest.TestCase):
             prep = render_final_visualizations._tdpes2_origin_preparation(
                 obs, ef, args,
             )
+            initial = render_final_visualizations._tdpes2_origin_frame(
+                obs, ef, prep, 0,
+            )
             frame = render_final_visualizations._tdpes2_origin_frame(
                 obs, ef, prep, 1,
+            )
+            self.assertEqual(prep["energy_reference_mode"], "initial")
+            self.assertEqual(
+                initial["energy_reference"], frame["energy_reference"],
+            )
+            support = (
+                obs["heavy_density"][0]
+                >= args.support_floor*np.max(obs["heavy_density"][0])
+            )
+            self.assertAlmostEqual(
+                prep["fixed_energy_reference"],
+                np.average(
+                    initial["total_raw"][support],
+                    weights=obs["heavy_density"][0][support],
+                ),
             )
             np.testing.assert_allclose(
                 frame["native_total"], frame["native_gi"]+frame["gd"],
@@ -437,6 +473,36 @@ class TDSEReportTests(unittest.TestCase):
                 np.max(np.abs(frame["identity_residual"])), 2.0e-15,
             )
             self.assertEqual(frame["bo_reference"].shape, (2, len(obs["R"])))
+
+    def test_tdpes_both_reference_modes_write_distinct_products(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_archive(root)
+            output = root/"both_reference_modes"
+            args = render_final_visualizations.parse_args([
+                str(root), "--outdir", str(output),
+                "--only", "tdpes1", "tdpes2",
+                "--tdpes-energy-reference", "both",
+                "--no-animation", "--snapshot-count", "2",
+                "--max-frames", "2", "--dpi", "30",
+            ])
+            render_final_visualizations.run(args)
+            for name in (
+                "tdpes1_origin_positive_gauge_snapshots.png",
+                "tdpes1_origin_positive_gauge_framewise_reference_snapshots.png",
+                "tdpes2_origin_positive_gauge_snapshots.png",
+                "tdpes2_origin_positive_gauge_framewise_reference_snapshots.png",
+            ):
+                self.assertTrue((output/name).is_file(), name)
+            manifest = (output/"final_visualizations_manifest.txt").read_text()
+            self.assertIn(
+                "tdpes1_rendered_energy_reference_modes=initial,framewise",
+                manifest,
+            )
+            self.assertIn(
+                "tdpes2_rendered_energy_reference_modes=initial,framewise",
+                manifest,
+            )
 
     def test_first_level_only_gauge_matches_complete_zero_gauge(self):
         with TemporaryDirectory() as temporary:

@@ -454,8 +454,10 @@ positive-gauge mechanical momentum이다.
 
 TDPES origin은 2×3 패널: reconstructed total, wBO 1 (ground),
 wBO 2+ (first excited를 포함한 모든 excited BO 채널), GD, q geometry,
-R geometry이다. 하나의 density-weighted `E_ref(t)`를 모든 BO surface와
-total에 동일하게 적용한다. 따라서 표시된 격자점마다
+R geometry이다. 기본적으로 (t=0)의 occupied-density-weighted mean인
+고정된 `E_ref_fixed`를 한 번 계산하여 모든 시간의 BO surface와 total에
+동일하게 적용한다. 따라서 실제 시간에 따른 전체 energy offset도 보존되며,
+표시된 격자점마다
 `total = wBO_1 + wBO_2plus + GD + q_geo + R_geo`가 roundoff까지 성립한다.
 `wBO_1=|C_0|^2(E_0-E_ref)`이고 `wBO_2plus=sum_(j>=1)|C_j|^2(E_j-E_ref)`이다.
 두 번째 항에 함께 묶인 ``j>=2`` 기여의 최대값은 manifest에 기록한다.
@@ -467,7 +469,8 @@ EF cache에는 최소 2개 `bo_channel_density_qR` 채널이 필요하다.
 두 번째 TDPES의 1D origin decomposition은 ``--only tdpes2``로 만든다.
 positive-density gauge에서 여섯 패널
 ``total, wBO_1, wBO_2plus, GD, q_geo, R_geo``를 그리고, 모든 패널은 하나의
-density-weighted ``E_ref(t)``와 공통 y축을 사용한다. 따라서 각 heavy-grid
+고정된 (t=0) density-weighted ``E_ref_fixed``와 공통 y축을 사용한다.
+따라서 각 heavy-grid
 점에서
 ``total = wBO_1 + wBO_2plus + GD + q_geo + R_geo``가 roundoff까지 정확히
 성립하며, 폐합 오차가 허용범위를 넘으면 렌더링을 중단한다.
@@ -475,16 +478,22 @@ density-weighted ``E_ref(t)``와 공통 y축을 사용한다. 따라서 각 heav
 뺀 완전한 internal-proton kinetic/link contribution이고, ``R_geo``는
 ``(1-|S_Gamma,R1|^2)/(2 M dR^2)``의 site-centred continuum limit이다.
 각 패널의 파랑/주황 점선은
-``bar(E_j)(R,t)=int dq rho(q|R,t)[E_j_BO(q,R)-E_ref(t)]``이며, 해당 BO
+``bar(E_j)(R,t)=int dq rho(q|R,t)[E_j_BO(q,R)-E_ref_fixed]``이며, 해당 BO
 surface의 proton-conditioned reference이지 각 decomposition term의 일부를
 추가로 더한 선은 아니다. x축은 frame별 heavy-density support를 따라간다.
 
 ```bash
 python -m multi_component_exact_factorization.render_final_visualizations \
-  results/YYYYMMDD/RUN_NAME --only tdpes2 \
+  results/YYYYMMDD/RUN_NAME --only tdpes1 tdpes2 \
+  --tdpes-energy-reference both \
   --format mp4 --fps 12 --max-frames 240 --snapshot-count 8 \
   --dpi 180 --animation-dpi 120 --movie-preset fast
 ```
+
+``--tdpes-energy-reference initial``이 기본이며 고정된 (t=0) 원점을 쓴다.
+``framewise``는 각 frame의 occupied mean을 다시 빼는 과거 비교 방식이고,
+``both``는 두 방식을 한 번에 렌더링한다. Framewise 결과에는
+``_framewise_reference`` 접미사가 붙으므로 fixed-(t=0) 결과를 덮어쓰지 않는다.
 
 교수님 분석용 nested-factorization 4-panel만 다시 만들려면 다음을 사용한다.
 

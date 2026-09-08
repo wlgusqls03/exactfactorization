@@ -2329,10 +2329,20 @@ def _tdpes1_origin_frame(obs, ef_zero, prep, frame):
         ef_zero["sphi_R1"][frame], obs["dR"], axis=1,
     )/(2.0*prep["heavy_mass"])
     total_raw = wbo_raw+geo_q+geo_R+gd_raw
+    # Preparation fixes this value once from frame zero.  The fallback is used
+    # only by that bootstrap call, so every subsequently rendered frame keeps
+    # the same physical energy zero and retains genuine temporal offsets.
+    reference_mode = prep.get("energy_reference_mode", "initial")
     energy_reference = (
-        np.average(total_raw[support], weights=density[support])
-        if np.any(support) else 0.0
+        prep.get("fixed_energy_reference")
+        if reference_mode == "initial" else None
     )
+    if energy_reference is None:
+        energy_reference = (
+            np.average(total_raw[support], weights=density[support])
+            if np.any(support) else 0.0
+        )
+    energy_reference = float(energy_reference)
     total = total_raw-energy_reference
 
     # Use physical channel density / joint density, not global populations.
@@ -2355,7 +2365,7 @@ def _tdpes1_origin_frame(obs, ef_zero, prep, frame):
         "total": total, "wbo": wbo,
         "wbo_1": ground, "wbo_2": excited_sector,
         "wbo_2_pure": first_excited, "wbo_higher": higher_bo,
-        "native_gi": native_gi,
+        "native_gi": native_gi, "total_raw": total_raw,
         "gi_limit": wbo+geo_q+geo_R,
         "native_total": native_total, "gd_raw": gd_raw,
         "geo_q": geo_q, "geo_R": geo_R, "gd": gd_raw,
@@ -2379,6 +2389,9 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
     heavy_mass = float(obs["options"].get("heavy_mass", 1836.15267343))
     provisional = {
         "floor": floor, "proton_mass": proton_mass, "heavy_mass": heavy_mass,
+        "energy_reference_mode": getattr(
+            args, "tdpes_energy_reference", "initial",
+        ),
         "decades": float(args.decades),
         "focus_floor": getattr(args, 'analysis_focus_floor', 1e-2),
         "q_limits": _support_limits(
@@ -2390,6 +2403,9 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
         "contour_q_points": int(getattr(args, "tdpes_contour_q_points", 180)),
         "contour_R_points": int(getattr(args, "tdpes_contour_R_points", 120)),
     }
+    if provisional["energy_reference_mode"] == "initial":
+        initial = _tdpes1_origin_frame(obs, ef_zero, provisional, 0)
+        provisional["fixed_energy_reference"] = initial["energy_reference"]
     samples, geo_samples = [], []
     identity_errors, higher_bo_sizes = [], []
     for frame in _movie_frames(obs, min(
@@ -2595,6 +2611,13 @@ def render_tdpes1_origin(obs, ef_fields, outdir, args, snapshots, *,
             "final TDPES1 visualization requires positive-density gauge"
         )
     prep = _tdpes1_origin_preparation(obs, ef_fields, args)
+    if prep["energy_reference_mode"] == "framewise":
+        stem += "_framewise_reference"
+    reference_label = (
+        "fixed t=0 density-weighted energy origin"
+        if prep["energy_reference_mode"] == "initial"
+        else "framewise density-weighted energy origin"
+    )
     times = obs["times_fs"]
 
     def individual(frame):
@@ -2607,7 +2630,8 @@ def render_tdpes1_origin(obs, ef_fields, outdir, args, snapshots, *,
         )
         fig.suptitle(
             f"Origin of first-level TDPES structure | t={times[frame]:.4f} fs\n"
-            f"{gauge_label}; contours are occupied physical density; "
+            f"{gauge_label}; {reference_label}; "
+            "contours are occupied physical density; "
             "link metrics are continuum-limit diagnostics",
             fontweight="bold",
         )
@@ -2632,7 +2656,8 @@ def render_tdpes1_origin(obs, ef_fields, outdir, args, snapshots, *,
     summary_cax = fig.add_axes((0.958, 0.16, 0.009, 0.65))
     _tdpes1_colorbar(fig, prep, summary_cax)
     fig.suptitle(
-        f"First-level TDPES origin ({gauge_label}): 8 representative times",
+        f"First-level TDPES origin ({gauge_label}; {reference_label}): "
+        "8 representative times",
         fontweight="bold",
     )
     products.append(_save_figure(
@@ -2656,7 +2681,7 @@ def render_tdpes1_origin(obs, ef_fields, outdir, args, snapshots, *,
             )
             title.set_text(
                 f"Origin of first-level TDPES structure | t={times[frame]:.4f} fs\n"
-                f"{gauge_label}; one shared density-weighted energy origin; "
+                f"{gauge_label}; {reference_label}; "
                 "displayed decomposition closes exactly"
             )
             return (*artists, title)
@@ -2696,8 +2721,9 @@ def _tdpes2_origin_frame(obs, ef_positive, prep, frame):
     At finite spacing the native second GI scalar contains the BO average and
     the complete internal q kinetic/link contribution.  The outer R metric is
     carried by S^Gamma and is restored explicitly for the continuum-limit
-    diagnostic.  One scalar E_ref is then subtracted from total and every BO
-    energy, leaving the geometric and GD terms unchanged.
+    diagnostic.  One scalar E_ref fixed from the occupied density at t=0 is
+    subtracted from total and every BO energy at all times, leaving the
+    geometric and GD terms unchanged.
     """
     joint = np.asarray(obs["joint_density"][frame], float)
     heavy = np.asarray(obs["heavy_density"][frame], float)
@@ -2721,10 +2747,17 @@ def _tdpes2_origin_frame(obs, ef_positive, prep, frame):
     )/(2.0*prep["heavy_mass"])
     total_raw = wbo_raw+geo_q+geo_R+gd
     support = heavy >= prep["floor"]*max(float(np.max(heavy)), 1.0e-300)
+    reference_mode = prep.get("energy_reference_mode", "initial")
     energy_reference = (
-        np.average(total_raw[support], weights=heavy[support])
-        if np.any(support) else 0.0
+        prep.get("fixed_energy_reference")
+        if reference_mode == "initial" else None
     )
+    if energy_reference is None:
+        energy_reference = (
+            np.average(total_raw[support], weights=heavy[support])
+            if np.any(support) else 0.0
+        )
+    energy_reference = float(energy_reference)
     total = total_raw-energy_reference
     wbo = wbo_raw-energy_reference
 
@@ -2762,6 +2795,7 @@ def _tdpes2_origin_frame(obs, ef_positive, prep, frame):
         "wbo_2_pure": first_excited, "wbo_higher": higher_bo,
         "gd": gd, "geo_q": geo_q, "geo_R": geo_R,
         "native_total": native_total, "native_gi": native_gi,
+        "total_raw": total_raw,
         "energy_reference": energy_reference,
         "bo_reference": bo_reference,
         "identity_residual": identity_residual,
@@ -2798,7 +2832,13 @@ def _tdpes2_origin_preparation(obs, ef_positive, args):
         "floor": float(args.support_floor),
         "focus_floor": float(args.analysis_focus_floor),
         "heavy_mass": float(obs["options"].get("heavy_mass", 1836.15267343)),
+        "energy_reference_mode": getattr(
+            args, "tdpes_energy_reference", "initial",
+        ),
     }
+    if provisional["energy_reference_mode"] == "initial":
+        initial = _tdpes2_origin_frame(obs, ef_positive, provisional, 0)
+        provisional["fixed_energy_reference"] = initial["energy_reference"]
     samples, identity_errors, higher_sizes = [], [], []
     frames = _movie_frames(obs, min(
         args.max_frames, getattr(args, "scale_sample_frames", 32),
@@ -2924,6 +2964,11 @@ def _update_tdpes2_origin(state, axes, obs, ef_positive, prep, frame):
 def render_tdpes2_origin(obs, ef_positive, outdir, args, snapshots):
     prep = _tdpes2_origin_preparation(obs, ef_positive, args)
     times = obs["times_fs"]
+    reference_label = (
+        "fixed t=0 energy origin"
+        if prep["energy_reference_mode"] == "initial"
+        else "framewise density-weighted energy origin"
+    )
 
     def individual(frame):
         fig = plt.figure(figsize=(16.5, 9.2), constrained_layout=False)
@@ -2932,13 +2977,15 @@ def render_tdpes2_origin(obs, ef_positive, outdir, args, snapshots):
         fig.suptitle(
             "Origin of second-level TDPES structure | "
             f"t={times[frame]:.4f} fs\npositive-density gauge; "
-            "one shared energy origin and y scale; dashed curves are "
+            f"{reference_label} and one y scale; dashed curves are "
             "proton-conditioned bare BO references",
             fontweight="bold",
         )
         return fig
 
     stem = "tdpes2_origin_positive_gauge"
+    if prep["energy_reference_mode"] == "framewise":
+        stem += "_framewise_reference"
     products = _save_individual_frames(
         individual, snapshots, times, Path(outdir)/f"{stem}_frames",
         stem, args.dpi,
@@ -2959,7 +3006,7 @@ def render_tdpes2_origin(obs, ef_positive, outdir, args, snapshots):
         )
     fig.suptitle(
         "Second-level TDPES origin (positive-density gauge): "
-        "8 representative times",
+        f"8 representative times; {reference_label}",
         fontweight="bold",
     )
     products.append(_save_figure(
@@ -2982,7 +3029,7 @@ def render_tdpes2_origin(obs, ef_positive, outdir, args, snapshots):
             title.set_text(
                 "Origin of second-level TDPES structure | "
                 f"t={times[frame]:.4f} fs\npositive-density gauge; "
-                "one shared energy origin and y scale; dashed curves are "
+                f"{reference_label} and one y scale; dashed curves are "
                 "proton-conditioned bare BO references"
             )
             return (*artists, title)
@@ -3111,19 +3158,32 @@ def run(args):
         )
         products.extend(generated)
 
-    tdpes1_positive_prep = None
+    requested_reference_mode = args.tdpes_energy_reference
+    reference_modes = (
+        ("initial", "framewise")
+        if requested_reference_mode == "both"
+        else (requested_reference_mode,)
+    )
+    tdpes1_preps = {}
     if "tdpes1" in selected:
-        generated, tdpes1_positive_prep = render_tdpes1_origin(
-            obs, ef, output, args, snapshots,
-        )
-        products.extend(generated)
+        for reference_mode in reference_modes:
+            args.tdpes_energy_reference = reference_mode
+            generated, prep = render_tdpes1_origin(
+                obs, ef, output, args, snapshots,
+            )
+            products.extend(generated)
+            tdpes1_preps[reference_mode] = prep
 
-    tdpes2_prep = None
+    tdpes2_preps = {}
     if "tdpes2" in selected:
-        generated, tdpes2_prep = render_tdpes2_origin(
-            obs, ef, output, args, snapshots,
-        )
-        products.extend(generated)
+        for reference_mode in reference_modes:
+            args.tdpes_energy_reference = reference_mode
+            generated, prep = render_tdpes2_origin(
+                obs, ef, output, args, snapshots,
+            )
+            products.extend(generated)
+            tdpes2_preps[reference_mode] = prep
+    args.tdpes_energy_reference = requested_reference_mode
 
     alpha_positive = None
     branch_turns = None
@@ -3140,7 +3200,14 @@ def run(args):
         )
         products.extend(generated)
 
-    tdpes1_prep = tdpes1_positive_prep
+    tdpes1_prep = (
+        tdpes1_preps.get("initial")
+        or next(iter(tdpes1_preps.values()), None)
+    )
+    tdpes2_prep = (
+        tdpes2_preps.get("initial")
+        or next(iter(tdpes2_preps.values()), None)
+    )
 
     heavy_prep = None
     if "heavy" in selected:
@@ -3238,9 +3305,15 @@ def run(args):
         ))
     if tdpes1_prep is not None:
         manifest.extend((
+            "tdpes1_rendered_energy_reference_modes="
+            + ",".join(tdpes1_preps),
             "tdpes1_panels=total,wBO_1,wBO_2,GD,q_geo,R_geo",
             "tdpes1_identity=total=wBO_1+wBO_2plus+GD+q_geo+R_geo",
-            "tdpes1_energy_origin=one_density_weighted_E_ref_applied_to_every_BO_surface_and_total",
+            f"tdpes1_energy_reference_mode={tdpes1_prep['energy_reference_mode']}",
+            (
+                "tdpes1_fixed_energy_reference="
+                f"{tdpes1_prep.get('fixed_energy_reference', float('nan')):.16g}"
+            ),
             "tdpes1_wBO_1=abs(C_0)^2*(E_0_BO-E_ref)",
             "tdpes1_wBO_2plus=sum_j_ge_1_abs(C_j)^2*(E_j_BO-E_ref)",
             f"tdpes1_max_identity_residual={tdpes1_prep['max_identity_residual']:.16g}",
@@ -3262,10 +3335,16 @@ def run(args):
         ))
     if tdpes2_prep is not None:
         manifest.extend((
+            "tdpes2_rendered_energy_reference_modes="
+            + ",".join(tdpes2_preps),
             "tdpes2_gauge=positive_density",
             "tdpes2_panels=total,wBO_1,wBO_2plus,GD,q_geo,R_geo",
             "tdpes2_identity=total=wBO_1+wBO_2plus+GD+q_geo+R_geo",
-            "tdpes2_energy_origin=one_density_weighted_E_ref_applied_to_every_BO_surface_and_total",
+            f"tdpes2_energy_reference_mode={tdpes2_prep['energy_reference_mode']}",
+            (
+                "tdpes2_fixed_energy_reference="
+                f"{tdpes2_prep.get('fixed_energy_reference', float('nan')):.16g}"
+            ),
             "tdpes2_wBO_1=integral_dq_rho_0_over_rho_R_times_(E_0_BO-E_ref)",
             "tdpes2_wBO_2plus=all_j_ge_1_sector_of_integral_dq_rho_conditional_times_(epsilon_1_wBO-E_ref)",
             "tdpes2_q_geo=native_epsilon_2_GI-minus-proton_average_epsilon_1_wBO",
@@ -3354,6 +3433,14 @@ def parse_args(argv=None):
     parser.add_argument("--tdpes-color-scale", choices=("symlog", "linear"),
                         default="linear",
                         help="one shared TDPES1 norm; linear is the readable default, symlog reveals small structure")
+    parser.add_argument(
+        "--tdpes-energy-reference",
+        choices=("initial", "framewise", "both"), default="initial",
+        help=(
+            "TDPES energy zero: fixed occupied-density mean at t=0 "
+            "(default), legacy per-frame mean, or render both"
+        ),
+    )
     parser.add_argument("--movie-preset", choices=("ultrafast", "veryfast", "fast", "medium", "slow"),
                         default="medium", help="libx264 encoding preset for analysis movies")
     parser.add_argument('--analysis-focus-floor', type=float, default=1e-2,
