@@ -504,6 +504,78 @@ class TDSEReportTests(unittest.TestCase):
                 manifest,
             )
 
+    def test_geometry_log_movie_writes_reference_independent_aliases(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_archive(root)
+            output = root/"geometry_log"
+            args = render_final_visualizations.parse_args([
+                str(root), "--outdir", str(output), "--only", "geometry",
+                "--format", "gif", "--snapshot-count", "2",
+                "--max-frames", "2", "--scale-sample-frames", "2",
+                "--dpi", "30", "--animation-dpi", "25", "--fps", "2",
+            ])
+            render_final_visualizations.run(args)
+            fixed = output/"tdpes_geometry_log_fixed_reference_movie.gif"
+            framewise = (
+                output/"tdpes_geometry_log_framewise_reference_movie.gif"
+            )
+            self.assertTrue(fixed.is_file())
+            self.assertTrue(framewise.is_file())
+            self.assertEqual(fixed.read_bytes(), framewise.read_bytes())
+            manifest = (output/"final_visualizations_manifest.txt").read_text()
+            self.assertIn("geometry_energy_reference_dependence=none", manifest)
+            self.assertIn(
+                "geometry_fixed_and_framewise_movies=identical_aliases_by_definition",
+                manifest,
+            )
+
+    def test_geometry_terms_match_existing_tdpes_decompositions(self):
+        with TemporaryDirectory() as temporary:
+            archive, _ = self._write_archive(temporary)
+            obs = tdse_report.calculate_observables(
+                tdse_report.load_observables(archive)
+            )
+            ef = tdse_report._load_ef_fields(
+                obs,
+                field_keys=(
+                    "epsilon_1", "epsilon_1_gi", "epsilon_1_wbo",
+                    "epsilon_2", "epsilon_2_gi", "bo_channel_density_qR",
+                ),
+                link_keys=("sphi_q1", "sphi_R1", "sgamma_R1"),
+            )
+            args = argparse.Namespace(
+                support_floor=1.0e-4, analysis_focus_floor=1.0e-2,
+                max_frames=3, scale_sample_frames=3, decades=6.0,
+                tdpes_contour_q_points=20, tdpes_contour_R_points=20,
+            )
+            prep = render_final_visualizations._tdpes_geometry_preparation(
+                obs, ef, args,
+            )
+            geometry = render_final_visualizations._tdpes_geometry_frame(
+                obs, ef, prep, 1,
+            )
+            prep1 = dict(
+                prep, energy_reference_mode="framewise",
+            )
+            first = render_final_visualizations._tdpes1_origin_frame(
+                obs, ef, prep1, 1,
+            )
+            second = render_final_visualizations._tdpes2_origin_frame(
+                obs, ef, prep1, 1,
+            )
+            for geometry_key, decomposition, decomposition_key in (
+                ("geo1_q", first, "geo_q"),
+                ("geo1_R", first, "geo_R"),
+                ("geo2_q", second, "geo_q"),
+                ("geo2_R", second, "geo_R"),
+            ):
+                np.testing.assert_allclose(
+                    geometry[geometry_key], decomposition[decomposition_key],
+                    rtol=0.0, atol=0.0,
+                )
+            self.assertGreater(prep["bound"], prep["linthresh"])
+
     def test_first_level_only_gauge_matches_complete_zero_gauge(self):
         with TemporaryDirectory() as temporary:
             archive, _ = self._write_archive(temporary)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -39,7 +40,7 @@ from .visualize import NUMBER_FORMATTER, selected_frames
 
 FINAL_PRODUCTS = (
     "marginal", "joint", "velocity", "vector", "current", "nested",
-    "heavy", "bo", "bo3d", "tdpes1", "tdpes2",
+    "heavy", "bo", "bo3d", "tdpes1", "tdpes2", "geometry",
 )
 
 
@@ -77,6 +78,27 @@ def _save_individual_frames(builder, frames, times, directory, stem, dpi):
         path = directory/f"{order:02d}_{stem}_{_time_tag(times[frame])}.png"
         paths.append(_save_figure(fig, path, dpi))
     return paths
+
+
+def _hardlink_output_alias(source, target):
+    """Give one rendered product a second scientifically equivalent name."""
+    source, target = Path(source), Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() or target.is_symlink():
+        target.unlink()
+    try:
+        os.link(source, target)
+    except OSError:
+        # Output directories can exceptionally cross filesystem boundaries.
+        # Stream the already encoded file instead of rerendering every frame.
+        with source.open("rb") as reader, target.open("wb") as writer:
+            while True:
+                block = reader.read(8*1024*1024)
+                if not block:
+                    break
+                writer.write(block)
+    print(f"final visualization alias 저장: {target}")
+    return target
 
 
 def _support_limits(coordinate, density, floor=1.0e-4, padding=0.06,
@@ -3043,6 +3065,310 @@ def render_tdpes2_origin(obs, ef_positive, outdir, args, snapshots):
 
 
 # ---------------------------------------------------------------------------
+# 9. Four geometry contributions on one shared symmetric-logarithmic scale
+
+
+def _tdpes_geometry_frame(obs, ef_positive, prep, frame):
+    """Return reference-independent first/second-level geometry energies."""
+    joint = np.asarray(obs["joint_density"][frame], float)
+    heavy = np.asarray(obs["heavy_density"][frame], float)
+    conditional = np.divide(
+        joint, heavy[None, :], out=np.zeros_like(joint),
+        where=heavy[None, :] > np.finfo(np.float64).tiny,
+    )
+    geo1_q = _site_link_metric(
+        ef_positive["sphi_q1"][frame], obs["dq"], axis=0,
+    )/(2.0*prep["proton_mass"])
+    geo1_R = _site_link_metric(
+        ef_positive["sphi_R1"][frame], obs["dR"], axis=1,
+    )/(2.0*prep["heavy_mass"])
+    wbo2 = np.sum(
+        conditional*np.asarray(ef_positive["epsilon_1_wbo"][frame], float),
+        axis=0, dtype=np.float64,
+    )*obs["dq"]
+    geo2_q = np.asarray(ef_positive["epsilon_2_gi"][frame], float)-wbo2
+    geo2_R = _site_link_metric(
+        ef_positive["sgamma_R1"][frame], obs["dR"], axis=0,
+    )/(2.0*prep["heavy_mass"])
+    peak = max(float(np.max(joint)), 1.0e-300)
+    return {
+        "geo1_q": geo1_q, "geo1_R": geo1_R,
+        "geo2_q": geo2_q, "geo2_R": geo2_R,
+        "joint_log": np.log10(np.maximum(joint/peak, 1.0e-300)),
+    }
+
+
+def _tdpes_geometry_preparation(obs, ef_positive, args):
+    required = (
+        "epsilon_2_gi", "epsilon_1_wbo",
+        "sphi_q1", "sphi_R1", "sgamma_R1",
+    )
+    missing = [key for key in required if key not in ef_positive]
+    if missing:
+        raise KeyError(
+            "geometry comparison requires: " + ", ".join(missing)
+            + "; rebuild the EF cache with --link-output nearest --overwrite"
+        )
+    prep = {
+        "floor": float(args.support_floor),
+        "focus_floor": float(args.analysis_focus_floor),
+        "proton_mass": float(obs["options"].get("proton_mass", 1836.15267343)),
+        "heavy_mass": float(obs["options"].get("heavy_mass", 1836.15267343)),
+        "decades": float(getattr(args, "geometry_decades", 8.0)),
+        "contour_q_points": int(args.tdpes_contour_q_points),
+        "contour_R_points": int(args.tdpes_contour_R_points),
+    }
+    samples = []
+    negative_minima = {key: 0.0 for key in (
+        "geo1_q", "geo1_R", "geo2_q", "geo2_R",
+    )}
+    frames = _movie_frames(obs, min(args.max_frames, args.scale_sample_frames))
+    for frame in frames:
+        frame = int(frame)
+        current = _tdpes_geometry_frame(obs, ef_positive, prep, frame)
+        joint = np.asarray(obs["joint_density"][frame], float)
+        heavy = np.asarray(obs["heavy_density"][frame], float)
+        support2d = joint >= prep["focus_floor"]*max(float(np.max(joint)), 1e-300)
+        support1d = heavy >= prep["focus_floor"]*max(float(np.max(heavy)), 1e-300)
+        for key, support in (("geo1_q", support2d), ("geo1_R", support2d),
+                             ("geo2_q", support1d), ("geo2_R", support1d)):
+            values = current[key][support & np.isfinite(current[key])]
+            if values.size:
+                magnitudes = np.abs(values)
+                magnitudes = magnitudes[magnitudes > 0.0]
+                if magnitudes.size:
+                    # Keep scale selection O(number of sampled frames), not
+                    # O(full q-R trajectory), for multi-GiB production grids.
+                    samples.append(float(np.percentile(magnitudes, 99.5)))
+                negative_minima[key] = min(
+                    negative_minima[key], float(np.min(values)),
+                )
+    samples = np.asarray(samples, float)
+    samples = samples[np.isfinite(samples) & (samples > 0.0)]
+    bound = (
+        float(np.percentile(samples, 98.0)) if samples.size else 1.0e-12
+    )
+    bound = max(1.06*bound, 1.0e-14)
+    linthresh = max(bound*10.0**(-prep["decades"]), 1.0e-18)
+    prep.update({
+        "bound": bound,
+        "linthresh": linthresh,
+        "negative_minima": negative_minima,
+        "reference_dependence": "none",
+    })
+    return prep
+
+
+def _tdpes_geometry_norm(prep):
+    return SymLogNorm(
+        linthresh=prep["linthresh"], linscale=0.7,
+        vmin=-prep["bound"], vmax=prep["bound"], base=10,
+    )
+
+
+def _tdpes_geometry_axes(fig):
+    grid = fig.add_gridspec(
+        2, 2, left=0.070, right=0.900, bottom=0.090, top=0.850,
+        wspace=0.25, hspace=0.38,
+    )
+    return [fig.add_subplot(grid[row, column])
+            for row in range(2) for column in range(2)]
+
+
+_TDPES_GEOMETRY_TITLES = (
+    r"First level: $\epsilon^{(1)}_{q,\mathrm{geo}}(q,R,t)$",
+    r"First level: $\epsilon^{(1)}_{R,\mathrm{geo}}(q,R,t)$",
+    r"Second level: $\epsilon^{(2)}_{q,\mathrm{geo}}(R,t)$",
+    r"Second level: $\epsilon^{(2)}_{R,\mathrm{geo}}(R,t)$",
+)
+
+
+def _draw_tdpes_geometry(fig, axes, obs, ef_positive, prep, frame,
+                         *, colorbar=True):
+    current = _tdpes_geometry_frame(obs, ef_positive, prep, frame)
+    active2d, indices, limits2d = _frame_focus(
+        obs, frame, prep["focus_floor"],
+    )
+    qi, Ri = indices
+    cropped_active = active2d[np.ix_(qi, Ri)]
+    extent = [obs["q"][qi[0]], obs["q"][qi[-1]],
+              obs["R"][Ri[0]], obs["R"][Ri[-1]]]
+    cq = qi[np.linspace(
+        0, len(qi)-1, min(len(qi), prep["contour_q_points"]), dtype=int,
+    )]
+    cR = Ri[np.linspace(
+        0, len(Ri)-1, min(len(Ri), prep["contour_R_points"]), dtype=int,
+    )]
+    norm = _tdpes_geometry_norm(prep)
+    images, contours = [], []
+    for axis, key, title in zip(
+            axes[:2], ("geo1_q", "geo1_R"), _TDPES_GEOMETRY_TITLES[:2]):
+        values = current[key][np.ix_(qi, Ri)]
+        image = axis.imshow(
+            np.ma.masked_where(~cropped_active | ~np.isfinite(values), values).T,
+            origin="lower", aspect="auto", extent=extent,
+            cmap=masked_cmap(SIGNED_CMAP), norm=norm, interpolation="nearest",
+        )
+        contours.append(_joint_contours(
+            axis, obs, current["joint_log"][np.ix_(cq, cR)],
+            -np.log10(prep["focus_floor"]), q=obs["q"][cq], R=obs["R"][cR],
+            color="black", halo_color="white",
+        ))
+        axis.set_facecolor(MASK_COLOR)
+        axis.set(
+            xlim=limits2d[0], ylim=limits2d[1],
+            xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
+        )
+        axis.set_title(title, loc="left", fontweight="semibold", fontsize=9)
+        axis.tick_params(labelsize=7, direction="in")
+        images.append(image)
+
+    active1d, _, limits1d = _frame_heavy_focus(
+        obs, frame, prep["focus_floor"],
+    )
+    lines = []
+    for axis, key, title in zip(
+            axes[2:], ("geo2_q", "geo2_R"), _TDPES_GEOMETRY_TITLES[2:]):
+        values = np.where(active1d, current[key], np.nan)
+        positive, = axis.plot(
+            obs["R"], np.where(values >= 0.0, values, np.nan),
+            color="#c62828", lw=2.0, label="positive",
+        )
+        negative, = axis.plot(
+            obs["R"], np.where(values < 0.0, values, np.nan),
+            color="#1565c0", lw=2.0, label="negative",
+        )
+        axis.axhline(0.0, color="0.55", lw=0.7)
+        axis.set_yscale(
+            "symlog", linthresh=prep["linthresh"], linscale=0.7, base=10,
+        )
+        axis.set(
+            xlim=limits1d, ylim=(-prep["bound"], prep["bound"]),
+            xlabel=r"heavy $R$ ($a_0$)", ylabel="geometry energy (Hartree)",
+        )
+        axis.set_title(title, loc="left", fontweight="semibold", fontsize=9)
+        axis.tick_params(labelsize=7, direction="in")
+        axis.grid(alpha=0.17)
+        lines.append((positive, negative))
+    axes[2].legend(frameon=False, fontsize=7, loc="best")
+    if colorbar:
+        cax = fig.add_axes((0.925, 0.515, 0.014, 0.285))
+        bar = fig.colorbar(
+            ScalarMappable(norm=norm, cmap=SIGNED_CMAP), cax=cax,
+            extend="both", format=NUMBER_FORMATTER,
+        )
+        bar.set_label("geometry energy (Hartree; shared symmetric log)")
+        bar.ax.tick_params(labelsize=7)
+    return {"images": images, "contours": contours, "lines": lines}
+
+
+def _update_tdpes_geometry(state, axes, obs, ef_positive, prep, frame):
+    current = _tdpes_geometry_frame(obs, ef_positive, prep, frame)
+    active2d, indices, limits2d = _frame_focus(
+        obs, frame, prep["focus_floor"],
+    )
+    qi, Ri = indices
+    cropped_active = active2d[np.ix_(qi, Ri)]
+    extent = [obs["q"][qi[0]], obs["q"][qi[-1]],
+              obs["R"][Ri[0]], obs["R"][Ri[-1]]]
+    cq = qi[np.linspace(
+        0, len(qi)-1, min(len(qi), prep["contour_q_points"]), dtype=int,
+    )]
+    cR = Ri[np.linspace(
+        0, len(Ri)-1, min(len(Ri), prep["contour_R_points"]), dtype=int,
+    )]
+    artists = []
+    for index, (axis, image, key) in enumerate(zip(
+            axes[:2], state["images"], ("geo1_q", "geo1_R"))):
+        values = current[key][np.ix_(qi, Ri)]
+        image.set_data(np.ma.masked_where(
+            ~cropped_active | ~np.isfinite(values), values,
+        ).T)
+        image.set_extent(extent)
+        axis.set_xlim(limits2d[0])
+        axis.set_ylim(limits2d[1])
+        for collection in state["contours"][index].collections:
+            collection.remove()
+        state["contours"][index] = _joint_contours(
+            axis, obs, current["joint_log"][np.ix_(cq, cR)],
+            -np.log10(prep["focus_floor"]), q=obs["q"][cq], R=obs["R"][cR],
+            color="black", halo_color="white",
+        )
+        artists.append(image)
+        artists.extend(state["contours"][index].collections)
+    active1d, _, limits1d = _frame_heavy_focus(
+        obs, frame, prep["focus_floor"],
+    )
+    for axis, lines, key in zip(
+            axes[2:], state["lines"], ("geo2_q", "geo2_R")):
+        values = np.where(active1d, current[key], np.nan)
+        lines[0].set_ydata(np.where(values >= 0.0, values, np.nan))
+        lines[1].set_ydata(np.where(values < 0.0, values, np.nan))
+        axis.set_xlim(limits1d)
+        artists.extend(lines)
+    return artists
+
+
+def render_tdpes_geometry_log(obs, ef_positive, outdir, args, snapshots):
+    """Render once; fixed/framewise names are identical reference-free aliases."""
+    if ef_positive.get("gauge") != "positive_density":
+        raise ValueError("geometry comparison requires the positive-density cache")
+    prep = _tdpes_geometry_preparation(obs, ef_positive, args)
+    times = obs["times_fs"]
+
+    def individual(frame):
+        fig = plt.figure(figsize=(15.5, 9.0), constrained_layout=False)
+        axes = _tdpes_geometry_axes(fig)
+        _draw_tdpes_geometry(fig, axes, obs, ef_positive, prep, frame)
+        fig.suptitle(
+            "First- and second-level geometry energies | "
+            f"t={times[frame]:.4f} fs\n"
+            "one shared symmetric-log Hartree scale; energy-reference independent",
+            fontweight="bold",
+        )
+        return fig
+
+    products = _save_individual_frames(
+        individual, snapshots, times, Path(outdir)/"tdpes_geometry_log_frames",
+        "tdpes_geometry_log", args.dpi,
+    )
+    if not args.no_animation:
+        frames = _movie_frames(obs, args.max_frames)
+        fig = plt.figure(figsize=(15.5, 9.0), constrained_layout=False)
+        axes = _tdpes_geometry_axes(fig)
+        title = fig.suptitle("", fontweight="bold")
+        state = _draw_tdpes_geometry(
+            fig, axes, obs, ef_positive, prep, int(frames[0]),
+        )
+
+        def update(number):
+            frame = int(frames[number])
+            artists = _update_tdpes_geometry(
+                state, axes, obs, ef_positive, prep, frame,
+            )
+            title.set_text(
+                "First- and second-level geometry energies | "
+                f"t={times[frame]:.4f} fs\n"
+                "shared symmetric-log scale; independent of fixed/framewise E_ref"
+            )
+            return (*artists, title)
+
+        update(0)
+        animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
+        fixed = _save_analysis_movie(
+            animation, fig, outdir,
+            "tdpes_geometry_log_fixed_reference_movie", args,
+        )
+        products.append(fixed)
+        suffix = Path(fixed).suffix
+        products.append(_hardlink_output_alias(
+            fixed,
+            Path(outdir)/f"tdpes_geometry_log_framewise_reference_movie{suffix}",
+        ))
+    return products, prep
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 
 
@@ -3078,7 +3404,7 @@ def run(args):
         name in selected
         for name in (
             "velocity", "vector", "current", "nested", "heavy", "bo",
-            "bo3d", "tdpes1", "tdpes2",
+            "bo3d", "tdpes1", "tdpes2", "geometry",
         )
     )
     ef = None
@@ -3111,6 +3437,8 @@ def run(args):
                 "epsilon_2", "epsilon_2_gi", "epsilon_1_wbo",
                 "bo_channel_density_qR",
             ))
+        if "geometry" in selected:
+            field_keys.extend(("epsilon_2_gi", "epsilon_1_wbo"))
         field_keys = tuple(dict.fromkeys(field_keys))
         link_keys = []
         if "nested" in selected:
@@ -3120,6 +3448,8 @@ def run(args):
                 link_keys.extend(("sphi_q1", "sphi_R1"))
             if "tdpes2" in selected:
                 link_keys.append("sgamma_R1")
+            if "geometry" in selected:
+                link_keys.extend(("sphi_q1", "sphi_R1", "sgamma_R1"))
             if "heavy" in selected:
                 link_keys.append("sgamma_R1")
         ef = tdse_report._load_ef_fields(
@@ -3184,6 +3514,13 @@ def run(args):
             products.extend(generated)
             tdpes2_preps[reference_mode] = prep
     args.tdpes_energy_reference = requested_reference_mode
+
+    geometry_prep = None
+    if "geometry" in selected:
+        generated, geometry_prep = render_tdpes_geometry_log(
+            obs, ef, output, args, snapshots,
+        )
+        products.extend(generated)
 
     alpha_positive = None
     branch_turns = None
@@ -3356,6 +3693,21 @@ def run(args):
             f"tdpes2_energy_limits={tdpes2_prep['energy_limits']}",
             "tdpes2_x_window=per_frame_heavy_density_support",
         ))
+    if geometry_prep is not None:
+        manifest.extend((
+            "geometry_panels=tdpes1_q_geo,tdpes1_R_geo,tdpes2_q_geo,tdpes2_R_geo",
+            "geometry_gauge=positive_density_input_but_all_four_terms_are_gauge_invariant",
+            "geometry_energy_reference_dependence=none",
+            "geometry_fixed_and_framewise_movies=identical_aliases_by_definition",
+            "geometry_scale=one_shared_symmetric_log_Hartree_scale",
+            f"geometry_decades={geometry_prep['decades']:.16g}",
+            f"geometry_shared_bound={geometry_prep['bound']:.16g}",
+            f"geometry_linear_threshold={geometry_prep['linthresh']:.16g}",
+            f"geometry_negative_minima={geometry_prep['negative_minima']}",
+            "geometry_display_values=raw_unsmoothed_no_energy_reference_subtraction",
+            "geometry_2d_window=per_frame_joint_density_support",
+            "geometry_1d_window=per_frame_heavy_density_support",
+        ))
     if heavy_prep is not None:
         manifest.extend((
             "harmonic_potential=heavy_trap_alpha*(R-heavy_trap_center)^2",
@@ -3404,6 +3756,10 @@ def parse_args(argv=None):
     parser.add_argument("--dpi", type=int, default=180)
     parser.add_argument("--animation-dpi", type=int, default=110)
     parser.add_argument("--decades", type=float, default=6.0)
+    parser.add_argument(
+        "--geometry-decades", type=float, default=8.0,
+        help="symmetric-log dynamic range reserved for the four geometry terms",
+    )
     parser.add_argument("--support-floor", type=float, default=1.0e-4)
     parser.add_argument(
         "--velocity-q-points", type=int, default=36,
@@ -3456,7 +3812,7 @@ def parse_args(argv=None):
         "bo3d_q_points", "bo3d_R_points",
         "movie_bo3d_q_points", "movie_bo3d_R_points",
         "tdpes_contour_q_points", "tdpes_contour_R_points",
-        "scale_sample_frames",
+        "scale_sample_frames", "geometry_decades",
     )
     for name in positive:
         if not np.isfinite(getattr(args, name)) or getattr(args, name) <= 0:

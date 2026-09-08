@@ -495,6 +495,32 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 ``both``는 두 방식을 한 번에 렌더링한다. Framewise 결과에는
 ``_framewise_reference`` 접미사가 붙으므로 fixed-(t=0) 결과를 덮어쓰지 않는다.
 
+작은 geometry energy 네 항만 한 척도에서 직접 비교하려면 다음을 사용한다.
+
+```bash
+python -m multi_component_exact_factorization.render_final_visualizations \
+  results/YYYYMMDD/RUN_NAME --only geometry \
+  --format mp4 --fps 12 --max-frames 240 --snapshot-count 8 \
+  --geometry-decades 8 --dpi 180 --animation-dpi 120 --movie-preset fast
+```
+
+위 행은 첫 번째 TDPES의 ``q_geo(q,R), R_geo(q,R)``와 두 번째 TDPES의
+``q_geo(R), R_geo(R)``를 2×2로 묶는다. 네 패널은 하나의 Hartree 크기와
+``SymLog`` 척도를 공유하므로 부호와 상대적 크기를 모두 보존한다. 2D 패널은
+음수=파랑, 0 부근=흰색, 양수=빨강이며 physical joint-density support만
+표시한다. 1D 패널도 같은 bound와 linear threshold를 쓰고 heavy-density
+support만 표시한다. 원자료에는 smoothing이나 energy shift를 적용하지 않는다.
+척도 밖의 극소수 값은 color endpoint에서 포화되며 colorbar의 extend marker로
+표시되고, 저장된 수치 자체는 자르거나 변경하지 않는다.
+
+Geometry 항은 energy reference를 빼지 않는 gauge-invariant contribution이므로
+fixed-(t=0) reference와 framewise reference에서 수치적으로 완전히 같다.
+요청한 비교를 명시적으로 남기기 위해 다음 두 이름을 모두 생성하지만, 같은
+인코딩 결과의 hard-link alias라서 렌더링 시간과 저장 공간을 두 배로 쓰지 않는다.
+
+* ``tdpes_geometry_log_fixed_reference_movie.mp4``
+* ``tdpes_geometry_log_framewise_reference_movie.mp4``
+
 교수님 분석용 nested-factorization 4-panel만 다시 만들려면 다음을 사용한다.
 
 ```bash
