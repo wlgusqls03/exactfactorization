@@ -2926,6 +2926,7 @@ def _tdpes2_origin_frame(obs, ef_positive, prep, frame):
         if excited_raw is not None else wbo-ground
     )
     higher_bo = excited_sector-first_excited
+    gi = ground+excited_sector+geo_q+geo_R
 
     # Dotted reference curves: bare BO surfaces averaged only over the
     # conditional proton density, without electronic-channel weighting.
@@ -2933,9 +2934,9 @@ def _tdpes2_origin_frame(obs, ef_positive, prep, frame):
         conditional[None, :, :]*(energies-energy_reference),
         axis=1, dtype=np.float64,
     )*obs["dq"]
-    identity_residual = total-(ground+excited_sector+gd+geo_q+geo_R)
+    identity_residual = total-(gi+gd)
     return {
-        "total": total, "wbo": wbo,
+        "total": total, "gi": gi, "wbo": wbo,
         "wbo_1": ground, "wbo_2": excited_sector,
         "wbo_2_pure": first_excited, "wbo_higher": higher_bo,
         "gd": gd, "geo_q": geo_q, "geo_R": geo_R,
@@ -2951,7 +2952,8 @@ def _tdpes2_origin_frame(obs, ef_positive, prep, frame):
 
 _TDPES2_KEYS = ("total", "wbo_1", "wbo_2", "gd", "geo_q", "geo_R")
 _TDPES2_TITLES = (
-    r"Total $\widetilde\epsilon_{\rm total}^{(2)}$",
+    r"$\widetilde\epsilon_{\rm total}^{(2)}="
+    r"\widetilde\epsilon_{\rm GI}^{(2)}+\epsilon_{\rm GD}^{(2)}$",
     r"$\epsilon_{\rm wBO,1}^{(2)}$ (ground, $j=0$)",
     r"$\epsilon_{\rm wBO,2+}^{(2)}$ (all $j\geq1$)",
     r"Gauge dependent $\epsilon_{\rm GD}^{(2)}$",
@@ -3005,6 +3007,11 @@ def _tdpes2_origin_preparation(obs, ef_positive, args):
             selected = np.abs(current[key][support & np.isfinite(current[key])])
             if selected.size:
                 samples.append(float(np.percentile(selected, 99.0)))
+        selected_gi = np.abs(
+            current["gi"][support & np.isfinite(current["gi"])]
+        )
+        if selected_gi.size:
+            samples.append(float(np.percentile(selected_gi, 99.0)))
         for reference in current["bo_reference"]:
             selected = np.abs(reference[support & np.isfinite(reference)])
             if selected.size:
@@ -3055,11 +3062,29 @@ def _draw_tdpes2_origin(axes, obs, ef_positive, prep, frame, *, compact=False):
     )
     R = obs["R"]
     lines, reference_lines = [], []
-    for axis, key, title in zip(axes, _TDPES2_KEYS, _TDPES2_TITLES):
+    balance_lines = []
+    for panel, (axis, key, title) in enumerate(zip(
+            axes, _TDPES2_KEYS, _TDPES2_TITLES)):
         line, = axis.plot(
             R, np.where(active, current[key], np.nan),
-            color="0.08", lw=(1.15 if compact else 2.2), zorder=4,
+            color="0.08", lw=(1.15 if compact else 2.2),
+            label=(r"$\widetilde\epsilon_{\rm total}^{(2)}$"
+                   if panel == 0 else None), zorder=5,
         )
+        if panel == 0:
+            gi_line, = axis.plot(
+                R, np.where(active, current["gi"], np.nan),
+                color="#2A7F62", lw=(0.95 if compact else 1.9),
+                label=r"$\widetilde\epsilon_{\rm GI}^{(2)}$",
+                zorder=4,
+            )
+            gd_line, = axis.plot(
+                R, np.where(active, current["gd"], np.nan),
+                color="#B23A48", lw=(0.95 if compact else 1.9),
+                label=r"$\epsilon_{\rm GD}^{(2)}$",
+                zorder=4,
+            )
+            balance_lines.extend((gi_line, gd_line))
         refs = []
         for state, (color, label) in enumerate((
             (COLORS[0], r"$\overline{E}_0^{\rm BO}(R,t)$"),
@@ -3085,10 +3110,14 @@ def _draw_tdpes2_origin(axes, obs, ef_positive, prep, frame, *, compact=False):
         lines.append(line)
         reference_lines.append(refs)
     axes[0].legend(
-        handles=reference_lines[0], frameon=False,
-        fontsize=(4.2 if compact else 7), loc="best",
+        handles=[lines[0], *balance_lines, *reference_lines[0]],
+        frameon=False, fontsize=(3.7 if compact else 6.5),
+        loc="best", ncol=(2 if compact else 1),
     )
-    return {"lines": lines, "reference_lines": reference_lines}
+    return {
+        "lines": lines, "balance_lines": balance_lines,
+        "reference_lines": reference_lines,
+    }
 
 
 def _update_tdpes2_origin(state, axes, obs, ef_positive, prep, frame):
@@ -3108,6 +3137,9 @@ def _update_tdpes2_origin(state, axes, obs, ef_positive, prep, frame):
                 active, current["bo_reference"][bo_state], np.nan,
             ))
             artists.append(reference)
+    for line, key in zip(state["balance_lines"], ("gi", "gd")):
+        line.set_ydata(np.where(active, current[key], np.nan))
+        artists.append(line)
     return artists
 
 

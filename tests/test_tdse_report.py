@@ -574,6 +574,16 @@ class TDSEReportTests(unittest.TestCase):
                 +frame["geo_q"]+frame["geo_R"],
                 rtol=0.0, atol=2.0e-15,
             )
+            np.testing.assert_allclose(
+                frame["gi"],
+                frame["wbo_1"]+frame["wbo_2"]
+                +frame["geo_q"]+frame["geo_R"],
+                rtol=0.0, atol=2.0e-15,
+            )
+            np.testing.assert_allclose(
+                frame["total"], frame["gi"]+frame["gd"],
+                rtol=0.0, atol=2.0e-15,
+            )
             self.assertLess(
                 np.max(np.abs(frame["identity_residual"])), 2.0e-15,
             )

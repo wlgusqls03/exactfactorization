@@ -486,6 +486,11 @@ clip, smoothing 또는 rescale하지 않는다. 필요하면
 positive-density gauge에서 여섯 패널
 ``total, wBO_1, wBO_2plus, GD, q_geo, R_geo``를 그리고, 모든 패널은 하나의
 고정된 (t=0) density-weighted ``E_ref_fixed``와 공통 y축을 사용한다.
+첫 번째 total 패널에는 검은 total 선과 함께
+``GI=wBO_1+wBO_2plus+q_geo+R_geo`` 및 ``GD``를 서로 다른 색으로 겹쳐
+그린다. 따라서 같은 energy zero에서 ``total=GI+GD``의 상쇄와 동조를
+직접 볼 수 있다. 이 두 보조선도 저장된 다섯 성분만 합산하며 별도의
+재구성이나 smoothing을 사용하지 않는다.
 따라서 각 heavy-grid
 점에서
 ``total = wBO_1 + wBO_2plus + GD + q_geo + R_geo``가 roundoff까지 정확히
