@@ -1,8 +1,8 @@
 """Streaming positive-gauge amplitude-curvature diagnostic (no propagation).
 
-The saved BO Hamiltonian includes the trap.  Consequently the continuum
-comparison for the stored total is Q_q+Q_R-a_site**2/(2m)-b_site**2/(2M),
-without subtracting the trap again.  This is NOT an exact finite-link identity.
+Legacy trap-included totals are converted on read. The continuum comparison
+for TDPES (external excluded) is Q_q+Q_R-a_site**2/(2m)-b_site**2/(2M)-V_ext.
+This is NOT an exact finite-link identity.
 """
 import argparse
 import json
@@ -13,6 +13,7 @@ import numpy as np
 from matplotlib.colors import Normalize
 
 from .core import derivative
+from .external_potential import harmonic_potential, EXTERNAL
 from . import tdse_report
 from .render_all import find_archive, resolve_run_input
 from .render_final_visualizations import _frame_focus, _save_figure, _time_tag
@@ -64,11 +65,13 @@ def run(args):
         options = tdse_report._options(data)
         t, q, R = (data[k] for k in ('times_fs', 'q', 'R'))
     with np.load(cache) as data:
+        convention = str(data.get('energy_convention', 'harmonic_included'))
         if 'positive_density' not in str(data['gauge']):
             raise ValueError('This diagnostic requires positive-density gauge fields')
         if not np.allclose(data['times_fs'], t, rtol=0, atol=1e-10):
             raise ValueError('Archive/cache time grids differ')
     mq, mR = float(options['proton_mass']), float(options['heavy_mass'])
+    V = harmonic_potential(R, options)
     dq, dR = float(q[1]-q[0]), float(R[1]-R[0])
     snapshots = set(selected_frames(len(t), min(args.snapshot_count, len(t))))
     keys = ['a', 'b', 'tdpes1_total']
@@ -79,8 +82,8 @@ def run(args):
             rho = density['joint_density'].read(frame)
             values = {key: fields[key].read(frame) for key in keys}
             Qq, QR, Kq, KR = curvature_terms(rho, values['a'], values['b'], dq, dR, mq, mR)
-            total = values['tdpes1_total']
-            recon = Qq+QR+Kq+KR
+            total = values['tdpes1_total']-(0 if convention == EXTERNAL else V)
+            recon = Qq+QR+Kq+KR-V
             residual = total-recon
             support = rho >= args.density_floor*rho.max()
             weight = np.where(support, rho, 0.0)
@@ -105,7 +108,7 @@ def run(args):
     titles = (r'Saved total $\epsilon^{(1)}_{\rm PG}$',
               r'$Q_q=(\partial_q^2 F)/(2m_p F)$', r'$Q_R=(\partial_R^2 F)/(2MF)$',
               r'$-a_{\rm site}^2/(2m_p)$', r'$-b_{\rm site}^2/(2M)$',
-              r'$Q_q+Q_R-a_{\rm site}^2/(2m_p)-b_{\rm site}^2/(2M)$',
+              r'$Q_q+Q_R-a_{\rm site}^2/(2m_p)-b_{\rm site}^2/(2M)-V_{ext}$',
               'Residual: saved total minus continuum diagnostic')
     for frame, rho, arrays in saved:
         obs = {'joint_density': [rho], 'q': q, 'R': R}
@@ -122,8 +125,8 @@ def run(args):
             ax.set_facecolor(MASK_COLOR)
         axes.flat[-1].axis('off')
         axes.flat[-1].text(.02, .9, 'Continuum diagnostic, not a finite-link identity.\n\n'
-                          'Trap is already inside the saved BO Hamiltonian.\n'
-                          'Do not subtract it again.\n\n'
+                          'TDPES excludes the explicit external trap.\n'
+                          'Legacy stored totals converted exactly once.\n\n'
                           'Amplitude differentiated before density masking.\n'
                           'Bond connections averaged onto sites.\n\n'
                           f'Displayed support: density >= {args.density_floor:g} peak\n'
@@ -133,7 +136,7 @@ def run(args):
         _save_figure(fig, output/f'pg_curvature_{_time_tag(t[frame])}.png', args.dpi)
         records[frame]['snapshot_clipped_fraction'] = dict(zip(('total','Qq','QR','Kq','KR','reconstruction','residual'), clipped))
     render_summary(records, output, args.dpi)
-    report = {'convention': 'trap included; continuum comparison, not exact finite-link identity',
+    report = {'convention': 'external trap excluded; continuum comparison, not exact finite-link identity',
               'density_floor': args.density_floor, 'fixed_color_bound_Ha': scale, 'records': records}
     (output/'pg_curvature_audit.json').write_text(json.dumps(report, indent=2))
     print(f'Curvature audit saved: {output}', flush=True)

@@ -103,6 +103,11 @@ def load_observables(archive):
             if key in stored.files:
                 values[key] = np.asarray(stored[key])
         values["options"] = _options(stored)
+        from .external_potential import harmonic_potential, EXTERNAL
+        values['external_harmonic'] = harmonic_potential(values['R'], values['options'])
+        if 'bo_energies' in values and str(stored.get('bo_energy_convention', 'harmonic_included')) != EXTERNAL:
+            values['bo_energies'] = values['bo_energies']-values['external_harmonic']
+        values['bo_energy_convention'] = EXTERNAL
     values["archive_path"] = archive.resolve()
     return values
 
@@ -988,6 +993,13 @@ def _load_ef_fields(obs, *, field_keys=None, link_keys=None):
         if not np.allclose(stored["times_fs"], obs["times_fs"], rtol=0.0, atol=1.0e-10):
             raise ValueError("TDSE field cache와 source archive의 저장 시각이 다릅니다")
         result = {key: np.asarray(stored[key], float) for key in required}
+        result['energy_convention'] = str(stored.get('energy_convention', 'harmonic_included'))
+        has_channel_density = 'bo_channel_density_qR' in stored.files
+        # A full-grid spectral archive's rho may include components outside
+        # its stored BO projection. Recover conditional weights from Y there.
+        if ('spectral' in str(stored.get('source_kind',''))
+                or obs['options'].get('tdse_propagator') == 'spectral_split'):
+            has_channel_density = False
         for key in optional:
             if key in stored.files:
                 result[key] = np.asarray(stored[key], float)
@@ -1001,6 +1013,28 @@ def _load_ef_fields(obs, *, field_keys=None, link_keys=None):
                 result[key] = np.asarray(stored[key], complex)
     result["path"] = path
     result["gauge"] = "positive_density"
+    from .external_potential import separate_fields, EXTERNAL, harmonic_potential
+    needs_weights = any(k in result for k in ('tdpes1_wbo_0','tdpes1_wbo_excited',
+                                               'tdpes2_wbo_0','tdpes2_wbo_excited'))
+    if (result['energy_convention'] != EXTERNAL and needs_weights
+            and np.any(harmonic_potential(obs['R'], obs['options']))):
+        if has_channel_density and 'bo_channel_density_qR' in result:
+            separate_fields(result, obs, lambda f:result['bo_channel_density_qR'][f,0])
+            return result
+        from multi_component_exact_factorization_discrete_gpu.compare_tdse import _stream_arrays
+        source = path if has_channel_density else obs['archive_path']
+        key = 'bo_channel_density_qR' if has_channel_density else 'tdse_coefficients'
+        with _stream_arrays(source, [key]) as readers:
+            def ground(frame):
+                data = readers[key].read(frame)
+                if has_channel_density:
+                    return data[0]
+                probability = np.abs(data)**2
+                projected = probability.sum(axis=0)
+                return probability[0], projected
+            separate_fields(result, obs, ground)
+    else:
+        separate_fields(result, obs)
     return result
 
 
@@ -1404,8 +1438,11 @@ def _ef_frame(obs, ef, frame, floor=1.0e-4):
     heavy_cutoff = floor*max(float(np.max(heavy)), 1.0e-300)
     support = density >= density_cutoff
     heavy_support = heavy >= heavy_cutoff
+    from .external_potential import effective_scalar
     eps1_full = density_weighted_shift(ef["epsilon_1"][frame], density, floor)
     eps2_full = density_weighted_shift(ef["epsilon_2"][frame], heavy, floor)
+    force_eps1 = effective_scalar(eps1_full, ef, obs)
+    force_eps2 = effective_scalar(eps2_full, ef, obs)
     a_full = _connection(ef, "a", frame, obs["dq"], 0)
     b_full = _connection(ef, "b", frame, obs["dR"], 1)
     prepared = _prepared_ef_geometry(obs, ef, floor)
@@ -1423,13 +1460,13 @@ def _ef_frame(obs, ef, frame, floor=1.0e-4):
     # -D^+epsilon+d_t A exactly gauge invariant on the finite grid (away from
     # the periodic closing seam), instead of only in the continuum limit.
     force_q_full = (
-        -_forward_bond_derivative(eps1_full, obs["dq"], axis=0)+da_dt
+        -_forward_bond_derivative(force_eps1, obs["dq"], axis=0)+da_dt
     )
     force_R_first_full = (
-        -_forward_bond_derivative(eps1_full, obs["dR"], axis=1)+db_dt
+        -_forward_bond_derivative(force_eps1, obs["dR"], axis=1)+db_dt
     )
     force_R_full = (
-        -_forward_bond_derivative(eps2_full, obs["dR"], axis=0)+dalpha_dt
+        -_forward_bond_derivative(force_eps2, obs["dR"], axis=0)+dalpha_dt
     )
     options = obs["options"]
     proton_mass = float(options.get("proton_mass", 1836.15267343))
@@ -1657,7 +1694,7 @@ def plot_exact_factorization_fields(obs, ef, outdir, dpi, frame=-1):
     axes[1, 2].set_title(
         r"Heavy transport and gauge-invariant drive"
         "\n" r"$j_R^{(\chi)}=\rho_RK_R^{(\chi)}/M_H$; "
-        r"$F_R^{GI}=-\partial_R\epsilon^{(2)}+\partial_t\alpha_R$",
+        r"$F_R^{GI}=-\partial_R(\epsilon^{(2)}+V_{ext})+\partial_t\alpha_R$",
         loc="left", fontweight="semibold", fontsize=8.8,
     )
     axes[1, 2].legend(handles=[current_line, force_line], frameon=False, fontsize=8)
@@ -1689,7 +1726,7 @@ def plot_transport_fields(obs, ef, outdir, dpi, frame=-1):
         ("force_q", r"Gauge-invariant drive $F_q^{GI}=-\partial_q\epsilon^{(1)}+\partial_ta_q$", "force_q"),
         ("momentum_R_first", r"First-level momentum $K_R^{(1)}=\partial_RT_{qR}+b_R$", "momentum_R"),
         ("first_heavy_current", r"First-level transport $j_R^{(1)}=\rho_{qR}K_R^{(1)}/M_H$", "current_R"),
-        ("force_R_first", r"First-level drive $F_R^{(1),GI}=-\partial_R\epsilon^{(1)}+\partial_tb_R$", "force_R"),
+        ("force_R_first", r"First-level drive $F_R^{(1),GI}=-\partial_R(\epsilon^{(1)}+V_{ext})+\partial_tb_R$", "force_R"),
     )
     for ax, (key, title, limit_key) in zip(axes.flat, specifications):
         ax.set_facecolor(MASK_COLOR)
@@ -2114,7 +2151,7 @@ def make_exact_field_animation(obs, ef, outdir, fps, max_frames, dpi, fmt):
     axes[1, 2].set_title(
         r"Heavy transport and drive"
         "\n" r"$j_R^{(\chi)}=\rho_RK_R^{(\chi)}/M_H$; "
-        r"$F_R^{GI}=-\partial_R\epsilon^{(2)}+\partial_t\alpha_R$",
+        r"$F_R^{GI}=-\partial_R(\epsilon^{(2)}+V_{ext})+\partial_t\alpha_R$",
         loc="left", fontweight="semibold", fontsize=8.8,
     )
     axes[1, 2].legend(handles=[current_line, force_line], frameon=False, fontsize=8)

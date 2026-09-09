@@ -2,8 +2,9 @@
 """Render the compact final TDSE/MCEF analysis gallery from saved arrays.
 
 This command deliberately reuses the reduced TDSE observables and the
-postprocessed exact-factorization cache.  It never loads ``tdse_coefficients``
-and does not repeat propagation or electronic factorization.
+postprocessed exact-factorization cache. It does not repeat propagation or
+electronic factorization. Legacy trap separation may stream BO coefficients
+one frame at a time only when cached conditional channel weights are unavailable.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from matplotlib.ticker import LogFormatterMathtext, LogLocator
 import numpy as np
 
 from . import tdse_collision_report, tdse_report
+from .external_potential import harmonic_center, harmonic_potential, effective_scalar
 from .render_all import find_archive, resolve_run_input
 from .report_plot_style import (
     COLORS,
@@ -42,7 +44,7 @@ from .visualize import NUMBER_FORMATTER, selected_frames
 
 FINAL_PRODUCTS = (
     "marginal", "joint", "velocity", "vector", "current", "nested",
-    "heavy", "bo", "bo3d", "tdpes1", "tdpes2", "geometry",
+    "heavy", "bo", "bo3d", "tdpes1", "tdpes2", "geometry", "external",
 )
 
 
@@ -1679,16 +1681,13 @@ def _heavy_preparation(obs, ef_zero, alpha_positive, args):
     )
     epsilon_zero = np.asarray([
         density_weighted_shift(
-            ef_zero["epsilon_2"][frame], obs["heavy_density"][frame], floor,
+            effective_scalar(ef_zero["epsilon_2"][frame], ef_zero, obs), obs["heavy_density"][frame], floor,
         )
         for frame in range(len(obs["times_fs"]))
     ])
     trap_alpha = float(obs["options"].get("heavy_trap_alpha", 0.0))
-    trap_center = float(obs["options"].get(
-        "heavy_trap_center",
-        0.5*float(obs["options"].get("fixed_ion_separation", 0.0)),
-    ))
-    trap_potential = trap_alpha*(R-trap_center)**2
+    trap_center = harmonic_center(obs["options"])
+    trap_potential = harmonic_potential(R, obs["options"])
     # All three forces live on the same forward R bond as S^Gamma.  Applying
     # one discrete derivative to both the exact TDPES and the explicit trap
     # makes the finite-grid decomposition an identity (including its closing
@@ -1804,7 +1803,7 @@ def _draw_heavy_analysis(fig, force_axis, obs, prep, frame, args, *,
     total_line, total_tail = tdse_report._support_tail_lines(
         force_axis, R, np.where(support, total, np.nan), total, support,
         color="0.10",
-        label=r"$F_{\mathrm{total}}=-\partial_R\epsilon_{\mathrm{ZP}}^{(2)}$",
+        label=r"$F_{\mathrm{total}}=-\partial_R[\epsilon_{\mathrm{ZP}}^{(2)}+V_{\mathrm{ext}}]$",
         linewidth=(1.55 if compact else 2.7), linestyle="-",
     )
     driven_line, driven_tail = tdse_report._support_tail_lines(
@@ -1812,7 +1811,7 @@ def _draw_heavy_analysis(fig, force_axis, obs, prep, frame, args, *,
         color=FORCE_COLOR,
         label=(
             r"$F_{\mathrm{driven}}="
-            r"-\partial_R[\epsilon_{\mathrm{ZP}}^{(2)}-V_{\mathrm{trap}}]$"
+            r"-\partial_R\epsilon_{\mathrm{ZP}}^{(2)}$"
         ),
         linewidth=(1.0 if compact else 1.75), linestyle="--",
     )
@@ -2611,7 +2610,7 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
 
 _TDPES1_KEYS = ("total", "wbo_1", "wbo_2", "gd", "geo_q", "geo_R")
 _TDPES1_TITLES = (
-    r"Total $\widetilde\epsilon_{\rm total}^{(1)}$ (stored EF decomposition)",
+    r"TDPES1 $\widetilde\epsilon_{\rm total}^{(1)}$ (external trap excluded)",
     r"$\epsilon_{\rm wBO,1}^{(1)}=|C_0|^2(E_0^{\rm BO}-E_{\rm ref})$",
     r"$\epsilon_{\rm wBO,2+}^{(1)}=\sum_{j\geq1}|C_j|^2(E_j^{\rm BO}-E_{\rm ref})$",
     r"Gauge dependent $\epsilon_{\rm GD}^{(1)}$",
@@ -2778,7 +2777,7 @@ def render_tdpes1_origin(obs, ef_fields, outdir, args, snapshots, *,
     reference_label = (
         "fixed t=0 density-weighted energy origin"
         if prep["energy_reference_mode"] == "initial"
-        else "raw PG energy; no reference subtraction"
+        else "raw PG energy; external harmonic excluded; no reference subtraction"
     )
     times = obs["times_fs"]
 
@@ -3201,7 +3200,7 @@ def render_tdpes2_origin(obs, ef_positive, outdir, args, snapshots):
     reference_label = (
         "fixed t=0 energy origin"
         if prep["energy_reference_mode"] == "initial"
-        else "raw PG energy; no reference subtraction"
+        else "raw PG energy; external harmonic excluded; no reference subtraction"
     )
 
     def individual(frame):
@@ -3644,7 +3643,7 @@ def run(args):
         name in selected
         for name in (
             "velocity", "vector", "current", "nested", "heavy", "bo",
-            "bo3d", "tdpes1", "tdpes2", "geometry",
+            "bo3d", "tdpes1", "tdpes2", "geometry", "external",
         )
     )
     ef = None
@@ -3676,6 +3675,10 @@ def run(args):
         complete = {level: all(key in decomposition_keys for key in keys)
                     for level, keys in stored_components.items()}
         field_keys = []
+        if 'external' in selected:
+            for level in (1,2):
+                key = f'tdpes{level}_total'
+                field_keys.append(key if key in decomposition_keys else f'epsilon_{level}')
         if "velocity" in selected:
             field_keys.extend(("a", "b"))
         if "vector" in selected:
@@ -3746,6 +3749,9 @@ def run(args):
             )
 
     velocity_prep = None
+    if 'external' in selected:
+        from .external_comparison import render_external_comparison
+        products.extend(render_external_comparison(obs, ef, output, args, snapshots))
     if "velocity" in selected:
         generated, velocity_prep = render_joint_velocity(
             obs, ef, output, args, snapshots,
@@ -3850,6 +3856,10 @@ def run(args):
 
     manifest = [
         f"source_archive={archive}",
+        "energy_convention=external_harmonic_v1",
+        "TDPES=explicit_external_harmonic_excluded",
+        "effective_TDPES=TDPES+external_harmonic",
+        "bo_surfaces=internal; legacy full-energy caches preserved",
         f"analysis_focus_floor={args.analysis_focus_floor}",
         "analysis_focus=per_frame_joint_density_peak_relative_bounding_box",
         "snapshot_frames="+",".join(str(int(frame)) for frame in snapshots),
@@ -4000,7 +4010,7 @@ def run(args):
     if heavy_prep is not None:
         manifest.extend((
             "harmonic_potential=heavy_trap_alpha*(R-heavy_trap_center)^2",
-            "total_force=-partial_R*epsilon_ZP^(2)",
+            "total_force=-partial_R*(epsilon_ZP^(2)+external_harmonic)",
             "harmonic_force=-partial_R*harmonic_potential",
             "driven_force=total_force-harmonic_force",
             "force_identity=total_force=driven_force+harmonic_force",

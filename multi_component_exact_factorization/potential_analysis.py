@@ -48,6 +48,10 @@ def gauge_invariant_diagnostics(data):
     a, b = np.asarray(data["a"]), np.asarray(data["b"])
     alpha = np.asarray(data["alpha"])
     eps1, eps2 = np.asarray(data["epsilon_1"]), np.asarray(data["epsilon_2"])
+    from .external_potential import harmonic_potential, EXTERNAL
+    if str(data.get('energy_convention', 'harmonic_included')) == EXTERNAL:
+        V = harmonic_potential(R, options)
+        eps1, eps2 = eps1+V, eps2+V
     joint = np.abs(lam)**2*np.abs(chi)[:, None, :]**2
     heavy = np.abs(chi)**2
 
@@ -199,7 +203,7 @@ def plot_exact_diagnostics(data, diagnostics, frame, support_floor, outdir, dpi)
     heavy_current = _masked(diagnostics["heavy_current"][frame], heavy, support_floor)
     force_R = _masked(diagnostics["force_R"][frame], heavy, support_floor)
     axes[1, 0].plot(R, heavy_current, label=r"$j_R$")
-    axes[1, 0].plot(R, force_R, label=r"$-\partial_R\epsilon_2+\partial_t\alpha$")
+    axes[1, 0].plot(R, force_R, label=r"$-\partial_R\epsilon_{2,\mathrm{effective}}+\partial_t\alpha$")
     axes[1, 0].set_title("Outer heavy-coordinate current and force")
     axes[1, 0].set_xlabel("heavy R")
     axes[1, 0].legend(frameon=False, fontsize=8)

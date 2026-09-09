@@ -60,6 +60,7 @@ class GPUBornHuangBasis:
     back_R2: object = None
     link_kernel: str = "reference"
     workspace: object = None
+    energy_convention: str = 'external_harmonic_v1'
 
 
 @dataclass
@@ -287,7 +288,7 @@ def to_gpu_basis(basis, model, link_kernel="reference"):
             second=cp.empty(shape, dtype=model.complex_dtype),
         )
     return GPUBornHuangBasis(
-        energies=cp.asarray(basis.energies, dtype=model.real_dtype),
+        energies=cp.asarray(basis.energies, dtype=model.real_dtype)-model.external_harmonic,
         link_q1=link_q1, link_q2=link_q2,
         link_R1=link_R1, link_R2=link_R2,
         back_q1=back_q1, back_q2=back_q2,
@@ -832,7 +833,9 @@ def instantaneous_functionals_bh(
     u_c, gamma_c, raw_rate_c, corrected_rate_c = remove_local_norm_generator(
         coefficients, u_c, 1.0, axis=0, model=model
     )
-    hbo_c = basis.energies*coefficients
+    # Evaluate the established split-stage functional before separating the
+    # external scalar. This preserves stage algebra even at tiny PNC defects.
+    hbo_c = (basis.energies+model.external_harmonic)*coefficients
     epsilon_1 = cp.sum(
         cp.conj(coefficients)*(hbo_c+u_c), axis=0,
         dtype=model.reduction_complex_dtype,
@@ -850,6 +853,9 @@ def instantaneous_functionals_bh(
         cp.conj(lam)*hpr, axis=0, dtype=model.reduction_complex_dtype,
     ).real*model.dq
     epsilon_2 = epsilon_2.astype(model.real_dtype, copy=False)
+    epsilon_1 = epsilon_1-model.external_harmonic
+    epsilon_2 = epsilon_2-model.external_harmonic
+    hpr = hpr-model.external_harmonic*lam
     return dict(
         a=a, b=b, alpha=alpha, epsilon_1=epsilon_1, epsilon_2=epsilon_2,
         u_c=u_c, hpr_lam=hpr, gamma_c=gamma_c, gamma_lam=gamma_lam,
@@ -1053,14 +1059,17 @@ def coupled_rhs_bh(
         coefficients, lam, chi, model, basis, ratio_floor,
         mask_threshold_phi, mask_threshold_lam,
     )
-    dc = -1j*(fields["u_c"]-fields["epsilon_1"][None, :, :]*coefficients)
+    # This is the split-stage RHS, not the unsplit electronic equation.
+    # Retain the old full diagonal half-kick and its compensating stage term
+    # so separating external energy does not change the integration scheme.
+    dc = -1j*(fields["u_c"]-(fields["epsilon_1"]+model.external_harmonic)[None, :, :]*coefficients)
     dlam = -1j*(fields["hpr_lam"]-fields["epsilon_2"][None, :]*lam)
     p2chi = covariant_square(
         chi, fields["alpha"], model.dR, axis=0, sign=+1,
         momentum_field=fields["p_R_chi"],
     )
     dchi = -1j*(
-        0.5*p2chi/model.heavy_mass+fields["epsilon_2"]*chi
+        0.5*p2chi/model.heavy_mass+(fields["epsilon_2"]+model.external_harmonic)*chi
     )+fields["gamma_lam"]*chi
     dc, dlam, dchi, diagnostics = project_product_residual_bh(
         coefficients, lam, chi, dc, dlam, dchi, model, basis
@@ -1104,7 +1113,7 @@ def full_step_bh(
     mask_threshold_phi, mask_threshold_lam, *,
     collect_pnc_norm_diagnostics=False,
 ):
-    phase = cp.exp(-0.5j*dt*basis.energies).astype(
+    phase = cp.exp(-0.5j*dt*(basis.energies+model.external_harmonic)).astype(
         model.complex_dtype, copy=False
     )
     coefficients = coefficients*phase

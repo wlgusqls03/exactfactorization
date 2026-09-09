@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from multi_component_exact_factorization.external_potential import model_external, internal_bo_energies
 
 from multi_component_exact_factorization.core import (
     flat_top_support_mask,
@@ -124,7 +125,7 @@ def discrete_tdse_action(
         raise ValueError("expected Y(NBO,nq,nR) matching BO energies")
     q_weights = kinetic_weights(model.dq, model.proton_mass)
     R_weights = kinetic_weights(model.dR, model.heavy_mass)
-    action = (basis.energies+q_weights[0]+R_weights[0])*y
+    action = (internal_bo_energies(basis, model)+model_external(model)+q_weights[0]+R_weights[0])*y
     q_transports = neighbor_transports(y, basis, 1)
     R_transports = neighbor_transports(y, basis, 2)
     for offset in OFFSETS:
@@ -222,7 +223,7 @@ def discrete_born_huang_rhs(
     effective_mask_lam = chi*inverse_chi
 
     eps1_complex = np.sum(
-        np.conj(c)*basis.energies*c, axis=0
+        np.conj(c)*internal_bo_energies(basis, model)*c, axis=0
     )/norm_c_safe
     epsilon_1 = eps1_complex.real
     q_weights = kinetic_weights(model.dq, model.proton_mass)
@@ -284,11 +285,11 @@ def discrete_born_huang_rhs(
     q_plus = q_transports[1]
     nearest_sphi_q = np.sum(np.conj(c)*q_plus, axis=0)/norm_c_safe
 
-    dc = -1j*((basis.energies-epsilon_1[None, :, :])*c
+    dc = -1j*((internal_bo_energies(basis, model)-epsilon_1[None, :, :])*c
               +inverse_F[None, :, :]*coupling_c)
     dlam = -1j*((epsilon_1-epsilon_2[None, :])*lam+q_action_lam
                 +inverse_chi[None, :]*coupling_lam)
-    dchi = -1j*(epsilon_2*chi+heavy_action)
+    dchi = -1j*((epsilon_2+model_external(model))*chi+heavy_action)
 
     raw_parallel_c = np.sum(np.conj(c)*dc, axis=0)/norm_c_safe
     if horizontal_correction:

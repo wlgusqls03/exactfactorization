@@ -520,6 +520,41 @@ Nested 밀도는 선형 raw 값이며, 각 밀도 패널의 색상 범위는 전
 일반 패널의 제목·축·색상바 글씨를 확대하고 TDPES2 origin 범례는 곡선과
 겹치지 않는 상단 별도 행에 배치한다. BO3D 스타일은 유지한다.
 
+### External harmonic convention (default)
+
+이제 **TDPES1 / TDPES2는 명시적인 harmonic trap을 제외한 scalar**를 뜻한다.
+**effective TDPES1 / effective TDPES2 = TDPES + external harmonic**이다.
+전체 시간 전파 Hamiltonian에는 trap이 그대로 포함되며, TDSE 및 discrete MCEF의
+전체 연산자는 보존된다. Continuum BO solver도 기존 diagonal half-step splitting을
+유지한다. 초기 wavepacket 폭은 기존 trap-included surface 기준을 유지한다.
+
+새 BO GPU 계산은 internal BO energies와 별도 `external_harmonic(R)`를 사용하며,
+heavy equation에는 external을 정확히 한 번 더한다. 호환성을 위해 기존 CPU BO
+cache 및 archive의 `bo_energies` 저장 표현은 full energy를 유지하고
+`bo_energy_convention=harmonic_included`로 명시한다. 보고서에서는 이를 internal
+BO surface로 읽는다. 새 coupled-field archive와 새 EF cache에는
+`energy_convention=external_harmonic_v1`을 저장한다.
+
+기존 archive/cache는 수정하지 않는다. 보고서 로더가 convention이 없는 구 파일의
+scalar와 weighted BO 항에서 trap을 한 번만 분리한다. BO0에는 `p0*Vext`, 나머지
+채널에는 `(1-p0)*Vext`를 빼고, 두 번째 level에는 conditional-q 평균 가중치를
+사용한다. GD, geometry, vector potential, population, density는 변경하지 않는다.
+Force 계산에는 effective scalar를 사용하여 기존 힘을 유지한다. 외부항을 제외해도
+wavefunction 자체는 여전히 trap 아래서 전파한 상태라는 점에 유의한다.
+
+기존 EF cache에서 새 비교 영상과 8개 snapshot만 만들려면:
+
+```bash
+python -m multi_component_exact_factorization.render_final_visualizations \
+  results/20260909 --only external --format mp4 --max-frames 240 --snapshot-count 8
+```
+
+`--only`를 생략한 전체 final gallery에도 자동 포함된다. 비교 그림 위쪽은 TDPES1,
+external, effective TDPES1의 2D 지도이며 아래쪽은 TDPES2, external, effective TDPES2의
+세 곡선이다. Positive gauge, raw energy, 고정 colour/y scale을 사용한다.
+모든 출력은 run의 `report/final_visualizations/` 아래에 생성되며 `--outdir`로
+기존 그림과 다른 폴더를 지정할 수 있다. 기존 결과의 TDSE 재전파나 EF 재계산은 불필요하다.
+
 Positive-gauge TDPES1의 amplitude-curvature 설명을 점검하려면 다음 진단을 쓴다:
 
 ```bash
@@ -530,8 +565,8 @@ python -m multi_component_exact_factorization.audit_pg_curvature results/YYYYMMD
 시간별 점유 밀도 가중 평균/RMS 그림, JSON 수치 결과를 저장한다. GPU나 EF 재계산은
 필요 없고 NPZ를 프레임 단위로 읽는다. 기존 5점 미분으로 전체 진폭을 먼저 미분한 뒤
 `--density-floor 1e-3` support에서 비교한다. 색상 범위는 snapshot 사이에 고정한다.
-`Qq + QR - a_site²/(2m) - b_site²/(2M)`는 연속 극한 진단이며 native link 항등식이
-아니다. 저장된 BO Hamiltonian에는 trap이 이미 포함되어 있으므로 다시 빼지 않는다.
+`Qq + QR - a_site²/(2m) - b_site²/(2M) - Vext`는 trap-excluded TDPES의
+연속 극한 진단이며 native link 항등식이 아니다. 구 파일의 total은 먼저 변환한다.
 잔차에는 유한격자, bond-to-site 변환, overlap phase branch 영향이 포함될 수 있다.
 
 저장된 모든 프레임의 TDPES 성분 합은 큰 임시파일 없이 확인할 수 있다:

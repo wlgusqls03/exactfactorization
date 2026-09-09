@@ -438,6 +438,8 @@ def run_born_huang(args):
             "forward S(g,g+1); backward=S(g-1,g)^dagger"
         ),
         bo_energies=basis_cpu.energies,
+        bo_energy_convention=np.array("harmonic_included"),
+        energy_convention=np.array("external_harmonic_v1"),
         x=cpu_model.x, q=cpu_model.q, R=cpu_model.R,
         log_derivative_backend=np.array(args.log_derivative_backend),
         product_projection_backend=np.array(args.product_projection_backend),

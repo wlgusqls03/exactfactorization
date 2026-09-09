@@ -644,6 +644,8 @@ def run(args):
         ),
         bo_states_count=np.array(n_states),
         bo_energies=np.asarray(basis_cpu.energies),
+        bo_energy_convention=np.array("harmonic_included"),
+        energy_convention=np.array("external_harmonic_v1"),
         bo_basis_cache_hit=np.array(cache_info["hit"]),
         bo_basis_cache_key=np.array(cache_info["key"]),
         bo_basis_cache_path=np.array(cache_info["path"]),

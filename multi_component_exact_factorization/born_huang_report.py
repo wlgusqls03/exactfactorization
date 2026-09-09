@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FFMpegWriter, FuncAnimation, PillowWriter
 from matplotlib.colors import LogNorm, SymLogNorm
 import numpy as np
+from .external_potential import harmonic_potential, EXTERNAL
 
 from .potential_analysis import gauge_invariant_diagnostics
 from .report_plot_style import (
@@ -92,6 +93,14 @@ def load_archive(path):
             for key in archive.files
             if key in wanted
         }
+        V = harmonic_potential(data['R'], archive_arguments(archive))
+        if str(archive.get('bo_energy_convention','harmonic_included')) != EXTERNAL:
+            data['bo_energies'] = data['bo_energies']-V
+        if str(archive.get('energy_convention','harmonic_included')) != EXTERNAL:
+            for key in ('epsilon_1','epsilon_2'):
+                if key in data:
+                    data[key] = data[key]-V
+        data['energy_convention'] = EXTERNAL
         # New archives store these tiny reductions directly.  Older archives
         # can still produce the paper-style BO wave-packet plot from C, at the
         # cost of decompressing C once during report generation.

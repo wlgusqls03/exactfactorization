@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+from multi_component_exact_factorization.external_potential import model_external
 
 try:
     import cupy as cp
@@ -122,6 +123,7 @@ class GPUModel:
     complex_dtype: type
     reduction_real_dtype: type
     reduction_complex_dtype: type
+    external_harmonic: object = 0.0
     reuse_stage_derivatives: bool = True
     product_projection_floor_phi: float = 1.0e-10
     product_projection_floor_lam: float = 1.0e-10
@@ -175,6 +177,7 @@ def make_gpu_model(
         dx=cpu_model.dx, dq=cpu_model.dq, dR=cpu_model.dR,
         proton_mass=cpu_model.proton_mass, heavy_mass=cpu_model.heavy_mass,
         potential=cp.asarray(cpu_model.potential, dtype=real),
+        external_harmonic=cp.asarray(model_external(cpu_model), dtype=real),
         kinetic_energies=kinetic.astype(real, copy=False),
         real_dtype=real, complex_dtype=complex_,
         reduction_real_dtype=reduction_real,

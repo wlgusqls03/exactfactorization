@@ -1,5 +1,26 @@
 # Discrete MCEF CUDA solver
 
+Harmonic confinement is now an explicit external term by default. **TDPES1/2
+exclude that term; effective TDPES1/2 include it.** No propagation flag changes
+are required. The total TDSE Hamiltonian, initial state and overlap cache remain
+the same. GPU BO energies are internal, and the external array is added once
+to the full TDSE action / heavy MCEF equation. Cache/archive BO energies retain
+their historical full-energy storage convention, tagged explicitly; report
+loaders convert them without re-diagonalization. New scalar archives and EF
+caches are marked `energy_convention=external_harmonic_v1`.
+
+Existing untagged EF caches are separated on read; do not manually subtract the
+trap a second time. To render the new comparison from an existing result:
+
+```bash
+python -m multi_component_exact_factorization.render_final_visualizations RUN \
+  --only external --format mp4 --snapshot-count 8 --max-frames 240
+```
+
+Before a new long GPU run after updating, run `python -m
+multi_component_exact_factorization_discrete_gpu.validate --device 0` on the
+CUDA host. This checks CPU/GPU actions, factorized recombination and checkpoints.
+
 This is the production implementation of the spatially discrete,
 time-continuous MCEF equations for the same extended 1D Shin--Metiu model as
 the existing solver.

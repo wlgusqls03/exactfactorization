@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from multi_component_exact_factorization.external_potential import model_external
 
 from multi_component_exact_factorization_discrete.core import (
     OFFSETS,
@@ -54,6 +55,7 @@ def make_discrete_gpu_model(cpu_model):
         dx=cpu_model.dx, dq=cpu_model.dq, dR=cpu_model.dR,
         proton_mass=cpu_model.proton_mass, heavy_mass=cpu_model.heavy_mass,
         potential=cp.empty((0,), dtype=cp.float64),
+        external_harmonic=cp.asarray(model_external(cpu_model), dtype=cp.float64),
         kinetic_energies=cp.empty((0,), dtype=cp.float64),
         real_dtype=cp.float64, complex_dtype=cp.complex128,
         reduction_real_dtype=cp.float64,
@@ -90,7 +92,7 @@ def discrete_tdse_action_gpu(coefficient_wavefunction, model, basis):
     y = coefficient_wavefunction
     q_weights = kinetic_weights(model.dq, model.proton_mass)
     R_weights = kinetic_weights(model.dR, model.heavy_mass)
-    action = (basis.energies+q_weights[0]+R_weights[0])*y
+    action = (basis.energies+model.external_harmonic+q_weights[0]+R_weights[0])*y
     # The fused backend returns a view of one reusable transport workspace.
     # Consume q completely before the R launch overwrites that workspace.
     q_transports = neighbor_transports(y, basis, 1)
@@ -174,7 +176,7 @@ def discrete_rhs_gpu(
     )
     if collect_diagnostics:
         direct_action = (
-            basis.energies*c*F[None, :, :]
+            (basis.energies+model.external_harmonic)*c*F[None, :, :]
             +(q_weights[0]+R_weights[0])*c*F[None, :, :]
         )
 
@@ -253,7 +255,7 @@ def discrete_rhs_gpu(
               +inverse_F[None, :, :]*coupling_c)
     dlam = -1j*((epsilon_1-epsilon_2[None, :])*lam+q_action_lam
                 +inverse_chi[None, :]*coupling_lam)
-    dchi = -1j*(epsilon_2*chi+heavy_action)
+    dchi = -1j*((epsilon_2+model.external_harmonic)*chi+heavy_action)
 
     parallel_c = cp.sum(
         cp.conj(c)*dc, axis=0, dtype=model.reduction_complex_dtype,

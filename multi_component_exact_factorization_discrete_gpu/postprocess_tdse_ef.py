@@ -151,6 +151,7 @@ def _frame_fields(
         electronic, spectral_q_kinetic = spectral_analyzer.energies(
             c, lam, c_norm, lam_norm
         )
+        electronic = electronic-model.external_harmonic
     temporal_1 = -1j*cp.sum(
         cp.conj(c)*dc, axis=0, dtype=model.reduction_complex_dtype,
     )/c_norm_safe
@@ -634,6 +635,8 @@ def run(args):
         source_archive=np.array(str(archive)),
         source_kind=np.array(metadata["source_kind"]),
         gauge=np.array("positive_density_marginals"),
+        energy_convention=np.array("external_harmonic_v1"),
+        effective_tdpes_definition=np.array("effective TDPES = TDPES + external harmonic"),
         scalar_decomposition=np.array(
             "epsilon_total=epsilon_gi+epsilon_gd; "
             "epsilon_gd reconstructed as total-minus-stored-gi"
