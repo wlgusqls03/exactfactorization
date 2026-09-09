@@ -645,6 +645,24 @@ class TDSEReportTests(unittest.TestCase):
                 manifest,
             )
 
+    def test_geometry_line_limits_preserve_small_occupied_values(self):
+        current = {
+            "geo2_q": np.array([0.02, 0.03, 100.0]),
+            "geo2_R": np.array([1e-7, 2e-4, 1e-20]),
+        }
+        lower, upper = render_final_visualizations._geometry_line_limits(
+            current, np.array([True, True, False]),
+        )
+        self.assertLess(lower, 1e-7)
+        self.assertGreater(upper, 0.03)
+        self.assertLess(upper, 0.1)
+        self.assertGreater(lower, 1e-8)
+        self.assertEqual(
+            render_final_visualizations._geometry_line_limits(
+                current, np.array([False, False, False]),
+            ), (1e-12, 1e-11),
+        )
+
     def test_geometry_terms_match_existing_tdpes_decompositions(self):
         with TemporaryDirectory() as temporary:
             archive, _ = self._write_archive(temporary)

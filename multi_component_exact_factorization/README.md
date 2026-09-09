@@ -526,10 +526,14 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 ```
 
 위 행은 첫 번째 TDPES의 ``q_geo(q,R), R_geo(q,R)``와 두 번째 TDPES의
-``q_geo(R), R_geo(R)``를 2×2로 묶는다. 네 geometry energy는 정의상
-nonnegative이므로 하나의 양의 Hartree ``LogNorm`` 척도를 공유한다. 2D 패널은
+``q_geo(R), R_geo(R)``를 기본적으로 위쪽 2D 두 패널과 아래쪽 비교 선 패널로 묶는다.
+아래쪽 q/R 곡선은 같은 log y축을 공유하며, 매 프레임 점유 영역의 모든 유한한
+양수값을 포함하도록 범위를 조절한다. 작은 양수값을 버리거나 수치를 변경하지 않는다.
+고정 축으로 시간 간 절대 크기를 비교하려면 ``--geometry-layout separate``로
+기존 2×2 배치를 선택할 수 있다. 이 경우 네 패널이 고정된 척도를 공유한다.
+두 2D 패널은 항상 공통 양의 Hartree ``LogNorm`` 척도를 사용한다. 2D 패널은
 검정/보라에서 주황/노랑/흰색으로 밝아지며 physical joint-density support만
-표시하고, 1D 패널은 같은 상·하한의 log y축과 heavy-density support를 쓴다.
+표시하고, 1D 패널은 heavy-density support를 쓴다.
 수치 roundoff 등으로 생긴 non-positive 값은 절댓값으로 뒤집지 않고 표시에서
 제외하며 실제 최소값은 manifest에 기록한다. 원자료에는 smoothing이나 energy
 shift를 적용하지 않는다.
@@ -543,6 +547,12 @@ fixed-(t=0) reference와 framewise reference에서 수치적으로 완전히 같
 
 * ``tdpes_geometry_log_fixed_reference_movie.mp4``
 * ``tdpes_geometry_log_framewise_reference_movie.mp4``
+
+렌더링은 저장된 geometry decomposition이 있으면 불필요한 wBO fallback 배열을
+읽지 않는다. Marginal time-position map의 로그 변환도 한 번만 준비해 snapshot과
+영상에서 재사용한다. 전파 알고리즘, 저장된 물리량, energy reference 및 density
+threshold는 이 표시 최적화로 바뀌지 않는다. Vector/current composite의 heavy
+1D 패널은 같은 프레임의 두 2D 패널과 동일한 R 범위를 사용한다.
 
 교수님 분석용 nested-factorization 4-panel만 다시 만들려면 다음을 사용한다.
 

@@ -170,11 +170,14 @@ def _marginal_map_data(obs, decades):
         raise KeyError(
             "electron marginal이 없습니다. postprocess_tdse_ef를 먼저 실행하세요."
         )
-    return (
+    series = (
         ("Electron", np.asarray(x), np.asarray(electron)),
         ("Proton", np.asarray(obs["q"]), np.asarray(obs["proton_density"])),
         ("Heavy nucleus", np.asarray(obs["R"]), np.asarray(obs["heavy_density"])),
-    ), float(decades)
+    )
+    # History maps are identical in every snapshot; only the cursor moves.
+    return tuple((name, coordinate, tdse_collision_report._relative_log(density, decades))
+                 for name, coordinate, density in series), float(decades)
 
 
 def _draw_marginal_time_maps(fig, axes, obs, prepared, frame, *, colorbar=True,
@@ -182,8 +185,7 @@ def _draw_marginal_time_maps(fig, axes, obs, prepared, frame, *, colorbar=True,
     series, decades = prepared
     times = obs["times_fs"]
     images, cursors = [], []
-    for axis, (name, coordinate, density) in zip(axes, series):
-        log_density = tdse_collision_report._relative_log(density, decades)
+    for axis, (name, coordinate, log_density) in zip(axes, series):
         image = axis.imshow(
             log_density.T, origin="lower", aspect="auto",
             interpolation="nearest",
@@ -722,7 +724,7 @@ def _draw_vector_composite(fig, axes, obs, ef, prep, frame, args, *,
     )
     density_line = tdse_report._scaled_heavy_density(axes["alpha"], R, heavy)
     axes["alpha"].set(
-        xlim=prep["R_limits"], ylim=prep["alpha_limits"],
+        xlim=frame_limits[1], ylim=prep["alpha_limits"],
         xlabel=r"heavy $R$ ($a_0$)", ylabel=r"$\alpha$ ($a_0^{-1}$)",
     )
     axes["alpha"].set_title(
@@ -755,6 +757,7 @@ def _update_vector_composite(state, obs, ef, prep, frame, args):
     for axis_name in ("a", "b"):
         state["axes"][axis_name].set_xlim(frame_limits[0])
         state["axes"][axis_name].set_ylim(frame_limits[1])
+    state["axes"]["alpha"].set_xlim(frame_limits[1])
     support = prep["heavy_support"][frame]
     alpha = prep["alpha_lifted"][frame]
     state["alpha_line"].set_ydata(np.where(support, alpha, np.nan))
@@ -990,7 +993,7 @@ def _draw_current_composite(fig, axes, obs, ef, prep, frame, args, *,
         axes["heavy_marginal"], R, obs["heavy_density"][frame],
     )
     axes["heavy_marginal"].set(
-        xlim=prep["R_limits"], ylim=prep["heavy_marginal_limits"],
+        xlim=frame_limits[1], ylim=prep["heavy_marginal_limits"],
         xlabel=r"heavy $R$ ($a_0$)",
         ylabel=r"marginal probability current (a.u.)",
     )
@@ -1028,6 +1031,7 @@ def _update_current_composite(state, obs, ef, prep, frame, args):
     for axis_name in ("proton", "heavy_joint"):
         state["axes"][axis_name].set_xlim(frame_limits[0])
         state["axes"][axis_name].set_ylim(frame_limits[1])
+    state["axes"]["heavy_marginal"].set_xlim(frame_limits[1])
     support = prep["heavy_support"][frame]
     heavy_marginal = current["heavy_marginal"]
     state["current_line"].set_ydata(
@@ -1317,6 +1321,7 @@ def _joint_contours(axis, obs, log_density, decades, compact=False, *,
     contours = axis.contour(
         obs["q"] if q is None else q, obs["R"] if R is None else R,
         log_density.T, levels=levels,
+        linestyles="solid",
         colors=color, linewidths=np.linspace(0.42, 1.05, len(levels)),
         alpha=(0.72 if compact else 0.88),
     )
@@ -3292,6 +3297,7 @@ def _tdpes_geometry_preparation(obs, ef_positive, args):
         "floor": float(args.support_floor),
         "focus_floor": float(args.analysis_focus_floor),
         "stored_decomposition": stored_decomposition,
+        "layout": getattr(args, "geometry_layout", "combined"),
         "proton_mass": float(obs["options"].get("proton_mass", 1836.15267343)),
         "heavy_mass": float(obs["options"].get("heavy_mass", 1836.15267343)),
         "decades": float(getattr(args, "geometry_decades", 8.0)),
@@ -3338,15 +3344,28 @@ def _tdpes_geometry_preparation(obs, ef_positive, args):
     return prep
 
 
+def _geometry_line_limits(current, active):
+    """Fit both occupied 1D curves without discarding small positive values."""
+    values = np.concatenate([current[key][active] for key in ("geo2_q", "geo2_R")])
+    positive = values[np.isfinite(values) & (values > 0.0)]
+    if not positive.size:
+        return (1e-12, 1e-11)
+    lower, upper = float(positive.min()), float(positive.max())
+    return lower/1.5, max(upper*1.5, lower*10.0)
+
+
 def _tdpes_geometry_norm(prep):
     return LogNorm(vmin=prep["lower"], vmax=prep["bound"], clip=False)
 
 
-def _tdpes_geometry_axes(fig):
+def _tdpes_geometry_axes(fig, layout="separate"):
     grid = fig.add_gridspec(
         2, 2, left=0.070, right=0.900, bottom=0.090, top=0.850,
         wspace=0.25, hspace=0.38,
     )
+    if layout == "combined":
+        return [fig.add_subplot(grid[0, 0]), fig.add_subplot(grid[0, 1]),
+                fig.add_subplot(grid[1, :])]
     return [fig.add_subplot(grid[row, column])
             for row in range(2) for column in range(2)]
 
@@ -3398,34 +3417,40 @@ def _draw_tdpes_geometry(fig, axes, obs, ef_positive, prep, frame,
             xlim=limits2d[0], ylim=limits2d[1],
             xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
         )
-        axis.set_title(title, loc="left", fontweight="semibold", fontsize=9)
-        axis.tick_params(labelsize=7, direction="in")
+        axis.set_title(title, loc="left", fontweight="semibold", fontsize=11)
+        axis.tick_params(labelsize=9, direction="in")
         images.append(image)
 
     active1d, _, limits1d = _frame_heavy_focus(
         obs, frame, prep["focus_floor"],
     )
     lines = []
+    line_axes = [axes[2], axes[2]] if len(axes) == 3 else axes[2:]
+    line_limits = (_geometry_line_limits(current, active1d)
+                   if len(axes) == 3 else (prep["lower"], prep["bound"]))
     for axis, key, title, color in zip(
-            axes[2:], ("geo2_q", "geo2_R"), _TDPES_GEOMETRY_TITLES[2:],
+            line_axes, ("geo2_q", "geo2_R"), _TDPES_GEOMETRY_TITLES[2:],
             (PARTICLE_COLORS["proton"], PARTICLE_COLORS["heavy"])):
         values = np.where(active1d, current[key], np.nan)
         line, = axis.plot(
             obs["R"], np.where(values > 0.0, values, np.nan),
-            color=color, lw=2.2,
+            color=color, lw=2.2, label=title,
         )
         axis.set_yscale("log", base=10)
         axis.set(
-            xlim=limits1d, ylim=(prep["lower"], prep["bound"]),
+            xlim=limits1d, ylim=line_limits,
             xlabel=r"heavy $R$ ($a_0$)", ylabel="geometry energy (Hartree)",
         )
         axis.yaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0,)))
         axis.yaxis.set_major_formatter(LogFormatterMathtext(base=10.0))
-        axis.set_title(title, loc="left", fontweight="semibold", fontsize=9)
-        axis.tick_params(labelsize=7, direction="in")
+        axis.set_title(title, loc="left", fontweight="semibold", fontsize=11)
+        axis.tick_params(labelsize=9, direction="in")
         axis.grid(which="major", alpha=0.20)
         axis.grid(which="minor", alpha=0.07)
         lines.append(line)
+    if len(axes) == 3:
+        axes[2].set_title("Second-level geometry | occupied-range log axis", loc="left")
+        axes[2].legend(frameon=False, ncol=2, fontsize=10, loc="best")
     if colorbar:
         cax = fig.add_axes((0.925, 0.515, 0.014, 0.285))
         bar = fig.colorbar(
@@ -3476,8 +3501,11 @@ def _update_tdpes_geometry(state, axes, obs, ef_positive, prep, frame):
     active1d, _, limits1d = _frame_heavy_focus(
         obs, frame, prep["focus_floor"],
     )
+    line_axes = [axes[2], axes[2]] if len(axes) == 3 else axes[2:]
+    if len(axes) == 3:
+        axes[2].set_ylim(_geometry_line_limits(current, active1d))
     for axis, line, key in zip(
-            axes[2:], state["lines"], ("geo2_q", "geo2_R")):
+            line_axes, state["lines"], ("geo2_q", "geo2_R")):
         values = np.where(active1d, current[key], np.nan)
         line.set_ydata(np.where(values > 0.0, values, np.nan))
         axis.set_xlim(limits1d)
@@ -3491,15 +3519,19 @@ def render_tdpes_geometry_log(obs, ef_positive, outdir, args, snapshots):
         raise ValueError("geometry comparison requires the positive-density cache")
     prep = _tdpes_geometry_preparation(obs, ef_positive, args)
     times = obs["times_fs"]
+    scale_description = (
+        "shared map scale; occupied-range line axis"
+        if prep["layout"] == "combined" else "shared fixed scale on all four panels"
+    )
 
     def individual(frame):
         fig = plt.figure(figsize=(15.5, 9.0), constrained_layout=False)
-        axes = _tdpes_geometry_axes(fig)
+        axes = _tdpes_geometry_axes(fig, prep["layout"])
         _draw_tdpes_geometry(fig, axes, obs, ef_positive, prep, frame)
         fig.suptitle(
             "First- and second-level geometry energies | "
             f"t={times[frame]:.4f} fs\n"
-            "one shared positive-log Hartree scale; energy-reference independent",
+            f"{scale_description}; energy-reference independent",
             fontweight="bold",
         )
         return fig
@@ -3511,7 +3543,7 @@ def render_tdpes_geometry_log(obs, ef_positive, outdir, args, snapshots):
     if not args.no_animation:
         frames = _movie_frames(obs, args.max_frames)
         fig = plt.figure(figsize=(15.5, 9.0), constrained_layout=False)
-        axes = _tdpes_geometry_axes(fig)
+        axes = _tdpes_geometry_axes(fig, prep["layout"])
         title = fig.suptitle("", fontweight="bold")
         state = _draw_tdpes_geometry(
             fig, axes, obs, ef_positive, prep, int(frames[0]),
@@ -3525,7 +3557,7 @@ def render_tdpes_geometry_log(obs, ef_positive, outdir, args, snapshots):
             title.set_text(
                 "First- and second-level geometry energies | "
                 f"t={times[frame]:.4f} fs\n"
-                "shared positive-log scale; independent of fixed/framewise E_ref"
+                f"{scale_description}; reference independent"
             )
             return (*artists, title)
 
@@ -3639,7 +3671,11 @@ def run(args):
                 key for key in decomposition_keys if key.startswith("tdpes2_")
             )
         if "geometry" in selected:
-            field_keys.extend(("epsilon_2_gi", "epsilon_1_wbo"))
+            if not all(key in decomposition_keys for key in (
+                "tdpes1_geo_q", "tdpes1_geo_R",
+                "tdpes2_geo_q", "tdpes2_geo_R",
+            )):
+                field_keys.extend(("epsilon_2_gi", "epsilon_1_wbo"))
             field_keys.extend(
                 key for key in decomposition_keys
                 if key in (
@@ -3919,7 +3955,11 @@ def run(args):
             "geometry_gauge=positive_density_input_but_all_four_terms_are_gauge_invariant",
             "geometry_energy_reference_dependence=none",
             "geometry_fixed_and_framewise_movies=identical_aliases_by_definition",
-            "geometry_scale=one_shared_positive_log_Hartree_scale",
+            f"geometry_layout={geometry_prep['layout']}",
+            "geometry_scale=" + (
+                "shared_maps;combined_lines_use_frame_positive_extrema"
+                if geometry_prep["layout"] == "combined" else "shared_fixed_all_panels"
+            ),
             f"geometry_decades={geometry_prep['decades']:.16g}",
             f"geometry_shared_bound={geometry_prep['bound']:.16g}",
             f"geometry_lower_positive_limit={geometry_prep['lower']:.16g}",
@@ -3977,6 +4017,12 @@ def parse_args(argv=None):
     parser.add_argument("--dpi", type=int, default=180)
     parser.add_argument("--animation-dpi", type=int, default=110)
     parser.add_argument("--decades", type=float, default=6.0)
+    parser.add_argument(
+        "--geometry-layout", choices=("combined", "separate"),
+        default="combined",
+        help="combined: two maps and one occupied-range q/R line comparison; "
+             "separate: original four panels with one shared scale",
+    )
     parser.add_argument(
         "--geometry-decades", type=float, default=8.0,
         help="positive-log dynamic range reserved for the four geometry terms",
