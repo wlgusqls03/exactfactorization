@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -664,23 +665,35 @@ class TDSEReportTests(unittest.TestCase):
                 manifest,
             )
 
-    def test_geometry_line_limits_preserve_small_occupied_values(self):
-        current = {
-            "geo2_q": np.array([0.02, 0.03, 100.0]),
-            "geo2_R": np.array([1e-7, 2e-4, 1e-20]),
-        }
-        lower, upper = render_final_visualizations._geometry_line_limits(
-            current, np.array([True, True, False]),
-        )
-        self.assertLess(lower, 1e-7)
-        self.assertGreater(upper, 0.03)
-        self.assertLess(upper, 0.1)
-        self.assertGreater(lower, 1e-8)
-        self.assertEqual(
-            render_final_visualizations._geometry_line_limits(
-                current, np.array([False, False, False]),
-            ), (1e-12, 1e-11),
-        )
+    def test_movie_density_and_geometry_scales_do_not_change(self):
+        module = render_final_visualizations
+        nested_update, geometry_update = module._update_nested_composite, module._update_tdpes_geometry
+
+        def check_nested(state, *args, **kwargs):
+            names = ("electron_proton_image", "conditional_image")
+            before = [state[name].get_clim() for name in names]
+            result = nested_update(state, *args, **kwargs)
+            self.assertEqual(before, [state[name].get_clim() for name in names])
+            return result
+
+        def check_geometry(state, axes, *args, **kwargs):
+            result = geometry_update(state, axes, *args, **kwargs)
+            for axis in axes[2:]:
+                self.assertEqual(axis.get_ylim(), (1e-7, 1e-1))
+            return result
+
+        with TemporaryDirectory() as temporary:
+            self._write_archive(temporary)
+            args = module.parse_args([
+                temporary, "--only", "nested", "geometry", "--format", "gif",
+                "--snapshot-count", "2", "--max-frames", "2", "--dpi", "30",
+                "--animation-dpi", "25",
+            ])
+            with patch.object(module, "_update_nested_composite", side_effect=check_nested) as n:
+                with patch.object(module, "_update_tdpes_geometry", side_effect=check_geometry) as g:
+                    module.run(args)
+            self.assertGreater(n.call_count, 0)
+            self.assertGreater(g.call_count, 0)
 
     def test_geometry_terms_match_existing_tdpes_decompositions(self):
         with TemporaryDirectory() as temporary:
@@ -784,7 +797,7 @@ class TDSEReportTests(unittest.TestCase):
             ).glob("*.png"))), 2)
             manifest = (output/"final_visualizations_manifest.txt").read_text()
             self.assertIn(
-                "nested_density_display=absolute_linear_frame_color_range",
+                "nested_density_display=absolute_linear_trajectory_fixed",
                 manifest,
             )
             self.assertIn("nested_electron_proton_vmax=", manifest)

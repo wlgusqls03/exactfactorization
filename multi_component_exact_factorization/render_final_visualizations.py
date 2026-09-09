@@ -67,9 +67,32 @@ def _math_scientific(value, digits=2):
     return rf"{mantissa}\times10^{{{int(exponent)}}}"
 
 
+def _readable_typography(fig):
+    """Polish full-size 2D canvases, preserving BO3D and compact summaries."""
+    if len(fig.axes) > 10 or any(ax.name == "3d" for ax in fig.axes):
+        return
+    axes = list(fig.axes)
+    for parent in fig.axes:
+        axes.extend(child for child in parent.child_axes if child not in axes)
+    for ax in axes:
+        for title in (ax.title, ax._left_title, ax._right_title):
+            title.set_fontsize(max(title.get_fontsize(), 11.5))
+        ax.xaxis.label.set_size(12)
+        ax.yaxis.label.set_size(12)
+        ax.tick_params(axis="both", labelsize=10)
+        ax.xaxis.offsetText.set_size(10)
+        ax.yaxis.offsetText.set_size(10)
+
+
+def _save_standard_movie(animation, fig, *args, **kwargs):
+    _readable_typography(fig)
+    return tdse_report._save_animation(animation, fig, *args, **kwargs)
+
+
 def _save_figure(fig, path, dpi):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _readable_typography(fig)
     fig.savefig(path, dpi=dpi, facecolor=fig.get_facecolor())
     plt.close(fig)
     print(f"final visualization 저장: {path}")
@@ -275,7 +298,7 @@ def render_marginal_time_position(obs, outdir, args, snapshots):
 
         update(0)
         animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
-        products.append(tdse_report._save_animation(
+        products.append(_save_standard_movie(
             animation, fig, outdir, "marginal_time_position_movie",
             args.fps, args.animation_dpi, args.format,
         ))
@@ -369,7 +392,7 @@ def render_joint_density(obs, outdir, args, snapshots):
 
         update(0)
         animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
-        products.append(tdse_report._save_animation(
+        products.append(_save_standard_movie(
             animation, fig, outdir, "joint_density_qR_movie",
             args.fps, args.animation_dpi, args.format,
         ))
@@ -578,7 +601,7 @@ def render_joint_velocity(obs, ef, outdir, args, snapshots):
 
         update(0)
         animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
-        products.append(tdse_report._save_animation(
+        products.append(_save_standard_movie(
             animation, fig, outdir, "joint_velocity_movie",
             args.fps, args.animation_dpi, args.format,
         ))
@@ -834,7 +857,7 @@ def render_vector_composite(obs, ef, outdir, args, snapshots):
 
         update(0)
         animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
-        products.append(tdse_report._save_animation(
+        products.append(_save_standard_movie(
             animation, fig, outdir, "vector_potential_composite_movie",
             args.fps, args.animation_dpi, args.format,
         ))
@@ -1116,7 +1139,7 @@ def render_current_composite(obs, ef, outdir, args, snapshots):
 
         update(0)
         animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
-        products.append(tdse_report._save_animation(
+        products.append(_save_standard_movie(
             animation, fig, outdir, "current_density_composite_movie",
             args.fps, args.animation_dpi, args.format,
         ))
@@ -1385,11 +1408,6 @@ def _heavy_silhouette(axis, R, density, compact=False):
     return fill, line
 
 
-def _density_color_max(values):
-    finite = np.asarray(values)[np.isfinite(values)]
-    return max(float(np.max(finite)) if finite.size else 0.0, 1e-300)
-
-
 def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
                            colorbars=True, compact=False):
     q, R, x = obs["q"], obs["R"], obs["x"]
@@ -1406,14 +1424,14 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
     electron_proton_image = axes["electron_proton"].imshow(
         current["electron_proton"].T, origin="lower", aspect="auto",
         interpolation="nearest", extent=density_extent, cmap=JOINT_CMAP,
-        vmin=0.0, vmax=_density_color_max(current["electron_proton"]),
+        vmin=0.0, vmax=prep["electron_proton_vmax"],
     )
     axes["electron_proton"].set(
         xlim=prep["x_limits"], ylim=prep["q_limits"],
         xlabel=r"electron $x$ ($a_0$)", ylabel=r"proton $q$ ($a_0$)",
     )
     axes["electron_proton"].set_title(
-        r"$\rho_{ep}(x,q)=\int dR\,|\Psi|^2$ (raw density; frame color range)",
+        r"Electron–proton $\rho_{ep}(x,q)=\int dR\,|\Psi|^2$",
         loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
     )
     _set_density_axis(axes["electron_proton"])
@@ -1421,7 +1439,7 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
     conditional_image = axes["conditional"].imshow(
         current["conditional"].T, origin="lower", aspect="auto",
         interpolation="nearest", extent=qR_extent, cmap=JOINT_CMAP,
-        vmin=0.0, vmax=_density_color_max(current["conditional"][:, current["heavy_support"]]),
+        vmin=0.0, vmax=prep["conditional_vmax"],
         alpha=current["conditional_opacity"].T,
     )
     axes["conditional"].set(
@@ -1429,7 +1447,7 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
     )
     axes["conditional"].set_title(
-        r"$\rho(q|R)=|\Lambda_R|^2$ (raw density; frame color range)",
+        r"Conditional proton $\rho(q|R)=|\Lambda_R|^2$",
         loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
     )
     _set_density_axis(axes["conditional"])
@@ -1458,8 +1476,7 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
     )
     axes["epsilon_1"].set_title(
-        r"First TDPES $\epsilon_{\rm PG}^{(1)}(q,R)$ + $\rho_{qR}$ contours "
-        r"(linear density contours; denser inward)",
+        r"First TDPES $\epsilon_{\rm PG}^{(1)}(q,R)$ + density contours",
         loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
     )
 
@@ -1530,8 +1547,6 @@ def _update_nested_composite(state, obs, ef_positive, prep, frame, args):
         current["electron_proton"].T,
     )
     state["conditional_image"].set_data(current["conditional"].T)
-    state["electron_proton_image"].set_clim(0.0, _density_color_max(current["electron_proton"]))
-    state["conditional_image"].set_clim(0.0, _density_color_max(current["conditional"][:, current["heavy_support"]]))
     state["conditional_image"].set_alpha(
         current["conditional_opacity"].T,
     )
@@ -1580,7 +1595,7 @@ def render_nested_factorization(obs, ef_positive, outdir, args, snapshots):
         fig.suptitle(
             "Nested factorization: correlated densities and exact potentials | "
             f"t={times[frame]:.4f} fs\n"
-            r"raw densities: frame-dependent linear color ranges; raw potentials: "
+            r"raw densities: fixed linear color ranges; raw potentials: "
             r"positive-density gauge; contours: physical $\rho_{qR}$",
             fontweight="bold",
         )
@@ -1632,7 +1647,7 @@ def render_nested_factorization(obs, ef_positive, outdir, args, snapshots):
             title.set_text(
                 "Nested factorization: correlated densities and exact "
                 f"potentials | t={times[frame]:.4f} fs\n"
-                "raw densities with frame color ranges; "
+                "raw densities with fixed color ranges; "
                 "raw positive-density-gauge potentials; no smoothing"
             )
             return (
@@ -1644,7 +1659,7 @@ def render_nested_factorization(obs, ef_positive, outdir, args, snapshots):
 
         update(0)
         animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
-        products.append(tdse_report._save_animation(
+        products.append(_save_standard_movie(
             animation, fig, outdir, "nested_factorization_analysis_movie",
             args.fps, args.animation_dpi, args.format,
         ))
@@ -1938,7 +1953,7 @@ def render_heavy_analysis(obs, ef_zero, alpha_positive, outdir, args, snapshots)
 
         update(0)
         animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
-        products.append(tdse_report._save_animation(
+        products.append(_save_standard_movie(
             animation, fig, outdir, "heavy_analysis_movie",
             args.fps, args.animation_dpi, args.format,
         ))
@@ -2144,7 +2159,7 @@ def render_bo_combined(obs, ef, outdir, args, snapshots):
 
         update(0)
         animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
-        products.append(tdse_report._save_animation(
+        products.append(_save_standard_movie(
             animation, fig, outdir, "bo_combined_movie",
             args.fps, args.animation_dpi, args.format,
         ))
@@ -2175,6 +2190,7 @@ def _frame_focus(obs, frame, floor):
 
 def _save_analysis_movie(animation, fig, outdir, stem, args):
     """Encode dense scientific plots sharply without the former slow preset."""
+    _readable_typography(fig)
     if args.format == 'mp4' and FFMpegWriter.isAvailable():
         path = Path(outdir)/f'{stem}.mp4'
         writer = FFMpegWriter(fps=args.fps, codec='libx264', bitrate=-1,
@@ -2187,7 +2203,7 @@ def _save_analysis_movie(animation, fig, outdir, stem, args):
         animation.save(path, writer=writer, dpi=max(120, args.animation_dpi))
         plt.close(fig)
         return path
-    return tdse_report._save_animation(animation, fig, outdir, stem,
+    return _save_standard_movie(animation, fig, outdir, stem,
                                       args.fps, args.animation_dpi, args.format)
 
 
@@ -2733,12 +2749,12 @@ def _tdpes1_origin_axes(fig, slot=None):
     if slot is None:
         grid = fig.add_gridspec(
             2, 1, left=0.055, right=0.915, bottom=0.075, top=0.855,
-            hspace=0.34,
+            hspace=0.28,
         )
     else:
         grid = slot.subgridspec(2, 1, hspace=0.30)
-    top = grid[0].subgridspec(1, 3, wspace=0.27)
-    bottom = grid[1].subgridspec(1, 3, wspace=0.27)
+    top = grid[0].subgridspec(1, 3, wspace=0.23)
+    bottom = grid[1].subgridspec(1, 3, wspace=0.23)
     return [fig.add_subplot(top[i]) for i in range(3)] + [
         fig.add_subplot(bottom[i]) for i in range(3)
     ]
@@ -3080,8 +3096,8 @@ def _tdpes2_origin_preparation(obs, ef_positive, args):
 def _tdpes2_axes(fig, slot=None):
     if slot is None:
         grid = fig.add_gridspec(
-            2, 3, left=0.065, right=0.975, bottom=0.085, top=0.855,
-            wspace=0.27, hspace=0.38,
+            2, 3, left=0.065, right=0.975, bottom=0.085, top=0.835,
+            wspace=0.23, hspace=0.30,
         )
     else:
         grid = slot.subgridspec(2, 3, wspace=0.30, hspace=0.40)
@@ -3145,8 +3161,10 @@ def _draw_tdpes2_origin(axes, obs, ef_positive, prep, frame, *, compact=False):
         reference_lines.append(refs)
     axes[0].legend(
         handles=[lines[0], *balance_lines, *reference_lines[0]],
-        frameon=False, fontsize=(3.7 if compact else 6.5),
-        loc="best", ncol=(2 if compact else 1),
+        frameon=False, fontsize=(4.5 if compact else 11),
+        loc="lower left" if compact else "center", ncol=(3 if compact else 5),
+        bbox_to_anchor=(0, 1.15) if compact else (0.52, 0.895),
+        bbox_transform=axes[0].transAxes if compact else axes[0].figure.transFigure,
     )
     return {
         "lines": lines, "balance_lines": balance_lines,
@@ -3373,24 +3391,14 @@ def _tdpes_geometry_preparation(obs, ef_positive, args):
     return prep
 
 
-def _geometry_line_limits(current, active):
-    """Fit both occupied 1D curves without discarding small positive values."""
-    values = np.concatenate([current[key][active] for key in ("geo2_q", "geo2_R")])
-    positive = values[np.isfinite(values) & (values > 0.0)]
-    if not positive.size:
-        return (1e-12, 1e-11)
-    lower, upper = float(positive.min()), float(positive.max())
-    return lower/1.5, max(upper*1.5, lower*10.0)
-
-
 def _tdpes_geometry_norm(prep):
     return LogNorm(vmin=prep["lower"], vmax=prep["bound"], clip=False)
 
 
 def _tdpes_geometry_axes(fig, layout="separate"):
     grid = fig.add_gridspec(
-        2, 2, left=0.070, right=0.900, bottom=0.090, top=0.850,
-        wspace=0.25, hspace=0.38,
+        2, 2, left=0.070, right=0.900, bottom=0.120, top=0.850,
+        wspace=0.20, hspace=0.30,
     )
     if layout == "combined":
         return [fig.add_subplot(grid[0, 0]), fig.add_subplot(grid[0, 1]),
@@ -3455,8 +3463,7 @@ def _draw_tdpes_geometry(fig, axes, obs, ef_positive, prep, frame,
     )
     lines = []
     line_axes = [axes[2], axes[2]] if len(axes) == 3 else axes[2:]
-    line_limits = (_geometry_line_limits(current, active1d)
-                   if len(axes) == 3 else (prep["lower"], prep["bound"]))
+    line_limits = (1e-7, 1e-1)
     for axis, key, title, color in zip(
             line_axes, ("geo2_q", "geo2_R"), _TDPES_GEOMETRY_TITLES[2:],
             (PARTICLE_COLORS["proton"], PARTICLE_COLORS["heavy"])):
@@ -3478,8 +3485,9 @@ def _draw_tdpes_geometry(fig, axes, obs, ef_positive, prep, frame,
         axis.grid(which="minor", alpha=0.07)
         lines.append(line)
     if len(axes) == 3:
-        axes[2].set_title("Second-level geometry | occupied-range log axis", loc="left")
-        axes[2].legend(frameon=False, ncol=2, fontsize=10, loc="best")
+        axes[2].set_title("Second-level geometry | fixed log energy axis", loc="left")
+        axes[2].legend(frameon=False, ncol=2, fontsize=11, loc="center",
+                       bbox_to_anchor=(0.5, 0.025), bbox_transform=fig.transFigure)
     if colorbar:
         cax = fig.add_axes((0.925, 0.515, 0.014, 0.285))
         bar = fig.colorbar(
@@ -3531,8 +3539,6 @@ def _update_tdpes_geometry(state, axes, obs, ef_positive, prep, frame):
         obs, frame, prep["focus_floor"],
     )
     line_axes = [axes[2], axes[2]] if len(axes) == 3 else axes[2:]
-    if len(axes) == 3:
-        axes[2].set_ylim(_geometry_line_limits(current, active1d))
     for axis, line, key in zip(
             line_axes, state["lines"], ("geo2_q", "geo2_R")):
         values = np.where(active1d, current[key], np.nan)
@@ -3549,8 +3555,7 @@ def render_tdpes_geometry_log(obs, ef_positive, outdir, args, snapshots):
     prep = _tdpes_geometry_preparation(obs, ef_positive, args)
     times = obs["times_fs"]
     scale_description = (
-        "shared map scale; occupied-range line axis"
-        if prep["layout"] == "combined" else "shared fixed scale on all four panels"
+        r"fixed map scale; fixed line axis: $10^{-7}$ to $10^{-1}$ Hartree"
     )
 
     def individual(frame):
@@ -3887,7 +3892,7 @@ def run(args):
             "nested_potential_gauge=positive_density",
             "electron_proton_density=integral_dR_abs_Psi_squared",
             "conditional_proton_density=joint_density/heavy_density",
-            "nested_density_display=absolute_linear_frame_color_range",
+            "nested_density_display=absolute_linear_trajectory_fixed",
             "nested_energy_reference=raw_no_subtraction",
             (
                 "nested_electron_proton_vmax="
@@ -3982,10 +3987,7 @@ def run(args):
             "geometry_energy_reference_dependence=none",
             "geometry_movie=single_reference_independent_product",
             f"geometry_layout={geometry_prep['layout']}",
-            "geometry_scale=" + (
-                "shared_maps;combined_lines_use_frame_positive_extrema"
-                if geometry_prep["layout"] == "combined" else "shared_fixed_all_panels"
-            ),
+            "geometry_scale=fixed_maps;fixed_lines_1e-7_to_1e-1_Hartree",
             f"geometry_decades={geometry_prep['decades']:.16g}",
             f"geometry_shared_bound={geometry_prep['bound']:.16g}",
             f"geometry_lower_positive_limit={geometry_prep['lower']:.16g}",
@@ -4056,8 +4058,8 @@ def parse_args(argv=None):
     parser.add_argument(
         "--geometry-layout", choices=("combined", "separate"),
         default="combined",
-        help="combined: two maps and one occupied-range q/R line comparison; "
-             "separate: original four panels with one shared scale",
+        help="combined: two maps and one q/R line comparison; "
+             "separate: four panels; line axes fixed at 1e-7 to 1e-1 Hartree",
     )
     parser.add_argument(
         "--geometry-decades", type=float, default=8.0,

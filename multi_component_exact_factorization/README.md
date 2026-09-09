@@ -515,8 +515,10 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 접미사가 붙는다. ``framewise`` 옵션은 제거했다. 기존 파일은 자동 삭제하지 않는다.
 Nested TDPES도 동일한 저장 total을 raw로 읽는다. 단독 패널과 성분 비교 패널의
 색상 범위는 다를 수 있으므로 에너지 숫자는 colorbar를 기준으로 비교한다.
-Nested 밀도는 선형 raw 값이며, 후반부 가독성을 위해 색상 범위만 매 프레임
-갱신한다 (제목에 명시). BO3D는 전체 궤적의 점유 영역을 고정 시야로 표시한다.
+Nested 밀도는 선형 raw 값이며, 각 밀도 패널의 색상 범위는 전체 궤적에서
+고정한다. BO3D는 전체 궤적의 점유 영역을 고정 시야로 표시한다.
+일반 패널의 제목·축·색상바 글씨를 확대하고 TDPES2 origin 범례는 곡선과
+겹치지 않는 상단 별도 행에 배치한다. BO3D 스타일은 유지한다.
 
 저장된 모든 프레임의 TDPES 성분 합은 큰 임시파일 없이 확인할 수 있다:
 
@@ -538,10 +540,10 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 
 위 행은 첫 번째 TDPES의 ``q_geo(q,R), R_geo(q,R)``와 두 번째 TDPES의
 ``q_geo(R), R_geo(R)``를 기본적으로 위쪽 2D 두 패널과 아래쪽 비교 선 패널로 묶는다.
-아래쪽 q/R 곡선은 같은 log y축을 공유하며, 매 프레임 점유 영역의 모든 유한한
-양수값을 포함하도록 범위를 조절한다. 작은 양수값을 버리거나 수치를 변경하지 않는다.
-고정 축으로 시간 간 절대 크기를 비교하려면 ``--geometry-layout separate``로
-기존 2×2 배치를 선택할 수 있다. 이 경우 네 패널이 고정된 척도를 공유한다.
+아래쪽 q/R 곡선은 같은 log y축을 공유하며, 모든 프레임에서
+``1e-7 ~ 1e-1 Hartree``로 고정한다. 이 범위 밖의 값은 화면 밖에 있을 뿐
+원자료를 변경하지 않는다. ``--geometry-layout separate``로 기존 2×2 배치를
+선택할 수 있으며, 이 경우에도 아래 두 선 패널의 에너지 축은 같은 범위로 고정한다.
 두 2D 패널은 항상 공통 양의 Hartree ``LogNorm`` 척도를 사용한다. 2D 패널은
 검정/보라에서 주황/노랑/흰색으로 밝아지며 physical joint-density support만
 표시하고, 1D 패널은 heavy-density support를 쓴다.
