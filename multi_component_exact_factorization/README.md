@@ -562,6 +562,24 @@ raw와 fixed-(t=0) reference에서 수치적으로 완전히 같다. 따라서 �
 threshold는 이 표시 최적화로 바뀌지 않는다. Vector/current composite의 heavy
 1D 패널은 같은 프레임의 두 2D 패널과 동일한 R 범위를 사용한다.
 
+최신 complete TDPES cache에서는 origin/nested 렌더링도 사용하지 않는 native
+scalar, closure audit 및 overlap-link 배열을 로딩하지 않는다. 구형 cache의
+fallback과 heavy force에 필요한 link는 유지한다. Nested 등고선은 최저 등고선
+레벨을 포함하는 사각형에 보간용 한 셀을 추가한 영역만 계산하므로 downsampling
+없이 같은 contour를 얻는다. 기본 MP4 preset은 `fast`이며 해상도와 CRF는 같다
+(인코더 preset에 따라 파일 크기/압축 결과는 달라질 수 있다).
+실행 끝의 `final visualization timing`과 manifest에 총 시간, observables/EF
+로딩 시간, 나머지 준비·렌더링 시간을 기록한다. 프로세스 시작/import와 마지막
+manifest 쓰기·정리 시간은 이 내부 측정에서 제외된다.
+
+2026-09-09 smoke benchmark: 최신 결과의 첫 두 프레임(0, 0.2419 fs), 전체 12종,
+snapshot 2개, PNG 90 dpi, animation 70 dpi(analysis movie의 기존 최소 120 dpi는 유지),
+MP4/libx264 fast로 비교했다. `8a22a1c`는 34.76초, 최적화 후 33.51초였다.
+이 약 3.6% 차이는 작은 샘플 1회 비교이며 full trajectory 예상 시간으로 외삽하지 않는다.
+최신 complete cache의 full gallery에서는 불필요한 배열 12.18 GiB
+(NPZ compressed member 합계 11.42 GiB)를 로딩하지 않게 된다. 실제 full wall-time은
+디스크 속도, RAM/swap, 프레임 수, 인코딩에 따라 달라지며 아직 전후 실측하지 않았다.
+
 교수님 분석용 nested-factorization 4-panel만 다시 만들려면 다음을 사용한다.
 
 ```bash

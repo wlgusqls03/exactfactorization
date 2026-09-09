@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import gc
 import os
+import time
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -1203,10 +1204,15 @@ def _nested_frame(obs, ef_positive, frame, args):
         ),
         "joint_density": np.maximum(np.asarray(joint, float), 0.0),
         "joint_opacity": joint_support.astype(float),
-        "epsilon_1": np.asarray(ef_positive.get("tdpes1_total", ef_positive["epsilon_1"])[frame]),
-        "epsilon_2": np.asarray(ef_positive.get("tdpes2_total", ef_positive["epsilon_2"])[frame]),
+        "epsilon_1": _total_source(ef_positive, 1)[frame],
+        "epsilon_2": _total_source(ef_positive, 2)[frame],
         "heavy_support": heavy_support,
     }
+
+
+def _total_source(ef, level):
+    key = f"tdpes{level}_total"
+    return ef[key] if key in ef else ef[f"epsilon_{level}"]
 
 
 def _nested_preparation(obs, ef_positive, args):
@@ -1218,8 +1224,8 @@ def _nested_preparation(obs, ef_positive, args):
             f"{electron_proton.shape} != {expected}"
         )
     frames = _movie_frames(obs, args.max_frames)
-    epsilon_1_source = ef_positive.get("tdpes1_total", ef_positive["epsilon_1"])
-    epsilon_2_source = ef_positive.get("tdpes2_total", ef_positive["epsilon_2"])
+    epsilon_1_source = _total_source(ef_positive, 1)
+    epsilon_2_source = _total_source(ef_positive, 2)
     epsilon_1_limits = _robust_raw_symmetric_limits(
         [epsilon_1_source[int(frame)] for frame in frames],
         [obs["joint_density"][int(frame)] for frame in frames],
@@ -1343,8 +1349,15 @@ def _joint_linear_contours(axis, obs, density, compact=False, *,
         0.025, 0.05, 0.075, 0.10, 0.15, 0.20,
         0.30, 0.40, 0.50, 0.60, 0.75, 0.90,
     ))
+    # No contour at these levels can exist outside this rectangle. Keep a
+    # complete lower-density cell border, so interpolation is unchanged.
+    indices = np.nonzero(relative >= levels[0])
+    crop = tuple(
+        slice(max(0, int(index.min())-1), min(size, int(index.max())+2))
+        for index, size in zip(indices, relative.shape)
+    ) if indices[0].size else (slice(None), slice(None))
     contours = axis.contour(
-        obs["q"], obs["R"], relative.T, levels=levels,
+        obs["q"][crop[0]], obs["R"][crop[1]], relative[crop].T, levels=levels,
         colors=color,
         linewidths=np.linspace(
             0.24 if compact else 0.34,
@@ -2408,9 +2421,8 @@ def _site_link_metric(link, spacing, axis):
 
 def _tdpes1_origin_frame(obs, ef_zero, prep, frame):
     density = obs["joint_density"][frame]
-    native_total = np.asarray(ef_zero["epsilon_1"][frame], float)
-    native_gi = np.asarray(ef_zero["epsilon_1_gi"][frame], float)
-    wbo_raw = np.asarray(ef_zero["epsilon_1_wbo"][frame], float)
+    native_total = ef_zero["epsilon_1"][frame] if "epsilon_1" in ef_zero else None
+    native_gi = ef_zero["epsilon_1_gi"][frame] if "epsilon_1_gi" in ef_zero else None
     support = density >= prep["floor"]*max(float(np.max(density)), 1.0e-300)
     stored = all(key in ef_zero for key in (
         "tdpes1_total", "tdpes1_wbo_0", "tdpes1_wbo_excited",
@@ -2432,6 +2444,7 @@ def _tdpes1_origin_frame(obs, ef_zero, prep, frame):
     else:
         # Compatibility for older caches.  Regenerate the cache to eliminate
         # this plotting-time continuum-limit reconstruction.
+        wbo_raw = np.asarray(ef_zero["epsilon_1_wbo"][frame], float)
         gd_raw = native_total-native_gi
         geo_q = _site_link_metric(
             ef_zero["sphi_q1"][frame], obs["dq"], axis=0,
@@ -2864,8 +2877,8 @@ def _tdpes2_origin_frame(obs, ef_positive, prep, frame):
         joint, heavy[None, :], out=np.zeros_like(joint),
         where=heavy[None, :] > np.finfo(np.float64).tiny,
     )
-    native_total = np.asarray(ef_positive["epsilon_2"][frame], float)
-    native_gi = np.asarray(ef_positive["epsilon_2_gi"][frame], float)
+    native_total = ef_positive["epsilon_2"][frame] if "epsilon_2" in ef_positive else None
+    native_gi = ef_positive["epsilon_2_gi"][frame] if "epsilon_2_gi" in ef_positive else None
     stored = all(key in ef_positive for key in (
         "tdpes2_total", "tdpes2_wbo_0", "tdpes2_wbo_excited",
         "tdpes2_gd", "tdpes2_geo_q", "tdpes2_geo_R",
@@ -2915,18 +2928,16 @@ def _tdpes2_origin_frame(obs, ef_positive, prep, frame):
         ef_positive["bo_channel_density_qR"][frame, :2], float,
     )
     energies = np.asarray(obs["bo_energies"][:2], float)
+    ground_weight = np.divide(
+        channels[0], heavy[None, :], out=np.zeros_like(channels[0]),
+        where=heavy[None, :] > np.finfo(np.float64).tiny,
+    )
     ground_from_channels = np.sum(
-        np.divide(
-            channels[0], heavy[None, :], out=np.zeros_like(channels[0]),
-            where=heavy[None, :] > np.finfo(np.float64).tiny,
-        )*(energies[0]-energy_reference),
+        ground_weight*(energies[0]-energy_reference),
         axis=0, dtype=np.float64,
     )*obs["dq"]
     ground_probability = np.sum(
-        np.divide(
-            channels[0], heavy[None, :], out=np.zeros_like(channels[0]),
-            where=heavy[None, :] > np.finfo(np.float64).tiny,
-        ), axis=0, dtype=np.float64,
+        ground_weight, axis=0, dtype=np.float64,
     )*obs["dq"]
     ground = (
         ground_raw-ground_probability*energy_reference
@@ -2981,7 +2992,12 @@ _TDPES2_TITLES = (
 
 
 def _tdpes2_origin_preparation(obs, ef_positive, args):
-    required = (
+    stored_keys = tuple(f"tdpes2_{suffix}" for suffix in (
+        "total", "wbo_0", "wbo_excited", "gd", "geo_q", "geo_R",
+    ))
+    required = ("bo_channel_density_qR",) if all(
+        key in ef_positive for key in stored_keys
+    ) else (
         "epsilon_2", "epsilon_2_gi", "epsilon_1_wbo",
         "bo_channel_density_qR", "sgamma_R1",
     )
@@ -3589,8 +3605,11 @@ def render_tdpes_geometry_log(obs, ef_positive, outdir, args, snapshots):
 
 
 def run(args):
+    started = time.perf_counter()
     archive, run_dir = find_archive(resolve_run_input(args.run))
     obs = tdse_report.calculate_observables(tdse_report.load_observables(archive))
+    observable_seconds = time.perf_counter()-started
+    ef_load_seconds = 0.0
     output = (
         Path(args.outdir).expanduser().resolve()
         if args.outdir else
@@ -3644,6 +3663,13 @@ def run(args):
             decomposition_keys = tuple(
                 key for key in candidates if key in available
             )
+        stored_components = {
+            level: tuple(f"tdpes{level}_{suffix}" for suffix in (
+                "total", "wbo_0", "wbo_excited", "gd", "geo_q", "geo_R",
+            )) for level in (1, 2)
+        }
+        complete = {level: all(key in decomposition_keys for key in keys)
+                    for level, keys in stored_components.items()}
         field_keys = []
         if "velocity" in selected:
             field_keys.extend(("a", "b"))
@@ -3652,10 +3678,10 @@ def run(args):
         if "current" in selected:
             field_keys.extend(("a", "b", "alpha"))
         if "nested" in selected:
-            field_keys.extend((
-                "epsilon_1", "epsilon_2", "a", "b", "alpha",
-                "electron_proton_density",
-            ))
+            field_keys.append("electron_proton_density")
+            for level in (1, 2):
+                key = f"tdpes{level}_total"
+                field_keys.append(key if key in decomposition_keys else f"epsilon_{level}")
         if "heavy" in selected:
             field_keys.extend(("epsilon_2", "alpha"))
         if "bo" in selected:
@@ -3663,21 +3689,15 @@ def run(args):
         if "bo3d" in selected:
             field_keys.append("bo_channel_density_qR")
         if "tdpes1" in selected:
-            field_keys.extend((
+            field_keys.append("bo_channel_density_qR")
+            field_keys.extend(stored_components[1] if complete[1] else (
                 "epsilon_1", "epsilon_1_gi", "epsilon_1_wbo",
-                "bo_channel_density_qR",
             ))
-            field_keys.extend(
-                key for key in decomposition_keys if key.startswith("tdpes1_")
-            )
         if "tdpes2" in selected:
-            field_keys.extend((
+            field_keys.append("bo_channel_density_qR")
+            field_keys.extend(stored_components[2] if complete[2] else (
                 "epsilon_2", "epsilon_2_gi", "epsilon_1_wbo",
-                "bo_channel_density_qR",
             ))
-            field_keys.extend(
-                key for key in decomposition_keys if key.startswith("tdpes2_")
-            )
         if "geometry" in selected:
             if not all(key in decomposition_keys for key in (
                 "tdpes1_geo_q", "tdpes1_geo_R",
@@ -3698,27 +3718,23 @@ def run(args):
             )
         field_keys = tuple(dict.fromkeys(field_keys))
         link_keys = []
-        if "nested" in selected:
+        if "tdpes1" in selected and not complete[1]:
+            link_keys.extend(("sphi_q1", "sphi_R1"))
+        if "tdpes2" in selected and not complete[2]:
+            link_keys.append("sgamma_R1")
+        if "geometry" in selected and not all(
+            key in decomposition_keys for key in (
+                "tdpes1_geo_q", "tdpes1_geo_R", "tdpes2_geo_q", "tdpes2_geo_R",
+            )
+        ):
             link_keys.extend(("sphi_q1", "sphi_R1", "sgamma_R1"))
-        else:
-            if "tdpes1" in selected:
-                link_keys.extend(("sphi_q1", "sphi_R1"))
-            if "tdpes2" in selected:
-                link_keys.append("sgamma_R1")
-            if "geometry" in selected:
-                stored_geometry = all(
-                    key in decomposition_keys for key in (
-                        "tdpes1_geo_q", "tdpes1_geo_R",
-                        "tdpes2_geo_q", "tdpes2_geo_R",
-                    )
-                )
-                if not stored_geometry:
-                    link_keys.extend(("sphi_q1", "sphi_R1", "sgamma_R1"))
-            if "heavy" in selected:
-                link_keys.append("sgamma_R1")
+        if "heavy" in selected:
+            link_keys.append("sgamma_R1")
+        ef_load_started = time.perf_counter()
         ef = tdse_report._load_ef_fields(
-            obs, field_keys=field_keys, link_keys=tuple(link_keys),
+            obs, field_keys=field_keys, link_keys=tuple(dict.fromkeys(link_keys)),
         )
+        ef_load_seconds = time.perf_counter()-ef_load_started
         if ef is None:
             raise FileNotFoundError(
                 f"{run_dir/'tdse_exact_factorization_fields.npz'}가 없습니다."
@@ -4000,6 +4016,16 @@ def run(args):
         "default_scalar_vector_gauge=positive_density",
         "zero_potential_gauge_usage=heavy_force_from_minus_partial_R_epsilon_2_only",
     ))
+    elapsed = time.perf_counter()-started
+    manifest.extend((
+        f"wall_seconds={elapsed:.6f}",
+        f"observable_load_seconds={observable_seconds:.6f}",
+        f"ef_load_seconds={ef_load_seconds:.6f}",
+        f"render_and_prepare_seconds={elapsed-observable_seconds-ef_load_seconds:.6f}",
+    ))
+    print(f"final visualization timing: total={elapsed:.2f} s; "
+          f"observables={observable_seconds:.2f} s; EF load={ef_load_seconds:.2f} s; "
+          f"render/prepare={elapsed-observable_seconds-ef_load_seconds:.2f} s", flush=True)
     manifest_path = output/"final_visualizations_manifest.txt"
     manifest_path.write_text("\n".join(manifest)+"\n", encoding="utf-8")
     products.append(manifest_path)
@@ -4075,7 +4101,7 @@ def parse_args(argv=None):
         ),
     )
     parser.add_argument("--movie-preset", choices=("ultrafast", "veryfast", "fast", "medium", "slow"),
-                        default="medium", help="libx264 encoding preset for analysis movies")
+                        default="fast", help="libx264 encoding preset; fast keeps CRF/resolution unchanged")
     parser.add_argument(
         '--analysis-focus-floor', type=float, default=1e-3,
         help=(

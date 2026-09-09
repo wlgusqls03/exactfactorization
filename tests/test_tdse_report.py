@@ -15,6 +15,25 @@ from multi_component_exact_factorization import (
 
 
 class TDSEReportTests(unittest.TestCase):
+    def test_nested_contour_crop_preserves_full_grid_vertices(self):
+        plot = render_final_visualizations.plt
+        q, R = np.linspace(-12, 28, 300), np.linspace(5, 14, 180)
+        density = np.exp(-((q[:, None]+4)**2+(R[None, :]-9.5)**2)/0.4)
+        fig, axes = plot.subplots(1, 2)
+        try:
+            cropped = render_final_visualizations._joint_linear_contours(
+                axes[0], {"q": q, "R": R}, density,
+            )
+            full = axes[1].contour(q, R, (density/density.max()).T,
+                                   levels=cropped.levels)
+            for a, b in zip(cropped.allsegs, full.allsegs):
+                a, b = np.concatenate(a), np.concatenate(b)
+                a = a[np.lexsort((a[:, 1], a[:, 0]))]
+                b = b[np.lexsort((b[:, 1], b[:, 0]))]
+                np.testing.assert_allclose(a, b, rtol=0, atol=1e-13)
+        finally:
+            plot.close(fig)
+
     def test_final_visualization_uses_shared_point_one_percent_focus(self):
         args = render_final_visualizations.parse_args(["dummy-run"])
         self.assertEqual(args.analysis_focus_floor, 1.0e-3)
@@ -482,6 +501,10 @@ class TDSEReportTests(unittest.TestCase):
             ef.update(components_2)
             ef["tdpes1_total"] = sum(components_1.values())
             ef["tdpes2_total"] = sum(components_2.values())
+            # A complete modern cache must not need legacy scalar/link arrays.
+            for key in ("epsilon_1", "epsilon_1_gi", "epsilon_1_wbo",
+                        "epsilon_2", "epsilon_2_gi", "sphi_q1", "sphi_R1", "sgamma_R1"):
+                ef.pop(key, None)
             args = argparse.Namespace(
                 support_floor=1.0e-4, analysis_focus_floor=1.0e-2,
                 decades=6.0, max_frames=3,
