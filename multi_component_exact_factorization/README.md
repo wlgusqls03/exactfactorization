@@ -520,6 +520,20 @@ Nested 밀도는 선형 raw 값이며, 각 밀도 패널의 색상 범위는 전
 일반 패널의 제목·축·색상바 글씨를 확대하고 TDPES2 origin 범례는 곡선과
 겹치지 않는 상단 별도 행에 배치한다. BO3D 스타일은 유지한다.
 
+Positive-gauge TDPES1의 amplitude-curvature 설명을 점검하려면 다음 진단을 쓴다:
+
+```bash
+python -m multi_component_exact_factorization.audit_pg_curvature results/YYYYMMDD/RUN_NAME
+```
+
+`report/final_visualizations/pg_curvature_audit/`에 8개 시점의 기여도 지도,
+시간별 점유 밀도 가중 평균/RMS 그림, JSON 수치 결과를 저장한다. GPU나 EF 재계산은
+필요 없고 NPZ를 프레임 단위로 읽는다. 기존 5점 미분으로 전체 진폭을 먼저 미분한 뒤
+`--density-floor 1e-3` support에서 비교한다. 색상 범위는 snapshot 사이에 고정한다.
+`Qq + QR - a_site²/(2m) - b_site²/(2M)`는 연속 극한 진단이며 native link 항등식이
+아니다. 저장된 BO Hamiltonian에는 trap이 이미 포함되어 있으므로 다시 빼지 않는다.
+잔차에는 유한격자, bond-to-site 변환, overlap phase branch 영향이 포함될 수 있다.
+
 저장된 모든 프레임의 TDPES 성분 합은 큰 임시파일 없이 확인할 수 있다:
 
 ```bash
