@@ -1126,16 +1126,16 @@ def render_current_composite(obs, ef, outdir, args, snapshots):
 # 4. Nested-factorization potential and conditional-density analysis
 
 
-def _robust_shifted_limits(arrays, densities, floor):
-    """Trajectory-wide scalar limits after one occupied-density offset."""
+def _robust_raw_limits(arrays, densities, floor):
+    """Trajectory-wide occupied raw-energy limits (no reference subtraction)."""
     lower, upper = [], []
     for values, density in zip(arrays, densities):
-        shifted = density_weighted_shift(values, density, floor)
+        raw = np.asarray(values)
         support = (
             np.asarray(density, float)
             >= float(floor)*max(float(np.max(density)), 1.0e-300)
         )
-        selected = shifted[support & np.isfinite(shifted)]
+        selected = raw[support & np.isfinite(raw)]
         if selected.size:
             lower.append(float(np.percentile(selected, 1.0)))
             upper.append(float(np.percentile(selected, 99.0)))
@@ -1151,16 +1151,16 @@ def _robust_shifted_limits(arrays, densities, floor):
     return low-padding, high+padding
 
 
-def _robust_shifted_symmetric_limits(arrays, densities, floor):
-    """Trajectory-wide zero-centred limits for shifted occupied fields."""
+def _robust_raw_symmetric_limits(arrays, densities, floor):
+    """Trajectory-wide zero-centred limits for raw occupied fields."""
     per_frame = []
     for values, density in zip(arrays, densities):
-        shifted = density_weighted_shift(values, density, floor)
+        raw = np.asarray(values)
         support = (
             np.asarray(density, float)
             >= float(floor)*max(float(np.max(density)), 1.0e-300)
         )
-        selected = np.abs(shifted[support & np.isfinite(shifted)])
+        selected = np.abs(raw[support & np.isfinite(raw)])
         if selected.size:
             per_frame.append(float(np.percentile(selected, 99.0)))
     bound = max(
@@ -1203,14 +1203,8 @@ def _nested_frame(obs, ef_positive, frame, args):
         ),
         "joint_density": np.maximum(np.asarray(joint, float), 0.0),
         "joint_opacity": joint_support.astype(float),
-        "epsilon_1": density_weighted_shift(
-            ef_positive.get("tdpes1_total", ef_positive["epsilon_1"])[frame],
-            joint, focus_floor,
-        ),
-        "epsilon_2": density_weighted_shift(
-            ef_positive.get("tdpes2_total", ef_positive["epsilon_2"])[frame],
-            heavy, focus_floor,
-        ),
+        "epsilon_1": np.asarray(ef_positive.get("tdpes1_total", ef_positive["epsilon_1"])[frame]),
+        "epsilon_2": np.asarray(ef_positive.get("tdpes2_total", ef_positive["epsilon_2"])[frame]),
         "heavy_support": heavy_support,
     }
 
@@ -1226,12 +1220,12 @@ def _nested_preparation(obs, ef_positive, args):
     frames = _movie_frames(obs, args.max_frames)
     epsilon_1_source = ef_positive.get("tdpes1_total", ef_positive["epsilon_1"])
     epsilon_2_source = ef_positive.get("tdpes2_total", ef_positive["epsilon_2"])
-    epsilon_1_limits = _robust_shifted_symmetric_limits(
+    epsilon_1_limits = _robust_raw_symmetric_limits(
         [epsilon_1_source[int(frame)] for frame in frames],
         [obs["joint_density"][int(frame)] for frame in frames],
         args.analysis_focus_floor,
     )
-    epsilon_2_limits = _robust_shifted_limits(
+    epsilon_2_limits = _robust_raw_limits(
         [epsilon_2_source[int(frame)] for frame in frames],
         [obs["heavy_density"][int(frame)] for frame in frames],
         args.analysis_focus_floor,
@@ -1378,6 +1372,11 @@ def _heavy_silhouette(axis, R, density, compact=False):
     return fill, line
 
 
+def _density_color_max(values):
+    finite = np.asarray(values)[np.isfinite(values)]
+    return max(float(np.max(finite)) if finite.size else 0.0, 1e-300)
+
+
 def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
                            colorbars=True, compact=False):
     q, R, x = obs["q"], obs["R"], obs["x"]
@@ -1394,14 +1393,14 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
     electron_proton_image = axes["electron_proton"].imshow(
         current["electron_proton"].T, origin="lower", aspect="auto",
         interpolation="nearest", extent=density_extent, cmap=JOINT_CMAP,
-        vmin=0.0, vmax=prep["electron_proton_vmax"],
+        vmin=0.0, vmax=_density_color_max(current["electron_proton"]),
     )
     axes["electron_proton"].set(
         xlim=prep["x_limits"], ylim=prep["q_limits"],
         xlabel=r"electron $x$ ($a_0$)", ylabel=r"proton $q$ ($a_0$)",
     )
     axes["electron_proton"].set_title(
-        r"Absolute $\rho_{ep}(x,q)=\int dR\,|\Psi|^2$",
+        r"$\rho_{ep}(x,q)=\int dR\,|\Psi|^2$ (raw density; frame color range)",
         loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
     )
     _set_density_axis(axes["electron_proton"])
@@ -1409,7 +1408,7 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
     conditional_image = axes["conditional"].imshow(
         current["conditional"].T, origin="lower", aspect="auto",
         interpolation="nearest", extent=qR_extent, cmap=JOINT_CMAP,
-        vmin=0.0, vmax=prep["conditional_vmax"],
+        vmin=0.0, vmax=_density_color_max(current["conditional"][:, current["heavy_support"]]),
         alpha=current["conditional_opacity"].T,
     )
     axes["conditional"].set(
@@ -1417,10 +1416,17 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
     )
     axes["conditional"].set_title(
-        r"Conditional proton $\rho(q|R)=\rho_{qR}/\rho_R=|\Lambda_R|^2$",
+        r"$\rho(q|R)=|\Lambda_R|^2$ (raw density; frame color range)",
         loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
     )
     _set_density_axis(axes["conditional"])
+    if compact:
+        for name, image in (("electron_proton", electron_proton_image),
+                            ("conditional", conditional_image)):
+            axes[name].text(
+                0.02, 0.03, rf"color max: ${_math_scientific(image.norm.vmax)}$",
+                transform=axes[name].transAxes, color="white", fontsize=5,
+            )
 
     axes["epsilon_1"].set_facecolor(MASK_COLOR)
     epsilon_1_image = axes["epsilon_1"].imshow(
@@ -1458,7 +1464,7 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
     axes["epsilon_2"].axhline(0.0, color="0.72", lw=0.65, zorder=0)
     axes["epsilon_2"].set(
         xlim=heavy_limits, ylim=prep["epsilon_2_limits"],
-        xlabel=r"heavy $R$ ($a_0$)", ylabel="shifted energy (Hartree)",
+        xlabel=r"heavy $R$ ($a_0$)", ylabel="raw PG energy (Hartree)",
     )
     axes["epsilon_2"].set_title(
         r"Second TDPES $\epsilon_{\rm PG}^{(2)}(R)$ and heavy support",
@@ -1484,7 +1490,7 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         fig.colorbar(
             epsilon_1_image, ax=axes["epsilon_1"], pad=0.014,
             format=NUMBER_FORMATTER, extend="both",
-            label="shifted energy (Hartree)",
+            label="raw PG energy (Hartree)",
         )
     return {
         "electron_proton_image": electron_proton_image,
@@ -1511,6 +1517,8 @@ def _update_nested_composite(state, obs, ef_positive, prep, frame, args):
         current["electron_proton"].T,
     )
     state["conditional_image"].set_data(current["conditional"].T)
+    state["electron_proton_image"].set_clim(0.0, _density_color_max(current["electron_proton"]))
+    state["conditional_image"].set_clim(0.0, _density_color_max(current["conditional"][:, current["heavy_support"]]))
     state["conditional_image"].set_alpha(
         current["conditional_opacity"].T,
     )
@@ -1559,7 +1567,7 @@ def render_nested_factorization(obs, ef_positive, outdir, args, snapshots):
         fig.suptitle(
             "Nested factorization: correlated densities and exact potentials | "
             f"t={times[frame]:.4f} fs\n"
-            r"absolute densities: trajectory-fixed linear scales; potentials: "
+            r"raw densities: frame-dependent linear color ranges; raw potentials: "
             r"positive-density gauge; contours: physical $\rho_{qR}$",
             fontweight="bold",
         )
@@ -1611,8 +1619,8 @@ def render_nested_factorization(obs, ef_positive, outdir, args, snapshots):
             title.set_text(
                 "Nested factorization: correlated densities and exact "
                 f"potentials | t={times[frame]:.4f} fs\n"
-                "absolute densities on trajectory-fixed scales; "
-                "positive-density gauge; no smoothing"
+                "raw densities with frame color ranges; "
+                "raw positive-density-gauge potentials; no smoothing"
             )
             return (
                 state["electron_proton_image"],
@@ -2215,6 +2223,9 @@ def _bo3d_preparation(obs, ef, args):
 
 def _draw_bo3d_axis(axis, obs, prep, frame, states, compact=False):
     active, indices, limits = _frame_focus(obs, frame, prep['focus_floor'])
+    # Keep the full trajectory's occupied domain visible, not a moving camera.
+    indices = (prep["q_indices"], prep["R_indices"])
+    limits = (prep["q_limits"], prep["R_limits"])
     qi, Ri = indices
     qi = qi[np.linspace(0, len(qi)-1, min(len(qi), prep['q_points']), dtype=int)]
     Ri = Ri[np.linspace(0, len(Ri)-1, min(len(Ri), prep['R_points']), dtype=int)]
@@ -2313,8 +2324,8 @@ def _draw_bo3d_movie_packets(axis, obs, prep, frame, states):
             Q, RR, lifted, facecolors=face, linewidth=0.0,
             antialiased=False, shade=False, rcount=len(qi), ccount=len(Ri),
         ))
-    axis.set_xlim(limits[0])
-    axis.set_ylim(limits[1])
+    axis.set_xlim(prep["q_limits"])
+    axis.set_ylim(prep["R_limits"])
     return packets
 
 
@@ -2434,10 +2445,10 @@ def _tdpes1_origin_frame(obs, ef_zero, prep, frame):
     # Preparation fixes this value once from frame zero.  The fallback is used
     # only by that bootstrap call, so every subsequently rendered frame keeps
     # the same physical energy zero and retains genuine temporal offsets.
-    reference_mode = prep.get("energy_reference_mode", "initial")
+    reference_mode = prep.get("energy_reference_mode", "raw")
     energy_reference = (
         prep.get("fixed_energy_reference")
-        if reference_mode == "initial" else None
+        if reference_mode == "initial" else 0.0
     )
     if energy_reference is None:
         energy_reference = (
@@ -2500,7 +2511,7 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
     provisional = {
         "floor": floor, "proton_mass": proton_mass, "heavy_mass": heavy_mass,
         "energy_reference_mode": getattr(
-            args, "tdpes_energy_reference", "initial",
+            args, "tdpes_energy_reference", "raw",
         ),
         "decades": float(args.decades),
         "focus_floor": getattr(args, 'analysis_focus_floor', 1e-3),
@@ -2624,6 +2635,8 @@ def _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame, colorbars=True,
     )]
     shared_norm = _tdpes1_shared_norm(prep)
     titles = list(_TDPES1_TITLES)
+    if prep.get("energy_reference_mode", "raw") == "raw":
+        titles = [title.replace(r"-E_{\rm ref}", "") for title in titles]
     if not prep.get("stored_decomposition", False):
         titles[0] = (
             r"Total $\widetilde\epsilon_{\rm total}^{(1)}$ "
@@ -2731,12 +2744,12 @@ def render_tdpes1_origin(obs, ef_fields, outdir, args, snapshots, *,
             "final TDPES1 visualization requires positive-density gauge"
         )
     prep = _tdpes1_origin_preparation(obs, ef_fields, args)
-    if prep["energy_reference_mode"] == "framewise":
-        stem += "_framewise_reference"
+    if prep["energy_reference_mode"] == "initial":
+        stem += "_initial_reference"
     reference_label = (
         "fixed t=0 density-weighted energy origin"
         if prep["energy_reference_mode"] == "initial"
-        else "framewise density-weighted energy origin"
+        else "raw PG energy; no reference subtraction"
     )
     times = obs["times_fs"]
 
@@ -2841,8 +2854,8 @@ def _tdpes2_origin_frame(obs, ef_positive, prep, frame):
     At finite spacing the native second GI scalar contains the BO average and
     the complete internal q kinetic/link contribution.  The outer R metric is
     carried by S^Gamma and is restored explicitly for the continuum-limit
-    diagnostic.  One scalar E_ref fixed from the occupied density at t=0 is
-    subtracted from total and every BO energy at all times, leaving the
+    diagnostic. Raw PG energies are the default. Optionally subtract one
+    scalar E_ref fixed at t=0 from total and every BO energy, leaving the
     geometric and GD terms unchanged.
     """
     joint = np.asarray(obs["joint_density"][frame], float)
@@ -2884,10 +2897,10 @@ def _tdpes2_origin_frame(obs, ef_positive, prep, frame):
         ground_raw = None
         excited_raw = None
     support = heavy >= prep["floor"]*max(float(np.max(heavy)), 1.0e-300)
-    reference_mode = prep.get("energy_reference_mode", "initial")
+    reference_mode = prep.get("energy_reference_mode", "raw")
     energy_reference = (
         prep.get("fixed_energy_reference")
-        if reference_mode == "initial" else None
+        if reference_mode == "initial" else 0.0
     )
     if energy_reference is None:
         energy_reference = (
@@ -2990,7 +3003,7 @@ def _tdpes2_origin_preparation(obs, ef_positive, args):
             "tdpes2_gd", "tdpes2_geo_q", "tdpes2_geo_R",
         )),
         "energy_reference_mode": getattr(
-            args, "tdpes_energy_reference", "initial",
+            args, "tdpes_energy_reference", "raw",
         ),
     }
     if provisional["energy_reference_mode"] == "initial":
@@ -3154,7 +3167,7 @@ def render_tdpes2_origin(obs, ef_positive, outdir, args, snapshots):
     reference_label = (
         "fixed t=0 energy origin"
         if prep["energy_reference_mode"] == "initial"
-        else "framewise density-weighted energy origin"
+        else "raw PG energy; no reference subtraction"
     )
 
     def individual(frame):
@@ -3171,8 +3184,8 @@ def render_tdpes2_origin(obs, ef_positive, outdir, args, snapshots):
         return fig
 
     stem = "tdpes2_origin_positive_gauge"
-    if prep["energy_reference_mode"] == "framewise":
-        stem += "_framewise_reference"
+    if prep["energy_reference_mode"] == "initial":
+        stem += "_initial_reference"
     products = _save_individual_frames(
         individual, snapshots, times, Path(outdir)/f"{stem}_frames",
         stem, args.dpi,
@@ -3514,7 +3527,7 @@ def _update_tdpes_geometry(state, axes, obs, ef_positive, prep, frame):
 
 
 def render_tdpes_geometry_log(obs, ef_positive, outdir, args, snapshots):
-    """Render once; fixed/framewise names are identical reference-free aliases."""
+    """Geometry has no energy-reference subtraction; render one product."""
     if ef_positive.get("gauge") != "positive_density":
         raise ValueError("geometry comparison requires the positive-density cache")
     prep = _tdpes_geometry_preparation(obs, ef_positive, args)
@@ -3565,14 +3578,9 @@ def render_tdpes_geometry_log(obs, ef_positive, outdir, args, snapshots):
         animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
         fixed = _save_analysis_movie(
             animation, fig, outdir,
-            "tdpes_geometry_log_fixed_reference_movie", args,
+            "tdpes_geometry_log_movie", args,
         )
         products.append(fixed)
-        suffix = Path(fixed).suffix
-        products.append(_hardlink_output_alias(
-            fixed,
-            Path(outdir)/f"tdpes_geometry_log_framewise_reference_movie{suffix}",
-        ))
     return products, prep
 
 
@@ -3746,7 +3754,7 @@ def run(args):
 
     requested_reference_mode = args.tdpes_energy_reference
     reference_modes = (
-        ("initial", "framewise")
+        ("raw", "initial")
         if requested_reference_mode == "both"
         else (requested_reference_mode,)
     )
@@ -3863,7 +3871,8 @@ def run(args):
             "nested_potential_gauge=positive_density",
             "electron_proton_density=integral_dR_abs_Psi_squared",
             "conditional_proton_density=joint_density/heavy_density",
-            "nested_density_display=absolute_linear_trajectory_fixed",
+            "nested_density_display=absolute_linear_frame_color_range",
+            "nested_energy_reference=raw_no_subtraction",
             (
                 "nested_electron_proton_vmax="
                 f"{nested_prep['electron_proton_vmax']:.16g}"
@@ -3891,6 +3900,7 @@ def run(args):
         manifest.extend((
             "bo3d_density=rho_j(q,R,t)=rho_qR*abs(C_j)^2=abs(Y_j)^2",
             "bo3d_surfaces=time_independent_BO_energies",
+            "bo3d_camera=fixed_trajectory_occupied_domain",
             "bo3d_vertical_density_lift=display_only_fixed_trajectory_scale",
             f"bo3d_states={bo3d_prep['n_states']}",
             f"bo3d_q_limits={bo3d_prep['q_limits']}",
@@ -3954,7 +3964,7 @@ def run(args):
             "geometry_panels=tdpes1_q_geo,tdpes1_R_geo,tdpes2_q_geo,tdpes2_R_geo",
             "geometry_gauge=positive_density_input_but_all_four_terms_are_gauge_invariant",
             "geometry_energy_reference_dependence=none",
-            "geometry_fixed_and_framewise_movies=identical_aliases_by_definition",
+            "geometry_movie=single_reference_independent_product",
             f"geometry_layout={geometry_prep['layout']}",
             "geometry_scale=" + (
                 "shared_maps;combined_lines_use_frame_positive_extrema"
@@ -4058,10 +4068,10 @@ def parse_args(argv=None):
                         help="one shared TDPES1 norm; linear is the readable default, symlog reveals small structure")
     parser.add_argument(
         "--tdpes-energy-reference",
-        choices=("initial", "framewise", "both"), default="initial",
+        choices=("raw", "initial", "both"), default="raw",
         help=(
-            "TDPES energy zero: fixed occupied-density mean at t=0 "
-            "(default), legacy per-frame mean, or render both"
+            "TDPES energy zero: raw stored values (default), fixed t=0 mean, "
+            "or both; framewise reference is no longer supported"
         ),
     )
     parser.add_argument("--movie-preset", choices=("ultrafast", "veryfast", "fast", "medium", "slow"),

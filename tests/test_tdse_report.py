@@ -18,6 +18,7 @@ class TDSEReportTests(unittest.TestCase):
     def test_final_visualization_uses_shared_point_one_percent_focus(self):
         args = render_final_visualizations.parse_args(["dummy-run"])
         self.assertEqual(args.analysis_focus_floor, 1.0e-3)
+        self.assertEqual(args.tdpes_energy_reference, "raw")
 
         density = np.array([[
             [1.0, 9.9e-4],
@@ -383,7 +384,8 @@ class TDSEReportTests(unittest.TestCase):
                 link_keys=("sphi_q1", "sphi_R1", "sgamma_R1"),
             )
             self.assertEqual(ef["gauge"], "positive_density")
-            args = argparse.Namespace(support_floor=1.0e-4, decades=6.0, max_frames=3)
+            args = argparse.Namespace(support_floor=1.0e-4, decades=6.0, max_frames=3,
+                                      tdpes_energy_reference="initial")
             prep = render_final_visualizations._tdpes1_origin_preparation(obs, ef, args)
             original_wbo = ef['epsilon_1_wbo'].copy()
             initial = render_final_visualizations._tdpes1_origin_frame(
@@ -483,7 +485,7 @@ class TDSEReportTests(unittest.TestCase):
             args = argparse.Namespace(
                 support_floor=1.0e-4, analysis_focus_floor=1.0e-2,
                 decades=6.0, max_frames=3,
-                tdpes_energy_reference="initial",
+                tdpes_energy_reference="raw",
             )
             prep_1 = render_final_visualizations._tdpes1_origin_preparation(
                 obs, ef, args,
@@ -506,14 +508,13 @@ class TDSEReportTests(unittest.TestCase):
                 frame_2["total_raw"], ef["tdpes2_total"][1],
             )
             nested = render_final_visualizations._nested_frame(obs, ef, 1, args)
-            expected_1 = report_plot_style.density_weighted_shift(
-                ef["tdpes1_total"][1], obs["joint_density"][1],
-                args.support_floor,
-            )
-            expected_2 = report_plot_style.density_weighted_shift(
-                ef["tdpes2_total"][1], obs["heavy_density"][1],
-                args.support_floor,
-            )
+            expected_1 = ef["tdpes1_total"][1]
+            expected_2 = ef["tdpes2_total"][1]
+            np.testing.assert_array_equal(frame_1["total"], expected_1)
+            np.testing.assert_array_equal(frame_2["total"], expected_2)
+            for current in (frame_1, frame_2):
+                self.assertEqual(current["energy_reference"], 0.0)
+                np.testing.assert_allclose(current["identity_residual"], 0.0, atol=1e-15)
             np.testing.assert_allclose(
                 nested["epsilon_1"], expected_1, rtol=0.0, atol=1.0e-15,
             )
@@ -538,7 +539,7 @@ class TDSEReportTests(unittest.TestCase):
             self.assertEqual(ef["gauge"], "positive_density")
             args = argparse.Namespace(
                 support_floor=1.0e-4, analysis_focus_floor=1.0e-2,
-                max_frames=3, scale_sample_frames=3,
+                max_frames=3, scale_sample_frames=3, tdpes_energy_reference="initial",
             )
             prep = render_final_visualizations._tdpes2_origin_preparation(
                 obs, ef, args,
@@ -604,18 +605,18 @@ class TDSEReportTests(unittest.TestCase):
             render_final_visualizations.run(args)
             for name in (
                 "tdpes1_origin_positive_gauge_snapshots.png",
-                "tdpes1_origin_positive_gauge_framewise_reference_snapshots.png",
+                "tdpes1_origin_positive_gauge_initial_reference_snapshots.png",
                 "tdpes2_origin_positive_gauge_snapshots.png",
-                "tdpes2_origin_positive_gauge_framewise_reference_snapshots.png",
+                "tdpes2_origin_positive_gauge_initial_reference_snapshots.png",
             ):
                 self.assertTrue((output/name).is_file(), name)
             manifest = (output/"final_visualizations_manifest.txt").read_text()
             self.assertIn(
-                "tdpes1_rendered_energy_reference_modes=initial,framewise",
+                "tdpes1_rendered_energy_reference_modes=raw,initial",
                 manifest,
             )
             self.assertIn(
-                "tdpes2_rendered_energy_reference_modes=initial,framewise",
+                "tdpes2_rendered_energy_reference_modes=raw,initial",
                 manifest,
             )
 
@@ -631,17 +632,12 @@ class TDSEReportTests(unittest.TestCase):
                 "--dpi", "30", "--animation-dpi", "25", "--fps", "2",
             ])
             render_final_visualizations.run(args)
-            fixed = output/"tdpes_geometry_log_fixed_reference_movie.gif"
-            framewise = (
-                output/"tdpes_geometry_log_framewise_reference_movie.gif"
-            )
+            fixed = output/"tdpes_geometry_log_movie.gif"
             self.assertTrue(fixed.is_file())
-            self.assertTrue(framewise.is_file())
-            self.assertEqual(fixed.read_bytes(), framewise.read_bytes())
             manifest = (output/"final_visualizations_manifest.txt").read_text()
             self.assertIn("geometry_energy_reference_dependence=none", manifest)
             self.assertIn(
-                "geometry_fixed_and_framewise_movies=identical_aliases_by_definition",
+                "geometry_movie=single_reference_independent_product",
                 manifest,
             )
 
@@ -689,7 +685,7 @@ class TDSEReportTests(unittest.TestCase):
                 obs, ef, prep, 1,
             )
             prep1 = dict(
-                prep, energy_reference_mode="framewise",
+                prep, energy_reference_mode="raw",
             )
             first = render_final_visualizations._tdpes1_origin_frame(
                 obs, ef, prep1, 1,
@@ -765,7 +761,7 @@ class TDSEReportTests(unittest.TestCase):
             ).glob("*.png"))), 2)
             manifest = (output/"final_visualizations_manifest.txt").read_text()
             self.assertIn(
-                "nested_density_display=absolute_linear_trajectory_fixed",
+                "nested_density_display=absolute_linear_frame_color_range",
                 manifest,
             )
             self.assertIn("nested_electron_proton_vmax=", manifest)

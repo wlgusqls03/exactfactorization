@@ -454,9 +454,8 @@ positive-gauge mechanical momentum이다.
 
 TDPES origin은 2×3 패널: stored decomposed total, wBO 1 (ground),
 wBO 2+ (first excited를 포함한 모든 excited BO 채널), GD, q geometry,
-R geometry이다. 기본적으로 (t=0)의 occupied-density-weighted mean인
-고정된 `E_ref_fixed`를 한 번 계산하여 모든 시간의 BO surface와 total에
-동일하게 적용한다. 따라서 실제 시간에 따른 전체 energy offset도 보존되며,
+R geometry이다. 기본적으로 저장된 PG raw 값을 그대로 표시한다 (`E_ref=0`).
+선택 옵션 `initial`만 (t=0)의 occupied-density-weighted mean을 고정 원점으로 쓴다.
 표시된 격자점마다
 `total = wBO_1 + wBO_2plus + GD + q_geo + R_geo`가 roundoff까지 성립한다.
 `wBO_1=|C_0|^2(E_0-E_ref)`이고 `wBO_2plus=sum_(j>=1)|C_j|^2(E_j-E_ref)`이다.
@@ -511,10 +510,22 @@ python -m multi_component_exact_factorization.render_final_visualizations \
   --dpi 180 --animation-dpi 120 --movie-preset fast
 ```
 
-``--tdpes-energy-reference initial``이 기본이며 고정된 (t=0) 원점을 쓴다.
-``framewise``는 각 frame의 occupied mean을 다시 빼는 과거 비교 방식이고,
-``both``는 두 방식을 한 번에 렌더링한다. Framewise 결과에는
-``_framewise_reference`` 접미사가 붙으므로 fixed-(t=0) 결과를 덮어쓰지 않는다.
+``--tdpes-energy-reference raw``가 기본이다. ``initial``은 고정 (t=0) 원점,
+``both``는 raw와 initial을 모두 생성한다. Initial 결과에는 ``_initial_reference``
+접미사가 붙는다. ``framewise`` 옵션은 제거했다. 기존 파일은 자동 삭제하지 않는다.
+Nested TDPES도 동일한 저장 total을 raw로 읽는다. 단독 패널과 성분 비교 패널의
+색상 범위는 다를 수 있으므로 에너지 숫자는 colorbar를 기준으로 비교한다.
+Nested 밀도는 선형 raw 값이며, 후반부 가독성을 위해 색상 범위만 매 프레임
+갱신한다 (제목에 명시). BO3D는 전체 궤적의 점유 영역을 고정 시야로 표시한다.
+
+저장된 모든 프레임의 TDPES 성분 합은 큰 임시파일 없이 확인할 수 있다:
+
+```bash
+python -m multi_component_exact_factorization.audit_tdpes_components results/20260909
+```
+
+저장 total은 후처리에서 성분 합으로 구성하므로 이 검사는 저장/표시 항등식의
+검사이지 native finite-grid Hamiltonian scalar와의 독립적인 동등성 검증은 아니다.
 
 작은 geometry energy 네 항만 한 척도에서 직접 비교하려면 다음을 사용한다.
 
@@ -541,12 +552,9 @@ shift를 적용하지 않는다.
 표시되고, 저장된 수치 자체는 자르거나 변경하지 않는다.
 
 Geometry 항은 energy reference를 빼지 않는 gauge-invariant contribution이므로
-fixed-(t=0) reference와 framewise reference에서 수치적으로 완전히 같다.
-요청한 비교를 명시적으로 남기기 위해 다음 두 이름을 모두 생성하지만, 같은
-인코딩 결과의 hard-link alias라서 렌더링 시간과 저장 공간을 두 배로 쓰지 않는다.
+raw와 fixed-(t=0) reference에서 수치적으로 완전히 같다. 따라서 하나만 생성한다.
 
-* ``tdpes_geometry_log_fixed_reference_movie.mp4``
-* ``tdpes_geometry_log_framewise_reference_movie.mp4``
+* ``tdpes_geometry_log_movie.mp4``
 
 렌더링은 저장된 geometry decomposition이 있으면 불필요한 wBO fallback 배열을
 읽지 않는다. Marginal time-position map의 로그 변환도 한 번만 준비해 snapshot과
