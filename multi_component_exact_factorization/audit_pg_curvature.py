@@ -38,6 +38,15 @@ def curvature_terms(rho, a_bond, b_bond, dq, dR, mass_q, mass_R):
     return (*terms, -a*a/(2*mass_q), -b*b/(2*mass_R))
 
 
+def heavy_curvature_terms(rho_R, alpha_bond, dR, mass_R):
+    """PG chi curvature and site-centred momentum energy, before masking."""
+    chi = np.sqrt(np.maximum(rho_R, 0.0))
+    lap = derivative(chi, dR, 0, order=2)
+    Q = np.divide(lap, 2*mass_R*chi, out=np.zeros_like(chi), where=chi>0)
+    alpha = (alpha_bond+np.roll(alpha_bond, 1))/2
+    return Q, -alpha*alpha/(2*mass_R)
+
+
 def render_summary(records, output, dpi):
     t = [r['time_fs'] for r in records]
     fig, axes = plt.subplots(2, 1, figsize=(12, 8), constrained_layout=True)

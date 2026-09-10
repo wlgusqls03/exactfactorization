@@ -44,7 +44,7 @@ from .visualize import NUMBER_FORMATTER, selected_frames
 
 FINAL_PRODUCTS = (
     "marginal", "joint", "velocity", "vector", "current", "nested",
-    "heavy", "bo", "bo3d", "tdpes1", "tdpes2", "geometry", "external",
+    "heavy", "bo", "bo3d", "tdpes1", "tdpes2", "geometry", "external", "curvature",
 )
 
 
@@ -3643,7 +3643,7 @@ def run(args):
         name in selected
         for name in (
             "velocity", "vector", "current", "nested", "heavy", "bo",
-            "bo3d", "tdpes1", "tdpes2", "geometry", "external",
+            "bo3d", "tdpes1", "tdpes2", "geometry", "external", "curvature",
         )
     )
     ef = None
@@ -3675,10 +3675,12 @@ def run(args):
         complete = {level: all(key in decomposition_keys for key in keys)
                     for level, keys in stored_components.items()}
         field_keys = []
-        if 'external' in selected:
+        if 'external' in selected or 'curvature' in selected:
             for level in (1,2):
                 key = f'tdpes{level}_total'
                 field_keys.append(key if key in decomposition_keys else f'epsilon_{level}')
+        if 'curvature' in selected:
+            field_keys.extend(('a', 'b', 'alpha'))
         if "velocity" in selected:
             field_keys.extend(("a", "b"))
         if "vector" in selected:
@@ -3749,6 +3751,9 @@ def run(args):
             )
 
     velocity_prep = None
+    if 'curvature' in selected:
+        from .curvature_movies import render_curvature_movies
+        products.extend(render_curvature_movies(obs, ef, output, args, snapshots))
     if 'external' in selected:
         from .external_comparison import render_external_comparison
         products.extend(render_external_comparison(obs, ef, output, args, snapshots))

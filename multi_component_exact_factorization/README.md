@@ -557,6 +557,32 @@ external, effective TDPES1의 2D 지도이며 아래쪽은 TDPES2, external, eff
 
 Positive-gauge TDPES1의 amplitude-curvature 설명을 점검하려면 다음 진단을 쓴다:
 
+전체 final visualization에는 이제 `curvature`가 기본 포함된다. 이 두 영상만
+만들려면 (기존 EF cache 재사용, 재전파 불필요):
+
+```bash
+python -m multi_component_exact_factorization.render_final_visualizations \
+  results/20260909 --only curvature --format mp4 --max-frames 240 --snapshot-count 8
+```
+
+- `tdpes1_pg_curvature_movie.mp4`: saved total, `Qq`, `QR`,
+  `-a_site^2/(2m_p)`, `-b_site^2/(2M)`, `-Vext`의 2×3 패널.
+- `tdpes2_pg_curvature_movie.mp4`: saved total, `chi''/(2M chi)`,
+  `-alpha_site^2/(2M)`, `-Vext`의 2×2 패널.
+- 각각 `_frames/`에 개별 snapshot, `_snapshots.png`에 8개 montage.
+- `pg_curvature_movies_diagnostics.json`: 표시 시점별 density-weighted
+  RMS `saved_total - sum(signed_terms)`와 패널별 색상/축 범위 초과 비율.
+
+모든 항은 부호를 포함하고 raw PG energy로 표시한다. 시간에 고정된 공통
+linear colour/y scale(occupied 값의 99.5 percentile 기반)을 쓰며,
+초과 값은 색상 포화 또는 y축 밖으로 표시된다. 공간 범위만 occupied support를
+따라 움직인다. 미분은 **mask 전 전체 amplitude**에 적용한다.
+`F=sqrt(rho_qR)`, `chi=sqrt(rho_R)`이고 저장된 forward-bond 연결은
+인접 bond 평균으로 site에 놓는다. phase-branch를 임의로 보정하지 않는다.
+이 연속 미분식은 유한격자의 exact overlap-link 항등식이 아니므로,
+첫 패널을 합으로 덮어쓰거나 residual을 다른 성분에 넣어 일치를 강제하지 않는다.
+기존 정적 streaming audit도 그대로 사용할 수 있다:
+
 ```bash
 python -m multi_component_exact_factorization.audit_pg_curvature results/YYYYMMDD/RUN_NAME
 ```
