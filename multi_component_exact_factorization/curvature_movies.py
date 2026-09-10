@@ -63,11 +63,13 @@ def render_curvature_movies(obs, ef, output, args, snapshots):
         records.append(row)
 
     titles = (
-        (r'Saved TDPES1 $\epsilon^{(1)}_{\rm PG}$',
+        (r'TDPES1 $\epsilon^{(1)}_{\rm PG}$' '\n(trap excluded; not effective TDPES)',
          r'$\partial_q^2 F/(2m_p F)$', r'$\partial_R^2 F/(2MF)$',
-         r'$-a_{\rm site}^2/(2m_p)$', r'$-b_{\rm site}^2/(2M)$', r'$-V_{\rm ext}^{R}$'),
-        (r'Saved TDPES2 $\epsilon^{(2)}_{\rm PG}$',
-         r'$\partial_R^2\chi/(2M\chi)$', r'$-\alpha_{\rm site}^2/(2M)$', r'$-V_{\rm ext}^{R}$'),
+         r'$-a_{\rm site}^2/(2m_p)$', r'$-b_{\rm site}^2/(2M)$',
+         r'$-V_{\rm ext}^{R}$' '\nTrap subtraction'),
+        (r'TDPES2 $\epsilon^{(2)}_{\rm PG}$' '\n(trap excluded; not effective TDPES)',
+         r'$\partial_R^2\chi/(2M\chi)$', r'$-\alpha_{\rm site}^2/(2M)$',
+         r'$-V_{\rm ext}^{R}$' '\nTrap subtraction'),
     )
     cmap = plt.get_cmap(SIGNED_CMAP).copy()
     cmap.set_bad(MASK_COLOR)

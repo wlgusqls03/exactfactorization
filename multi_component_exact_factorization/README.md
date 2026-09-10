@@ -524,6 +524,10 @@ Nested 밀도는 선형 raw 값이며, 각 밀도 패널의 색상 범위는 전
 
 이제 **TDPES1 / TDPES2는 명시적인 harmonic trap을 제외한 scalar**를 뜻한다.
 **effective TDPES1 / effective TDPES2 = TDPES + external harmonic**이다.
+PG에서 `Qchi-alpha^2/(2M)`는 effective TDPES2이고,
+여기서 `Vext`를 **빼야** TDPES2가 된다. 따라서 curvature 영상의
+`-Vext` 패널은 trap 포함이 아니라 trap 제거를 뜻한다. 첫 패널은
+trap-excluded TDPES이며, trap 없는 dynamics를 뜻하지 않는다.
 전체 시간 전파 Hamiltonian에는 trap이 그대로 포함되며, TDSE 및 discrete MCEF의
 전체 연산자는 보존된다. Continuum BO solver도 기존 diagonal half-step splitting을
 유지한다. 초기 wavepacket 폭은 기존 trap-included surface 기준을 유지한다.
