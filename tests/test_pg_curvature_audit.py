@@ -36,7 +36,7 @@ class PGCurvatureTests(unittest.TestCase):
             self.assertTrue((output/'tdpes1_pg_curvature_zoom_movie.gif').is_file())
             self.assertTrue((output/'tdpes1_pg_curvature_zoom_snapshots.png').is_file())
             self.assertEqual(len(list((output/'tdpes1_pg_curvature_zoom_frames').glob('*.png'))), 2)
-            self.assertEqual(report['tdpes1_zoom_bound_Ha'], .05)
+            self.assertEqual(report['tdpes1_zoom_bound_Ha'], .1)
             self.assertEqual(len(report['records'][0]['tdpes1_zoom_clipped_fraction']), 6)
             self.assertEqual(len(report['records']), 2)
             self.assertEqual(len(report['records'][0]['tdpes1_clipped_fraction']), 6)

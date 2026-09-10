@@ -15,7 +15,7 @@ from .audit_pg_curvature import curvature_terms, heavy_curvature_terms
 from .external_potential import harmonic_potential
 from .report_plot_style import MASK_COLOR, SIGNED_CMAP
 
-TDPES1_ZOOM_BOUND_HA = 0.05
+TDPES1_ZOOM_BOUND_HA = 0.1
 
 
 def render_curvature_movies(obs, ef, output, args, snapshots):
@@ -100,7 +100,7 @@ def render_curvature_movies(obs, ef, output, args, snapshots):
             fig.colorbar(artists[0], ax=list(axes.flat), pad=.02, shrink=.88,
                          label='energy (Hartree)', extend='both')
         heading = fig.suptitle('', fontsize=16)
-        detail = (r'Fixed colour zoom: $\pm 0.05$ Ha; larger magnitudes saturate, not removed.'
+        detail = (rf'Fixed colour zoom: $\pm {TDPES1_ZOOM_BOUND_HA:g}$ Ha; larger magnitudes saturate, not removed.'
                   if zoom else 'Unmasked amplitude derivatives; bond momenta averaged onto sites; fixed display scales.')
         fig.supxlabel('PG; raw trap-excluded TDPES. Continuum diagnostic, not an exact finite-link identity.\n'
                       +detail, fontsize=11)

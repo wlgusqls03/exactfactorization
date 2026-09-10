@@ -12,6 +12,39 @@ from tests.test_discrete_mcef import _problem
 
 
 class ExternalHarmonicTests(unittest.TestCase):
+    def test_nested_effective_surfaces_do_not_change_saved_scalars(self):
+        from tests.test_tdse_report import TDSEReportTests
+        from multi_component_exact_factorization import tdse_report
+        from multi_component_exact_factorization import render_final_visualizations as render
+        import matplotlib.pyplot as plt
+        with TemporaryDirectory() as directory:
+            TDSEReportTests()._write_archive(directory)
+            obs = tdse_report.calculate_observables(tdse_report.load_observables(
+                Path(directory)/'multi_component_discrete_tdse_gpu.npz'))
+            ef = tdse_report._load_ef_fields(obs, field_keys=(
+                'electron_proton_density', 'epsilon_1', 'epsilon_2'))
+            obs['options'].update(heavy_trap_alpha=.03, heavy_trap_center=.7)
+            V = harmonic_potential(obs['R'], obs['options'])
+            before = copy.deepcopy(ef)
+            args = render.parse_args([directory, '--only', 'nested'])
+            frame = render._nested_frame(obs, ef, 1, args)
+            np.testing.assert_allclose(frame['epsilon_1'], render._total_source(ef, 1)[1]+V)
+            np.testing.assert_allclose(frame['epsilon_2_effective'], frame['epsilon_2']+V)
+            np.testing.assert_array_equal(frame['harmonic'], V)
+            prep = render._nested_preparation(obs, ef, args)
+            self.assertEqual(prep['epsilon_1_limits'], (-.1, .1))
+            fig, axes = render._new_nested_axes()
+            state = render._draw_nested_composite(fig, axes, obs, ef, prep, 0, args)
+            render._update_nested_composite(state, obs, ef, prep, 1, args)
+            support = frame['heavy_support']
+            np.testing.assert_allclose(state['epsilon_2_effective_line'].get_ydata()[support],
+                                       frame['epsilon_2_effective'][support])
+            self.assertEqual(state['harmonic_line'].get_linestyle(), '--')
+            self.assertEqual(state['epsilon_2_effective_line'].get_color(), 'tab:red')
+            for level in (1, 2):
+                np.testing.assert_array_equal(render._total_source(ef, level), render._total_source(before, level))
+            plt.close(fig)
+
     def test_discrete_rhs_and_total_hamiltonian_unchanged(self):
         model, basis, c, lam, chi = _problem()
         legacy = copy.copy(model)

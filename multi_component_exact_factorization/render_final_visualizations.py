@@ -1229,8 +1229,10 @@ def _nested_frame(obs, ef_positive, frame, args):
         ),
         "joint_density": np.maximum(np.asarray(joint, float), 0.0),
         "joint_opacity": joint_support.astype(float),
-        "epsilon_1": _total_source(ef_positive, 1)[frame],
+        "epsilon_1": effective_scalar(_total_source(ef_positive, 1)[frame], ef_positive, obs),
         "epsilon_2": _total_source(ef_positive, 2)[frame],
+        "epsilon_2_effective": effective_scalar(_total_source(ef_positive, 2)[frame], ef_positive, obs),
+        "harmonic": harmonic_potential(obs["R"], obs["options"]),
         "heavy_support": heavy_support,
     }
 
@@ -1249,16 +1251,18 @@ def _nested_preparation(obs, ef_positive, args):
             f"{electron_proton.shape} != {expected}"
         )
     frames = _movie_frames(obs, args.max_frames)
-    epsilon_1_source = _total_source(ef_positive, 1)
     epsilon_2_source = _total_source(ef_positive, 2)
-    epsilon_1_limits = _robust_raw_symmetric_limits(
-        [epsilon_1_source[int(frame)] for frame in frames],
-        [obs["joint_density"][int(frame)] for frame in frames],
-        args.analysis_focus_floor,
-    )
+    # User-selected shared display scale with the curvature comparison view.
+    # This matches colour values, not the different internal/effective scalars.
+    from .curvature_movies import TDPES1_ZOOM_BOUND_HA
+    epsilon_1_limits = (-TDPES1_ZOOM_BOUND_HA, TDPES1_ZOOM_BOUND_HA)
     epsilon_2_limits = _robust_raw_limits(
-        [epsilon_2_source[int(frame)] for frame in frames],
-        [obs["heavy_density"][int(frame)] for frame in frames],
+        (value for frame in frames for value in (
+            epsilon_2_source[int(frame)],
+            harmonic_potential(obs["R"], obs["options"]),
+            effective_scalar(epsilon_2_source[int(frame)], ef_positive, obs),
+        )),
+        (obs["heavy_density"][int(frame)] for frame in frames for _ in range(3)),
         args.analysis_focus_floor,
     )
     dx = float(obs["x"][1]-obs["x"][0])
@@ -1478,7 +1482,7 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         xlabel=r"proton $q$ ($a_0$)", ylabel=r"heavy $R$ ($a_0$)",
     )
     axes["epsilon_1"].set_title(
-        r"First TDPES $\epsilon_{\rm PG}^{(1)}(q,R)$ + density contours",
+        r"Effective TDPES1 $\epsilon_{\rm PG}^{(1)}+V_{\rm ext}^{R}$ + density contours",
         loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
     )
 
@@ -1487,8 +1491,19 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         axes["epsilon_2"], R,
         np.where(support, current["epsilon_2"], np.nan),
         current["epsilon_2"], support, color=COLORS[0],
-        label=r"$\epsilon_{\rm PG}^{(2)}(R,t)$",
+        label=r"TDPES2 $\epsilon_{\rm PG}^{(2)}$",
         linewidth=(1.0 if compact else 2.2),
+    )
+    effective_line, effective_tail = tdse_report._support_tail_lines(
+        axes["epsilon_2"], R,
+        np.where(support, current["epsilon_2_effective"], np.nan),
+        current["epsilon_2_effective"], support, color="tab:red",
+        label=r"Effective TDPES2 $\epsilon_{\rm PG}^{(2)}+V_{\rm ext}^{R}$",
+        linewidth=(1.0 if compact else 2.2),
+    )
+    harmonic_line, = axes["epsilon_2"].plot(
+        R, current["harmonic"], color="0.25", ls="--",
+        lw=(0.9 if compact else 1.7), label=r"Harmonic $V_{\rm ext}^{R}$",
     )
     heavy_fill, heavy_line = _heavy_silhouette(
         axes["epsilon_2"], R, obs["heavy_density"][frame], compact,
@@ -1499,13 +1514,14 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         xlabel=r"heavy $R$ ($a_0$)", ylabel="raw PG energy (Hartree)",
     )
     axes["epsilon_2"].set_title(
-        r"Second TDPES $\epsilon_{\rm PG}^{(2)}(R)$ and heavy support",
+        "TDPES2, external harmonic and effective TDPES2",
         loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
     )
     axes["epsilon_2"].grid(alpha=0.16)
     axes["epsilon_2"].legend(
-        handles=(epsilon_2_line, heavy_line), frameon=False,
-        fontsize=(5.0 if compact else 8), loc="best",
+        handles=(epsilon_2_line, harmonic_line, effective_line, heavy_line), frameon=False,
+        fontsize=(5.0 if compact else 9), loc="upper center",
+        bbox_to_anchor=(0.5, -0.20), ncol=2,
     )
 
     if colorbars:
@@ -1531,6 +1547,9 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         "contours": contours,
         "epsilon_2_line": epsilon_2_line,
         "epsilon_2_tail": epsilon_2_tail,
+        "epsilon_2_effective_line": effective_line,
+        "epsilon_2_effective_tail": effective_tail,
+        "harmonic_line": harmonic_line,
         "heavy_fill": heavy_fill,
         "heavy_line": heavy_line,
         "axes": axes,
@@ -1569,6 +1588,12 @@ def _update_nested_composite(state, obs, ef_positive, prep, frame, args):
     )
     state["epsilon_2_tail"].set_ydata(
         np.where(~support, current["epsilon_2"], np.nan),
+    )
+    state["epsilon_2_effective_line"].set_ydata(
+        np.where(support, current["epsilon_2_effective"], np.nan),
+    )
+    state["epsilon_2_effective_tail"].set_ydata(
+        np.where(~support, current["epsilon_2_effective"], np.nan),
     )
     state["heavy_fill"].remove()
     state["heavy_fill"], temporary_line = _heavy_silhouette(
@@ -1656,6 +1681,8 @@ def render_nested_factorization(obs, ef_positive, outdir, args, snapshots):
                 state["electron_proton_image"],
                 state["conditional_image"], state["epsilon_1_image"],
                 state["epsilon_2_line"], state["epsilon_2_tail"],
+                state["epsilon_2_effective_line"], state["epsilon_2_effective_tail"],
+                state["harmonic_line"],
                 state["heavy_line"], title,
             )
 
@@ -3905,6 +3932,8 @@ def run(args):
     if nested_prep is not None:
         manifest.extend((
             "nested_potential_gauge=positive_density",
+            "nested_first_surface=effective_TDPES1=TDPES1+external_harmonic",
+            "nested_second_curves=TDPES2,external_harmonic,effective_TDPES2",
             "electron_proton_density=integral_dR_abs_Psi_squared",
             "conditional_proton_density=joint_density/heavy_density",
             "nested_density_display=absolute_linear_trajectory_fixed",

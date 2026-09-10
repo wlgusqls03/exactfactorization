@@ -546,6 +546,15 @@ scalar와 weighted BO 항에서 trap을 한 번만 분리한다. BO0에는 `p0*V
 Force 계산에는 effective scalar를 사용하여 기존 힘을 유지한다. 외부항을 제외해도
 wavefunction 자체는 여전히 trap 아래서 전파한 상태라는 점에 유의한다.
 
+Nested factorization analysis만의 표시 구성: 첫 scalar 지도는 **effective
+TDPES1 = TDPES1 + external harmonic**을 표시한다. 두 번째 scalar 패널은
+기존 TDPES2, harmonic(회색 점선), effective TDPES2(빨간 실선)를 함께 표시한다.
+PG/raw energy를 유지하며 지도 colour scale과 세 곡선의 공통 y축은 시간에 고정한다.
+Nested effective TDPES1 지도와 curvature 추가 비교본의 colour scale은
+모두 **−0.1~+0.1 Ha**로 통일한다(색상 범위만 동일, scalar 정의는 다름).
+원본 scalar 배열과 다른 분석 그림의 trap-excluded TDPES 정의는 바꾸지 않는다.
+이 그림/영상만 재생성하려면 `render_final_visualizations RUN --only nested`를 쓴다.
+
 기존 EF cache에서 새 비교 영상과 8개 snapshot만 만들려면:
 
 ```bash
@@ -574,7 +583,7 @@ python -m multi_component_exact_factorization.render_final_visualizations \
 - `tdpes2_pg_curvature_movie.mp4`: saved total, `chi''/(2M chi)`,
   `-alpha_site^2/(2M)`, `-Vext`의 2×2 패널.
 - `tdpes1_pg_curvature_zoom_movie.mp4`: TDPES1 여섯 패널의 추가 고정 확대본.
-  모든 시점·패널에서 선형 색상 범위 **−0.05~+0.05 Ha**를 사용한다.
+  모든 시점·패널에서 선형 색상 범위 **−0.1~+0.1 Ha**를 사용한다.
   범위 밖 값은 진한 색으로 포화되며 색상바 양 끝 삼각형으로 표시한다.
   원본 값·부호·support는 변경하지 않고 기존 범위 영상과 TDPES2도 유지한다.
   전체 렌더링 및 `--only curvature` 모두에서 확대 영상과 snapshot이 자동 생성된다.
