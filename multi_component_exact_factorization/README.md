@@ -573,6 +573,11 @@ python -m multi_component_exact_factorization.render_final_visualizations \
   `-a_site^2/(2m_p)`, `-b_site^2/(2M)`, `-Vext`의 2×3 패널.
 - `tdpes2_pg_curvature_movie.mp4`: saved total, `chi''/(2M chi)`,
   `-alpha_site^2/(2M)`, `-Vext`의 2×2 패널.
+- `tdpes1_pg_curvature_zoom_movie.mp4`: TDPES1 여섯 패널의 추가 고정 확대본.
+  모든 시점·패널에서 선형 색상 범위 **−0.05~+0.05 Ha**를 사용한다.
+  범위 밖 값은 진한 색으로 포화되며 색상바 양 끝 삼각형으로 표시한다.
+  원본 값·부호·support는 변경하지 않고 기존 범위 영상과 TDPES2도 유지한다.
+  전체 렌더링 및 `--only curvature` 모두에서 확대 영상과 snapshot이 자동 생성된다.
 - 각각 `_frames/`에 개별 snapshot, `_snapshots.png`에 8개 montage.
 - `pg_curvature_movies_diagnostics.json`: 표시 시점별 density-weighted
   RMS `saved_total - sum(signed_terms)`와 패널별 색상/축 범위 초과 비율.

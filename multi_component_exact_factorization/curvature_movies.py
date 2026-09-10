@@ -15,6 +15,8 @@ from .audit_pg_curvature import curvature_terms, heavy_curvature_terms
 from .external_potential import harmonic_potential
 from .report_plot_style import MASK_COLOR, SIGNED_CMAP
 
+TDPES1_ZOOM_BOUND_HA = 0.05
+
 
 def render_curvature_movies(obs, ef, output, args, snapshots):
     from .render_final_visualizations import (
@@ -74,12 +76,12 @@ def render_curvature_movies(obs, ef, output, args, snapshots):
     cmap = plt.get_cmap(SIGNED_CMAP).copy()
     cmap.set_bad(MASK_COLOR)
 
-    def build(level, first):
+    def build(level, first, zoom=False):
         columns = 3 if level == 0 else 2
         fig, axes = plt.subplots(2, columns, figsize=(16 if level == 0 else 13, 9),
                                  constrained_layout=True)
         artists = []
-        bound = bounds[level]
+        bound = TDPES1_ZOOM_BOUND_HA if zoom else bounds[level]
         for panel, (ax, title) in enumerate(zip(axes.flat, titles[level])):
             ax.set_title(title, fontsize=14, pad=10)
             ax.tick_params(labelsize=11)
@@ -98,8 +100,10 @@ def render_curvature_movies(obs, ef, output, args, snapshots):
             fig.colorbar(artists[0], ax=list(axes.flat), pad=.02, shrink=.88,
                          label='energy (Hartree)', extend='both')
         heading = fig.suptitle('', fontsize=16)
+        detail = (r'Fixed colour zoom: $\pm 0.05$ Ha; larger magnitudes saturate, not removed.'
+                  if zoom else 'Unmasked amplitude derivatives; bond momenta averaged onto sites; fixed display scales.')
         fig.supxlabel('PG; raw trap-excluded TDPES. Continuum diagnostic, not an exact finite-link identity.\n'
-                      'Unmasked amplitude derivatives; bond momenta averaged onto sites; fixed display scales.', fontsize=11)
+                      +detail, fontsize=11)
 
         def update(f):
             arrays = values(int(f))[level]
@@ -117,15 +121,18 @@ def render_curvature_movies(obs, ef, output, args, snapshots):
                 for ax, artist, a in zip(axes.flat, artists, arrays):
                     artist.set_ydata(np.where(support & np.isfinite(a), a, np.nan))
                     ax.set_xlim(R[lo], R[hi])
-            heading.set_text(f'TDPES{level+1}: amplitude curvature and momentum balance | t={times[f]:.4f} fs')
+            qualifier = ' [fixed colour zoom]' if zoom else ''
+            heading.set_text(f'TDPES{level+1}: amplitude curvature and momentum balance{qualifier} | t={times[f]:.4f} fs')
             return (*artists, heading)
         update(first)
         return fig, update
 
     products = []
-    for level in (0, 1):
-        stem = f'tdpes{level+1}_pg_curvature'
-        images = _save_individual_frames(lambda f: build(level, f)[0], snapshots, times,
+    # Retain both original products. The additional view shares all raw arrays,
+    # masks and frame selection; only its Normalize limits differ.
+    for level, zoom in ((0, False), (1, False), (0, True)):
+        stem = f'tdpes{level+1}_pg_curvature'+('_zoom' if zoom else '')
+        images = _save_individual_frames(lambda f: build(level, f, zoom)[0], snapshots, times,
                                          output/(stem+'_frames'), stem, args.dpi)
         products.extend(images)
         fig, axes = plt.subplots(2, 4, figsize=(24, 14), constrained_layout=True)
@@ -137,7 +144,7 @@ def render_curvature_movies(obs, ef, output, args, snapshots):
         _save_figure(fig, path, args.dpi)
         products.append(path)
         if not args.no_animation:
-            fig, update = build(level, int(frames[0]))
+            fig, update = build(level, int(frames[0]), zoom)
             animation = FuncAnimation(fig, lambda i: update(int(frames[i])), frames=len(frames), blit=False)
             products.append(_save_analysis_movie(animation, fig, output, stem+'_movie', args))
 
@@ -146,9 +153,12 @@ def render_curvature_movies(obs, ef, output, args, snapshots):
         for level, (arrays, rho) in enumerate(zip(values(int(f)), (obs['joint_density'][f], obs['heavy_density'][f]))):
             support = (rho >= floor*rho.max()) & (rho > 0)
             row[f'tdpes{level+1}_clipped_fraction'] = [float(np.mean(np.abs(a[support])>bounds[level])) for a in arrays]
+            if level == 0:
+                row['tdpes1_zoom_clipped_fraction'] = [float(np.mean(np.abs(a[support])>TDPES1_ZOOM_BOUND_HA)) for a in arrays]
     path = output/'pg_curvature_movies_diagnostics.json'
     path.write_text(json.dumps({'convention': 'external excluded; continuum versus saved TDPES',
                                'density_floor': floor, 'fixed_bounds_Ha': bounds,
+                               'tdpes1_zoom_bound_Ha': TDPES1_ZOOM_BOUND_HA,
                                'records': records}, indent=2))
     for level in (1, 2):
         errors = [row[f'tdpes{level}_residual_rms_Ha'] for row in records]
