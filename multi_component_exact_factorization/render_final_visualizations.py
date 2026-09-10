@@ -1262,15 +1262,23 @@ def _nested_preparation(obs, ef_positive, args):
     # This matches colour values, not the different internal/effective scalars.
     from .curvature_movies import TDPES1_ZOOM_BOUND_HA
     epsilon_1_limits = (-TDPES1_ZOOM_BOUND_HA, TDPES1_ZOOM_BOUND_HA)
+    epsilon_2_effective = effective_scalar(epsilon_2_source, ef_positive, obs)
     epsilon_2_limits = _robust_raw_limits(
-        (value for frame in frames for value in (
-            epsilon_2_source[int(frame)],
-            harmonic_potential(obs["R"], obs["options"]),
-            effective_scalar(epsilon_2_source[int(frame)], ef_positive, obs),
-        )),
-        (obs["heavy_density"][int(frame)] for frame in frames for _ in range(3)),
+        (epsilon_2_effective[int(frame)] for frame in frames),
+        (obs["heavy_density"][int(frame)] for frame in frames),
         args.analysis_focus_floor,
     )
+    # Same supported temporal branch lifting and bond derivative as the
+    # established transport/drive report. Time derivatives use atomic time.
+    alpha, _, _ = tdse_report.support_aware_temporal_lift_1d(
+        ef_positive['alpha'], obs['heavy_density'], obs['dR'], args.analysis_focus_floor)
+    times_au = np.asarray(obs['times_fs'])*tdse_report.AU_PER_FS
+    dalpha = (np.gradient(alpha, times_au, axis=0, edge_order=2 if len(times_au)>2 else 1)
+              if len(times_au)>1 else np.zeros_like(alpha))
+    force = -tdse_report._forward_bond_derivative(epsilon_2_effective, obs['dR'], axis=1)+dalpha
+    force_limits = _robust_raw_symmetric_limits(
+        (force[int(frame)] for frame in frames),
+        (obs['heavy_density'][int(frame)] for frame in frames), args.analysis_focus_floor)
     dx = float(obs["x"][1]-obs["x"][0])
     electron_proton_vmax = max(
         float(np.nanmax(electron_proton)), 1.0e-300,
@@ -1305,6 +1313,8 @@ def _nested_preparation(obs, ef_positive, args):
     return {
         "epsilon_1_limits": epsilon_1_limits,
         "epsilon_2_limits": epsilon_2_limits,
+        "heavy_force": force,
+        "heavy_force_limits": force_limits,
         "electron_proton_vmax": electron_proton_vmax,
         "conditional_vmax": max(conditional_vmax, 1.0e-300),
         "x_limits": _support_limits(
@@ -1511,22 +1521,21 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
     support = current["heavy_support"]
     epsilon_2_line, epsilon_2_tail = tdse_report._support_tail_lines(
         axes["epsilon_2"], R,
-        np.where(support, current["epsilon_2"], np.nan),
-        current["epsilon_2"], support, color=COLORS[0],
-        label=r"TDPES2 $\epsilon_{\rm PG}^{(2)}$",
-        linewidth=(1.0 if compact else 2.2),
-    )
-    effective_line, effective_tail = tdse_report._support_tail_lines(
-        axes["epsilon_2"], R,
         np.where(support, current["epsilon_2_effective"], np.nan),
-        current["epsilon_2_effective"], support, color="tab:red",
+        current["epsilon_2_effective"], support, color="black",
         label=r"Effective TDPES2 $\epsilon_{\rm PG}^{(2)}+V_{\rm ext}^{R}$",
         linewidth=(1.0 if compact else 2.2),
     )
-    harmonic_line, = axes["epsilon_2"].plot(
-        R, current["harmonic"], color="0.25", ls="--",
-        lw=(0.9 if compact else 1.7), label=r"Harmonic $V_{\rm ext}^{R}$",
+    force_axis = axes['epsilon_2'].twinx()
+    force_line, force_tail = tdse_report._support_tail_lines(
+        force_axis, R, np.where(support, prep['heavy_force'][frame], np.nan),
+        prep['heavy_force'][frame], support, color='tab:red',
+        label=r'$F_R=-\partial_R\epsilon_{\rm eff}^{(2)}+\partial_t\alpha$',
+        linewidth=(1.0 if compact else 2.0),
     )
+    force_axis.set_ylim(prep['heavy_force_limits'])
+    force_axis.set_ylabel(r'Force (Hartree/$a_0$)', color='tab:red', fontsize=6 if compact else 11)
+    force_axis.tick_params(axis='y', colors='tab:red', labelsize=5.2 if compact else 10)
     heavy_fill, heavy_line = _heavy_silhouette(
         axes["epsilon_2"], R, obs["heavy_density"][frame], compact,
     )
@@ -1536,12 +1545,12 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         xlabel=r"heavy $R$ ($a_0$)", ylabel="raw PG energy (Hartree)",
     )
     axes["epsilon_2"].set_title(
-        "TDPES2, external harmonic and effective TDPES2",
+        "Effective TDPES2 and gauge-invariant heavy force",
         loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
     )
     axes["epsilon_2"].grid(alpha=0.16)
     axes["epsilon_2"].legend(
-        handles=(epsilon_2_line, harmonic_line, effective_line, heavy_line), frameon=False,
+        handles=(epsilon_2_line, force_line, heavy_line), frameon=False,
         fontsize=(5.0 if compact else 9), loc="upper center",
         bbox_to_anchor=(0.5, -0.20), ncol=2,
     )
@@ -1569,9 +1578,9 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         "contours": contours,
         "epsilon_2_line": epsilon_2_line,
         "epsilon_2_tail": epsilon_2_tail,
-        "epsilon_2_effective_line": effective_line,
-        "epsilon_2_effective_tail": effective_tail,
-        "harmonic_line": harmonic_line,
+        "force_line": force_line,
+        "force_tail": force_tail,
+        "force_axis": force_axis,
         "heavy_fill": heavy_fill,
         "heavy_line": heavy_line,
         "axes": axes,
@@ -1604,16 +1613,16 @@ def _update_nested_composite(state, obs, ef_positive, prep, frame, args):
     )
     support = current["heavy_support"]
     state["epsilon_2_line"].set_ydata(
-        np.where(support, current["epsilon_2"], np.nan),
-    )
-    state["epsilon_2_tail"].set_ydata(
-        np.where(~support, current["epsilon_2"], np.nan),
-    )
-    state["epsilon_2_effective_line"].set_ydata(
         np.where(support, current["epsilon_2_effective"], np.nan),
     )
-    state["epsilon_2_effective_tail"].set_ydata(
+    state["epsilon_2_tail"].set_ydata(
         np.where(~support, current["epsilon_2_effective"], np.nan),
+    )
+    state["force_line"].set_ydata(
+        np.where(support, prep['heavy_force'][frame], np.nan),
+    )
+    state["force_tail"].set_ydata(
+        np.where(~support, prep['heavy_force'][frame], np.nan),
     )
     state["heavy_fill"].remove()
     state["heavy_fill"], temporary_line = _heavy_silhouette(
@@ -1678,21 +1687,13 @@ def _render_nested_factorization_variant(obs, ef_positive, outdir, args, snapsho
         Path(outdir)/(stem+"_frames"),
         stem, args.dpi,
     )
-    fig = plt.figure(figsize=(24.0, 10.8), constrained_layout=True)
-    outer = fig.add_gridspec(2, 4)
-    for slot, frame in zip(outer, snapshots):
-        _, axes = _new_nested_axes(
-            compact=True, subplot_spec=slot, figure=fig,
-        )
-        _draw_nested_composite(
-            fig, axes, obs, ef_positive, prep, int(frame), args,
-            colorbars=False, compact=True,
-        )
-        axes["electron_proton"].text(
-            0.98, 0.92, f"t={times[int(frame)]:.3f} fs",
-            transform=axes["electron_proton"].transAxes,
-            ha="right", va="top", color="white", fontsize=6.0,
-        )
+    # Reuse the already-rendered snapshots: do not retain eight more sets of
+    # full q-R fields or trace their dense contours a second time.
+    fig, montage_axes = plt.subplots(2, 4, figsize=(24.0, 16.0), constrained_layout=True)
+    for axis in montage_axes.flat:
+        axis.axis('off')
+    for axis, image_path in zip(montage_axes.flat, products):
+        axis.imshow(plt.imread(image_path))
     fig.suptitle(
         "Heavy-integrated electronic dynamics and subsequent proton factorization\n"+contour_note,
         fontweight="bold",
@@ -1726,8 +1727,7 @@ def _render_nested_factorization_variant(obs, ef_positive, outdir, args, snapsho
                 state["electron_proton_image"],
                 state["conditional_image"], state["epsilon_1_image"],
                 state["epsilon_2_line"], state["epsilon_2_tail"],
-                state["epsilon_2_effective_line"], state["epsilon_2_effective_tail"],
-                state["harmonic_line"],
+                state["force_line"], state["force_tail"],
                 state["heavy_line"], title,
             )
 
@@ -3761,6 +3761,7 @@ def run(args):
             field_keys.extend(("a", "b", "alpha"))
         if "nested" in selected:
             field_keys.append("electron_proton_density")
+            field_keys.append("alpha")
             for level in (1, 2):
                 key = f"tdpes{level}_total"
                 field_keys.append(key if key in decomposition_keys else f"epsilon_{level}")
@@ -3978,7 +3979,8 @@ def run(args):
         manifest.extend((
             "nested_potential_gauge=positive_density",
             "nested_first_surface=effective_TDPES1=TDPES1+external_harmonic",
-            "nested_second_curves=TDPES2,external_harmonic,effective_TDPES2",
+            "nested_second_curves=effective_TDPES2,force_right_axis",
+            "nested_force=-forward_R_derivative(effective_TDPES2)+time_derivative(alpha_PG)",
             "electron_proton_density=integral_dR_abs_Psi_squared",
             "conditional_proton_density=joint_density/heavy_density",
             "nested_density_display=absolute_linear_trajectory_fixed",

@@ -547,9 +547,13 @@ Force 계산에는 effective scalar를 사용하여 기존 힘을 유지한다. 
 wavefunction 자체는 여전히 trap 아래서 전파한 상태라는 점에 유의한다.
 
 Nested factorization analysis만의 표시 구성: 첫 scalar 지도는 **effective
-TDPES1 = TDPES1 + external harmonic**을 표시한다. 두 번째 scalar 패널은
-기존 TDPES2, harmonic(회색 점선), effective TDPES2(빨간 실선)를 함께 표시한다.
-PG/raw energy를 유지하며 지도 colour scale과 세 곡선의 공통 y축은 시간에 고정한다.
+TDPES1 = TDPES1 + external harmonic**을 표시한다. 두 번째 패널은
+effective TDPES2(검은 선, 왼쪽 energy 축)와
+`F_R=-partial_R epsilon_eff^(2)+partial_t alpha`(빨간 선, 오른쪽 force 축)를
+표시하며 기존 heavy silhouette을 유지한다. Internal TDPES2와 harmonic의
+개별 선은 그리지 않는다. PG/raw energy를 유지하며 색상바·두 y축은 시간에 고정한다.
+Force는 기존 보고서와 같은 forward-bond derivative 및 support-aware 시간 phase
+연결을 사용한다. 시간 미분은 fs가 아니라 atomic time 기준이며 단위는 Ha/a0이다.
 Nested effective TDPES1 지도와 curvature 추가 비교본의 colour scale은
 모두 **−0.1~+0.1 Ha**로 통일한다(색상 범위만 동일, scalar 정의는 다름).
 원본 scalar 배열과 다른 분석 그림의 trap-excluded TDPES 정의는 바꾸지 않는다.

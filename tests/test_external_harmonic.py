@@ -22,7 +22,8 @@ class ExternalHarmonicTests(unittest.TestCase):
             obs = tdse_report.calculate_observables(tdse_report.load_observables(
                 Path(directory)/'multi_component_discrete_tdse_gpu.npz'))
             ef = tdse_report._load_ef_fields(obs, field_keys=(
-                'electron_proton_density', 'epsilon_1', 'epsilon_2'))
+                'electron_proton_density', 'epsilon_1', 'epsilon_2', 'alpha'))
+            ef['alpha'][:] = .001*np.asarray(obs['times_fs'])[:, None]*tdse_report.AU_PER_FS
             obs['options'].update(heavy_trap_alpha=.03, heavy_trap_center=.7)
             V = harmonic_potential(obs['R'], obs['options'])
             before = copy.deepcopy(ef)
@@ -33,14 +34,18 @@ class ExternalHarmonicTests(unittest.TestCase):
             np.testing.assert_array_equal(frame['harmonic'], V)
             prep = render._nested_preparation(obs, ef, args)
             self.assertEqual(prep['epsilon_1_limits'], (-.1, .1))
+            expected_force = -tdse_report._forward_bond_derivative(
+                render._total_source(ef, 2)+V, obs['dR'], axis=1)+.001
+            np.testing.assert_allclose(prep['heavy_force'], expected_force, atol=1e-12)
             fig, axes = render._new_nested_axes()
             state = render._draw_nested_composite(fig, axes, obs, ef, prep, 0, args)
             render._update_nested_composite(state, obs, ef, prep, 1, args)
             support = frame['heavy_support']
-            np.testing.assert_allclose(state['epsilon_2_effective_line'].get_ydata()[support],
+            np.testing.assert_allclose(state['epsilon_2_line'].get_ydata()[support],
                                        frame['epsilon_2_effective'][support])
-            self.assertEqual(state['harmonic_line'].get_linestyle(), '--')
-            self.assertEqual(state['epsilon_2_effective_line'].get_color(), 'tab:red')
+            np.testing.assert_allclose(state['force_line'].get_ydata()[support], expected_force[1, support])
+            self.assertEqual(state['force_line'].get_color(), 'tab:red')
+            self.assertEqual(state['epsilon_2_line'].get_color(), 'black')
             for level in (1, 2):
                 np.testing.assert_array_equal(render._total_source(ef, level), render._total_source(before, level))
             plt.close(fig)
