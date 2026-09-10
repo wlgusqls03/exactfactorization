@@ -802,6 +802,10 @@ class TDSEReportTests(unittest.TestCase):
             )
             self.assertIn("nested_electron_proton_vmax=", manifest)
             self.assertIn("nested_conditional_proton_vmax=", manifest)
+            self.assertTrue((output/'nested_factorization_analysis_absolute_movie.gif').is_file())
+            self.assertTrue((output/'nested_factorization_analysis_absolute_snapshots.png').is_file())
+            self.assertIn('nested_density_contour_modes=relative,absolute', manifest)
+            self.assertIn('nested_absolute_density_cutoff=', manifest)
 
     def test_joint_velocity_uses_mass_scaled_positive_gauge_connections(self):
         q = np.array([-1.0, 0.0, 1.0])

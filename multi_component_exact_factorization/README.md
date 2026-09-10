@@ -555,6 +555,28 @@ Nested effective TDPES1 지도와 curvature 추가 비교본의 colour scale은
 원본 scalar 배열과 다른 분석 그림의 trap-excluded TDPES 정의는 바꾸지 않는다.
 이 그림/영상만 재생성하려면 `render_final_visualizations RUN --only nested`를 쓴다.
 
+Nested density contours는 기본적으로 **relative / absolute 두 버전**을 만든다.
+기존 `nested_factorization_analysis_movie.mp4`는 매 프레임 최대 joint density로
+나눈 relative 버전이며, `nested_factorization_analysis_absolute_movie.mp4`는
+시간에 고정된 절대 joint density (`a0^-2`) 버전이다. 각각 개별 snapshot과
+8개 montage도 생성한다. 에너지 값/색상 범위와 나머지 물리량은 동일하다.
+
+- 색선: `10^k` 경계(상대 버전에서는 10%, 1%, 0.1% 등). 범례에 값을 명시.
+- 검은 보조선: decade 상한 `H`에 대해 `0.95H, 0.90H, ..., 0.15H`.
+- 마스킹 직전 decade만 `0.95H, ..., 0.50H`까지만 그린다.
+  예: cutoff=`1e-4`이면 마지막 검은선은 `5e-4`이고, `1e-4` 경계는 색선이다.
+- 100%는 일반적으로 고립된 최대점이므로 닫힌 등고선으로 강제하지 않는다.
+- relative 마스킹은 기존 `--analysis-focus-floor 1e-3`(프레임 최대의 0.1%).
+- absolute 마스킹은 초기 최대 밀도 × relative floor 이하의 가장 큰
+  `10^k`를 한 번 선택하여 고정한다. 프레임마다 바꾸지 않는다.
+  `--nested-absolute-density-floor 1e-4`로 직접 지정할 수도 있다.
+- 이 고정 absolute mask는 TDPES1 joint-density 지도에 적용한다.
+  heavy 1D support와 다른 그림들의 마스킹 정책은 변경하지 않는다.
+
+두 버전 비교: `--only nested --nested-density-contours both` (기본).
+하나만 선택하려면 마지막 인수를 `relative` 또는 `absolute`로 지정한다.
+두 모드 모두 추가 전파/EF 재계산 없이 로드된 동일 배열을 재사용한다.
+
 기존 EF cache에서 새 비교 영상과 8개 snapshot만 만들려면:
 
 ```bash

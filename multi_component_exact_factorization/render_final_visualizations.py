@@ -10,18 +10,22 @@ one frame at a time only when cached conditional channel weights are unavailable
 from __future__ import annotations
 
 import argparse
+import copy
 import gc
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as path_effects
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 from matplotlib.cm import ScalarMappable
-from matplotlib.colors import LogNorm, Normalize, SymLogNorm
+from matplotlib.colors import LogNorm, Normalize, SymLogNorm, to_rgba
 from matplotlib.ticker import LogFormatterMathtext, LogLocator
 import numpy as np
+from matplotlib.lines import Line2D
+from .density_contours import decade_levels, decade_color, automatic_absolute_cutoff
 
 from . import tdse_collision_report, tdse_report
 from .external_potential import harmonic_center, harmonic_potential, effective_scalar
@@ -1219,6 +1223,8 @@ def _nested_frame(obs, ef_positive, frame, args):
     joint_support = joint >= focus_floor*max(
         float(np.max(joint)), 1.0e-300,
     )
+    if getattr(args, '_nested_contour_mode', 'relative') == 'absolute':
+        joint_support = joint >= args._nested_absolute_cutoff
     return {
         "electron_proton": np.maximum(
             np.asarray(ef_positive["electron_proton_density"][frame], float), 0.0,
@@ -1369,33 +1375,40 @@ def _joint_contours(axis, obs, log_density, decades, compact=False, *,
 
 
 def _joint_linear_contours(axis, obs, density, compact=False, *,
-                           color="black"):
-    """Draw nested-analysis density contours on an ordinary linear scale."""
+                           color="black", args=None):
+    """Thin equally spaced minors and distinct colored decade boundaries."""
     density = np.maximum(np.asarray(density, float), 0.0)
     peak = max(float(np.max(density)), 1.0e-300)
-    relative = density/peak
-    levels = np.array((
-        0.025, 0.05, 0.075, 0.10, 0.15, 0.20,
-        0.30, 0.40, 0.50, 0.60, 0.75, 0.90,
-    ))
-    # No contour at these levels can exist outside this rectangle. Keep a
-    # complete lower-density cell border, so interpolation is unchanged.
-    indices = np.nonzero(relative >= levels[0])
+    absolute = getattr(args, '_nested_contour_mode', 'relative') == 'absolute'
+    shown = density if absolute else density/peak
+    cutoff = args._nested_absolute_cutoff if absolute else getattr(args, 'analysis_focus_floor', 1e-3)
+    upper = args._nested_absolute_upper if absolute else 1.0
+    major, minor = decade_levels(cutoff, upper)
+    levels = np.sort(np.r_[major, minor])
+    levels = levels[(levels > np.min(shown)) & (levels < np.max(shown))]
+    if not levels.size:
+        return SimpleNamespace(collections=[])
+    is_major = [bool(np.any(np.isclose(v, major, rtol=1e-10, atol=0))) for v in levels]
+    colors = [to_rgba(decade_color(v), .95) if flag else to_rgba(color, .55) for v, flag in zip(levels, is_major)]
+    widths = [(0.85 if compact else 1.15) if flag else (0.18 if compact else 0.25) for flag in is_major]
+    indices = np.nonzero(shown >= levels[0])
     crop = tuple(
         slice(max(0, int(index.min())-1), min(size, int(index.max())+2))
-        for index, size in zip(indices, relative.shape)
+        for index, size in zip(indices, shown.shape)
     ) if indices[0].size else (slice(None), slice(None))
     contours = axis.contour(
-        obs["q"][crop[0]], obs["R"][crop[1]], relative[crop].T, levels=levels,
-        colors=color,
-        linewidths=np.linspace(
-            0.24 if compact else 0.34,
-            0.50 if compact else 0.68,
-            len(levels),
-        ),
-        linestyles="solid", alpha=(0.72 if compact else 0.84),
+        obs["q"][crop[0]], obs["R"][crop[1]], shown[crop].T, levels=levels,
+        colors=colors, linewidths=widths,
+        linestyles="solid",
     )
     return contours
+
+
+def _nested_joint_focus(obs, frame, args):
+    floor = args.analysis_focus_floor
+    if getattr(args, '_nested_contour_mode', 'relative') == 'absolute':
+        floor = args._nested_absolute_cutoff/max(float(obs['joint_density'][frame].max()), 1e-300)
+    return _frame_focus(obs, frame, floor)
 
 
 def _heavy_silhouette(axis, R, density, compact=False):
@@ -1418,9 +1431,7 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
                            colorbars=True, compact=False):
     q, R, x = obs["q"], obs["R"], obs["x"]
     current = _nested_frame(obs, ef_positive, frame, args)
-    _, _, joint_limits = _frame_focus(
-        obs, frame, args.analysis_focus_floor,
-    )
+    _, _, joint_limits = _nested_joint_focus(obs, frame, args)
     _, _, heavy_limits = _frame_heavy_focus(
         obs, frame, args.analysis_focus_floor,
     )
@@ -1475,7 +1486,7 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         alpha=current["joint_opacity"].T,
     )
     contours = _joint_linear_contours(
-        axes["epsilon_1"], obs, current["joint_density"], compact,
+        axes["epsilon_1"], obs, current["joint_density"], compact, args=args,
     )
     axes["epsilon_1"].set(
         xlim=joint_limits[0], ylim=joint_limits[1],
@@ -1485,6 +1496,17 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         r"Effective TDPES1 $\epsilon_{\rm PG}^{(1)}+V_{\rm ext}^{R}$ + density contours",
         loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
     )
+    absolute = getattr(args, '_nested_contour_mode', 'relative') == 'absolute'
+    cutoff = args._nested_absolute_cutoff if absolute else args.analysis_focus_floor
+    major, _ = decade_levels(cutoff, args._nested_absolute_upper if absolute else 1.0)
+    handles = [Line2D([], [], color=decade_color(v), lw=1.2,
+                      label=(rf'$10^{{{int(round(np.log10(v)))}}}$' if absolute else f'{100*v:g}%'))
+               for v in major if v < (args._nested_absolute_upper if absolute else 1.)]
+    axes['epsilon_1'].legend(handles=handles, loc='upper center', bbox_to_anchor=(.5, -.20),
+                             ncol=max(1, min(5, len(handles))), frameon=False,
+                             fontsize=5 if compact else 9,
+                             title=(r'Absolute $\rho_{qR}$ ($a_0^{-2}$)' if absolute else r'$\rho_{qR}/\rho_{\max}(t)$'),
+                             title_fontsize=5 if compact else 9)
 
     support = current["heavy_support"]
     epsilon_2_line, epsilon_2_tail = tdse_report._support_tail_lines(
@@ -1558,9 +1580,7 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
 
 def _update_nested_composite(state, obs, ef_positive, prep, frame, args):
     current = _nested_frame(obs, ef_positive, frame, args)
-    _, _, joint_limits = _frame_focus(
-        obs, frame, args.analysis_focus_floor,
-    )
+    _, _, joint_limits = _nested_joint_focus(obs, frame, args)
     _, _, heavy_limits = _frame_heavy_focus(
         obs, frame, args.analysis_focus_floor,
     )
@@ -1580,7 +1600,7 @@ def _update_nested_composite(state, obs, ef_positive, prep, frame, args):
     for collection in state["contours"].collections:
         collection.remove()
     state["contours"] = _joint_linear_contours(
-        state["axes"]["epsilon_1"], obs, current["joint_density"],
+        state["axes"]["epsilon_1"], obs, current["joint_density"], args=args,
     )
     support = current["heavy_support"]
     state["epsilon_2_line"].set_ydata(
@@ -1609,12 +1629,37 @@ def _update_nested_composite(state, obs, ef_positive, prep, frame, args):
 
 
 def render_nested_factorization(obs, ef_positive, outdir, args, snapshots):
+    """Compare relative and fixed absolute contours without reloading arrays."""
+    prep = _nested_preparation(obs, ef_positive, args)
+    cutoff = getattr(args, 'nested_absolute_density_floor', None)
+    if cutoff is None:
+        cutoff = automatic_absolute_cutoff(obs['joint_density'][0], args.analysis_focus_floor)
+    modes = getattr(args, 'nested_density_contours', 'both')
+    modes = ('relative', 'absolute') if modes == 'both' else (modes,)
+    products = []
+    upper = max(float(np.max(obs['joint_density'])), cutoff*10)
+    for mode in modes:
+        local = copy.copy(args)
+        local._nested_contour_mode = mode
+        local._nested_absolute_cutoff = cutoff
+        local._nested_absolute_upper = upper
+        generated, _ = _render_nested_factorization_variant(obs, ef_positive, outdir, local, snapshots, prep)
+        products.extend(generated)
+    prep['contour_modes'] = modes
+    prep['absolute_density_cutoff'] = cutoff
+    return products, prep
+
+
+def _render_nested_factorization_variant(obs, ef_positive, outdir, args, snapshots, prep):
     if obs.get("electron_density") is None or obs.get("x") is None:
         raise KeyError(
             "nested analysis에는 electron marginal과 x grid가 필요합니다"
         )
-    prep = _nested_preparation(obs, ef_positive, args)
     times = obs["times_fs"]
+    absolute = args._nested_contour_mode == 'absolute'
+    stem = 'nested_factorization_analysis'+('_absolute' if absolute else '')
+    contour_note = (rf'absolute density contours; fixed mask $\rho_{{qR}} < {_math_scientific(args._nested_absolute_cutoff)}\ a_0^{{-2}}$'
+                    if absolute else f'relative density contours; mask below {100*args.analysis_focus_floor:g}% of frame peak')
 
     def individual(frame):
         fig, axes = _new_nested_axes()
@@ -1623,15 +1668,15 @@ def render_nested_factorization(obs, ef_positive, outdir, args, snapshots):
             "Nested factorization: correlated densities and exact potentials | "
             f"t={times[frame]:.4f} fs\n"
             r"raw densities: fixed linear color ranges; raw potentials: "
-            r"positive-density gauge; contours: physical $\rho_{qR}$",
+            "positive-density gauge; "+contour_note,
             fontweight="bold",
         )
         return fig
 
     products = _save_individual_frames(
         individual, snapshots, times,
-        Path(outdir)/"nested_factorization_analysis_frames",
-        "nested_factorization_analysis", args.dpi,
+        Path(outdir)/(stem+"_frames"),
+        stem, args.dpi,
     )
     fig = plt.figure(figsize=(24.0, 10.8), constrained_layout=True)
     outer = fig.add_gridspec(2, 4)
@@ -1649,11 +1694,11 @@ def render_nested_factorization(obs, ef_positive, outdir, args, snapshots):
             ha="right", va="top", color="white", fontsize=6.0,
         )
     fig.suptitle(
-        "Heavy-integrated electronic dynamics and subsequent proton factorization",
+        "Heavy-integrated electronic dynamics and subsequent proton factorization\n"+contour_note,
         fontweight="bold",
     )
     products.append(_save_figure(
-        fig, Path(outdir)/"nested_factorization_analysis_snapshots.png",
+        fig, Path(outdir)/(stem+"_snapshots.png"),
         args.dpi,
     ))
 
@@ -1675,7 +1720,7 @@ def render_nested_factorization(obs, ef_positive, outdir, args, snapshots):
                 "Nested factorization: correlated densities and exact "
                 f"potentials | t={times[frame]:.4f} fs\n"
                 "raw densities with fixed color ranges; "
-                "raw positive-density-gauge potentials; no smoothing"
+                "raw PG potentials; "+contour_note
             )
             return (
                 state["electron_proton_image"],
@@ -1689,7 +1734,7 @@ def render_nested_factorization(obs, ef_positive, outdir, args, snapshots):
         update(0)
         animation = FuncAnimation(fig, update, frames=len(frames), blit=False)
         products.append(_save_standard_movie(
-            animation, fig, outdir, "nested_factorization_analysis_movie",
+            animation, fig, outdir, stem+"_movie",
             args.fps, args.animation_dpi, args.format,
         ))
     return products, prep
@@ -3946,9 +3991,10 @@ def run(args):
                 "nested_conditional_proton_vmax="
                 f"{nested_prep['conditional_vmax']:.16g}"
             ),
-            "epsilon_1_overlay=physical_joint_density_relative_contours",
-            "nested_density_contours=12_linear_relative_levels_from_0.025_to_0.90",
-            "nested_density_contour_style=thin_black_solid",
+            "epsilon_1_overlay=physical_joint_density_decade_contours",
+            f"nested_density_contour_modes={','.join(nested_prep['contour_modes'])}",
+            f"nested_absolute_density_cutoff={nested_prep['absolute_density_cutoff']:.16g}",
+            "nested_density_contour_style=colored_decades_black_5percent_minor_final_decade_half",
             (
                 "electron_proton_mass_error="
                 f"{nested_prep['electron_proton_mass_error']:.16g}"
@@ -4157,7 +4203,13 @@ def parse_args(argv=None):
         ),
     )
     parser.add_argument("--no-animation", action="store_true")
+    parser.add_argument('--nested-density-contours', choices=('relative', 'absolute', 'both'), default='both')
+    parser.add_argument('--nested-absolute-density-floor', type=float, default=None,
+                        help='fixed joint-density cutoff in a0^-2; default power of ten at/below initial relative cutoff')
     args = parser.parse_args(argv)
+    if args.nested_absolute_density_floor is not None and (
+            not np.isfinite(args.nested_absolute_density_floor) or args.nested_absolute_density_floor <= 0):
+        parser.error('--nested-absolute-density-floor must be finite and positive')
     if not 0 < args.analysis_focus_floor < 1:
         parser.error('--analysis-focus-floor must lie strictly between 0 and 1')
     positive = (
