@@ -21,7 +21,7 @@ TDPES1_ZOOM_BOUND_HA = 0.1
 def render_curvature_movies(obs, ef, output, args, snapshots):
     from .render_final_visualizations import (
         _frame_focus, _movie_frames, _total_source, _save_individual_frames,
-        _save_figure, _save_analysis_movie,
+        _save_figure, _save_analysis_movie, _absolute_overlay,
     )
     times, R = obs['times_fs'], obs['R']
     mq = float(obs['options'].get('proton_mass', 1836.15267343))
@@ -46,12 +46,12 @@ def render_curvature_movies(obs, ef, output, args, snapshots):
     for f in selected:
         rho1, rho2 = obs['joint_density'][f], obs['heavy_density'][f]
         row = {'time_fs': float(times[f])}
-        support1 = (rho1 >= floor*rho1.max()) & (rho1 > 0)
+        support1 = np.isfinite(rho1) & (rho1 >= 1e-3)
         row['first_level_phase_branch_bonds'] = int(np.count_nonzero(support1 & (
             (np.abs(ef['a'][f]*obs['dq']) > .9*np.pi)
             | (np.abs(ef['b'][f]*obs['dR']) > .9*np.pi))))
         for level, (arrays, rho) in enumerate(zip(values(int(f)), (rho1, rho2))):
-            support = (rho >= floor*rho.max()) & (rho > 0)
+            support = (rho >= (1e-3 if level == 0 else floor*rho.max())) & (rho > 0)
             for a in arrays:
                 finite = np.abs(a[support & np.isfinite(a)])
                 if finite.size:
@@ -113,6 +113,7 @@ def render_curvature_movies(obs, ef, output, args, snapshots):
                     artist.set_data(np.ma.masked_where(~support | ~np.isfinite(a), a)[np.ix_(iq, iR)].T)
                     artist.set_extent((*limits[0], *limits[1]))
                     ax.set(xlim=limits[0], ylim=limits[1])
+                    _absolute_overlay(ax, obs, f)
             else:
                 rho = obs['heavy_density'][f]
                 support = (rho >= floor*rho.max()) & (rho > 0)
@@ -151,13 +152,14 @@ def render_curvature_movies(obs, ef, output, args, snapshots):
     # Report saturation rather than quietly claiming all extrema are visible.
     for f, row in zip(selected, records):
         for level, (arrays, rho) in enumerate(zip(values(int(f)), (obs['joint_density'][f], obs['heavy_density'][f]))):
-            support = (rho >= floor*rho.max()) & (rho > 0)
+            support = (rho >= (1e-3 if level == 0 else floor*rho.max())) & (rho > 0)
             row[f'tdpes{level+1}_clipped_fraction'] = [float(np.mean(np.abs(a[support])>bounds[level])) for a in arrays]
             if level == 0:
                 row['tdpes1_zoom_clipped_fraction'] = [float(np.mean(np.abs(a[support])>TDPES1_ZOOM_BOUND_HA)) for a in arrays]
     path = output/'pg_curvature_movies_diagnostics.json'
     path.write_text(json.dumps({'convention': 'external excluded; continuum versus saved TDPES',
-                               'density_floor': floor, 'fixed_bounds_Ha': bounds,
+                               'density_floor': floor, 'joint_absolute_density_floor': 1e-3,
+                               'fixed_bounds_Ha': bounds,
                                'tdpes1_zoom_bound_Ha': TDPES1_ZOOM_BOUND_HA,
                                'records': records}, indent=2))
     for level in (1, 2):

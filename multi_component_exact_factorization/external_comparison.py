@@ -12,7 +12,7 @@ from .report_plot_style import SIGNED_CMAP, MASK_COLOR
 def render_external_comparison(obs, ef, output, args, snapshots):
     from .render_final_visualizations import (
         _frame_focus, _movie_frames, _total_source, _save_individual_frames,
-        _save_figure, _save_analysis_movie,
+        _save_figure, _save_analysis_movie, _absolute_overlay,
     )
     t, q, R = obs['times_fs'], obs['q'], obs['R']
     V = harmonic_potential(R, obs['options'])
@@ -22,7 +22,8 @@ def render_external_comparison(obs, ef, output, args, snapshots):
     for f in np.unique(np.r_[frames, snapshots]):
         mask, _, _ = _frame_focus(obs, f, args.analysis_focus_floor)
         for a in (e1[f], np.broadcast_to(V, e1[f].shape), e1[f]+V):
-            bound = max(bound, float(np.max(np.abs(a[mask]))))
+            if np.any(mask):
+                bound = max(bound, float(np.max(np.abs(a[mask]))))
         support = obs['heavy_density'][f] >= args.analysis_focus_floor*obs['heavy_density'][f].max()
         for a in (e2[f], V, e2[f]+V):
             low, high = min(low,float(a[support].min())), max(high,float(a[support].max()))
@@ -56,6 +57,7 @@ def render_external_comparison(obs, ef, output, args, snapshots):
             for im,axis,a in zip(images,axes,(e1[f],np.broadcast_to(V,e1[f].shape),e1[f]+V)):
                 im.set_data(np.ma.masked_where(~mask,a)[np.ix_(iq,iR)].T)
                 im.set_extent((*limits[0],*limits[1])); axis.set(xlim=limits[0],ylim=limits[1])
+                _absolute_overlay(axis, obs, f)
             for line,a in zip(lines,(e2[f],V,e2[f]+V)):
                 line.set_ydata(a)
             occupied = obs['heavy_density'][f]>=args.analysis_focus_floor*obs['heavy_density'][f].max()

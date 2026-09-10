@@ -743,6 +743,7 @@ def _draw_vector_composite(fig, axes, obs, ef, prep, frame, args, *,
             _add_attached_colorbar(
                 fig, axis, image, r"connection ($a_0^{-1}$)",
             )
+        _absolute_overlay(axis, obs, frame, compact)
         images.append((image, key))
 
     heavy = obs["heavy_density"][frame]
@@ -784,6 +785,7 @@ def _update_vector_composite(state, obs, ef, prep, frame, args):
     for image, key in state["images"]:
         image.set_data(ef[key][frame].T)
         image.set_alpha(opacity.T)
+        _absolute_overlay(image.axes, obs, frame)
     for axis_name in ("a", "b"):
         state["axes"][axis_name].set_xlim(frame_limits[0])
         state["axes"][axis_name].set_ylim(frame_limits[1])
@@ -1009,6 +1011,7 @@ def _draw_current_composite(fig, axes, obs, ef, prep, frame, args, *,
             _add_attached_colorbar(
                 fig, axis, image, "joint probability current (a.u.)",
             )
+        _absolute_overlay(axis, obs, frame, compact)
         images.append((image, key))
 
     support = prep["heavy_support"][frame]
@@ -1058,6 +1061,7 @@ def _update_current_composite(state, obs, ef, prep, frame, args):
     for image, key in state["images"]:
         image.set_data(current[key].T)
         image.set_alpha(opacity.T)
+        _absolute_overlay(image.axes, obs, frame)
     for axis_name in ("proton", "heavy_joint"):
         state["axes"][axis_name].set_xlim(frame_limits[0])
         state["axes"][axis_name].set_ylim(frame_limits[1])
@@ -1220,9 +1224,7 @@ def _nested_frame(obs, ef_positive, frame, args):
     heavy_support = heavy >= focus_floor*max(
         float(np.max(heavy)), 1.0e-300,
     )
-    joint_support = joint >= focus_floor*max(
-        float(np.max(joint)), 1.0e-300,
-    )
+    joint_support = joint >= 1e-3
     if getattr(args, '_nested_contour_mode', 'relative') == 'absolute':
         joint_support = joint >= args._nested_absolute_cutoff
     return {
@@ -1230,9 +1232,7 @@ def _nested_frame(obs, ef_positive, frame, args):
             np.asarray(ef_positive["electron_proton_density"][frame], float), 0.0,
         ),
         "conditional": conditional,
-        "conditional_opacity": np.broadcast_to(
-            heavy_support[None, :].astype(float), conditional.shape,
-        ),
+        "conditional_opacity": joint_support.astype(float),
         "joint_density": np.maximum(np.asarray(joint, float), 0.0),
         "joint_opacity": joint_support.astype(float),
         "epsilon_1": effective_scalar(_total_source(ef_positive, 1)[frame], ef_positive, obs),
@@ -1389,10 +1389,10 @@ def _joint_linear_contours(axis, obs, density, compact=False, *,
     """Thin equally spaced minors and distinct colored decade boundaries."""
     density = np.maximum(np.asarray(density, float), 0.0)
     peak = max(float(np.max(density)), 1.0e-300)
-    absolute = getattr(args, '_nested_contour_mode', 'relative') == 'absolute'
+    absolute = True
     shown = density if absolute else density/peak
-    cutoff = args._nested_absolute_cutoff if absolute else getattr(args, 'analysis_focus_floor', 1e-3)
-    upper = args._nested_absolute_upper if absolute else 1.0
+    cutoff = getattr(args, '_nested_absolute_cutoff', 1e-3)
+    upper = max(peak, cutoff*10)
     major, minor = decade_levels(cutoff, upper)
     levels = np.sort(np.r_[major, minor])
     levels = levels[(levels > np.min(shown)) & (levels < np.max(shown))]
@@ -1411,6 +1411,17 @@ def _joint_linear_contours(axis, obs, density, compact=False, *,
         colors=colors, linewidths=widths,
         linestyles="solid",
     )
+    return contours
+
+
+def _absolute_overlay(axis, obs, frame, compact=False):
+    """Replace, rather than accumulate, common absolute joint-density contours."""
+    previous = getattr(axis, '_absolute_density_contours', None)
+    if previous is not None:
+        for collection in previous.collections:
+            collection.remove()
+    contours = _joint_linear_contours(axis, obs, obs['joint_density'][frame], compact)
+    axis._absolute_density_contours = contours
     return contours
 
 
@@ -1478,6 +1489,7 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
     )
     _set_density_axis(axes["conditional"])
+    _absolute_overlay(axes['conditional'], obs, frame, compact)
     if compact:
         for name, image in (("electron_proton", electron_proton_image),
                             ("conditional", conditional_image)):
@@ -1534,6 +1546,7 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         linewidth=(1.0 if compact else 2.0),
     )
     force_axis.set_ylim(prep['heavy_force_limits'])
+    force_axis.axhline(0.0, color='tab:red', ls='--', lw=0.9, alpha=0.6, zorder=0)
     force_axis.set_ylabel(r'Force (Hartree/$a_0$)', color='tab:red', fontsize=6 if compact else 11)
     force_axis.tick_params(axis='y', colors='tab:red', labelsize=5.2 if compact else 10)
     heavy_fill, heavy_line = _heavy_silhouette(
@@ -1597,6 +1610,7 @@ def _update_nested_composite(state, obs, ef_positive, prep, frame, args):
         current["electron_proton"].T,
     )
     state["conditional_image"].set_data(current["conditional"].T)
+    _absolute_overlay(state['axes']['conditional'], obs, frame)
     state["conditional_image"].set_alpha(
         current["conditional_opacity"].T,
     )
@@ -1643,8 +1657,7 @@ def render_nested_factorization(obs, ef_positive, outdir, args, snapshots):
     cutoff = getattr(args, 'nested_absolute_density_floor', None)
     if cutoff is None:
         cutoff = automatic_absolute_cutoff(obs['joint_density'][0], args.analysis_focus_floor)
-    modes = getattr(args, 'nested_density_contours', 'both')
-    modes = ('relative', 'absolute') if modes == 'both' else (modes,)
+    modes = ('absolute',)
     products = []
     upper = max(float(np.max(obs['joint_density'])), cutoff*10)
     for mode in modes:
@@ -2242,9 +2255,9 @@ def render_bo_combined(obs, ef, outdir, args, snapshots):
 
 
 def _frame_focus(obs, frame, floor):
-    """Bounding box of all occupied branches, with padding in grid cells."""
+    """Absolute rho_qR >= 1e-3 support; floor retained for caller compatibility."""
     density = obs['joint_density'][frame]
-    active = np.isfinite(density) & (density >= floor*max(float(np.max(density)), 1e-300))
+    active = np.isfinite(density) & (density >= 1e-3)
     limits = []
     indices = []
     for coordinate, occupied in ((obs['q'], np.any(active, axis=1)),
@@ -2752,12 +2765,7 @@ def _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame, colorbars=True,
             origin="lower", aspect="auto", extent=extent,
             cmap=cmap, norm=shared_norm, interpolation="nearest",
         )
-        contours.append(_joint_contours(
-            axis, obs, current["joint_log"][np.ix_(contour_qi, contour_Ri)],
-            -np.log10(prep['focus_floor']), q=obs["q"][contour_qi],
-            R=obs["R"][contour_Ri], color="black", halo_color="white",
-            compact=compact,
-        ))
+        contours.append(_joint_linear_contours(axis, obs, obs['joint_density'][frame]))
         axis.set_facecolor(MASK_COLOR)
         axis.set_title(title, loc="left", fontweight="semibold",
                        fontsize=(5.5 if compact else 8.5))
@@ -2800,11 +2808,7 @@ def _update_tdpes1_origin(state, axes, obs, ef_zero, prep, frame):
         axis.set_ylim(limits[1])
         for collection in state["contours"][index].collections:
             collection.remove()
-        state["contours"][index] = _joint_contours(
-            axis, obs, current["joint_log"][np.ix_(contour_qi, contour_Ri)],
-            -np.log10(prep["focus_floor"]), q=obs["q"][contour_qi],
-            R=obs["R"][contour_Ri], color="black", halo_color="white",
-        )
+        state["contours"][index] = _joint_linear_contours(axis, obs, obs['joint_density'][frame])
         artists.append(image)
         artists.extend(state["contours"][index].collections)
     return artists
@@ -3515,11 +3519,7 @@ def _draw_tdpes_geometry(fig, axes, obs, ef_positive, prep, frame,
             origin="lower", aspect="auto", extent=extent,
             cmap=masked_cmap(JOINT_CMAP), norm=norm, interpolation="nearest",
         )
-        contours.append(_joint_contours(
-            axis, obs, current["joint_log"][np.ix_(cq, cR)],
-            -np.log10(prep["focus_floor"]), q=obs["q"][cq], R=obs["R"][cR],
-            color="black", halo_color="white",
-        ))
+        contours.append(_joint_linear_contours(axis, obs, obs['joint_density'][frame]))
         axis.set_facecolor(MASK_COLOR)
         axis.set(
             xlim=limits2d[0], ylim=limits2d[1],
@@ -3599,11 +3599,8 @@ def _update_tdpes_geometry(state, axes, obs, ef_positive, prep, frame):
         axis.set_ylim(limits2d[1])
         for collection in state["contours"][index].collections:
             collection.remove()
-        state["contours"][index] = _joint_contours(
-            axis, obs, current["joint_log"][np.ix_(cq, cR)],
-            -np.log10(prep["focus_floor"]), q=obs["q"][cq], R=obs["R"][cR],
-            color="black", halo_color="white",
-        )
+        state["contours"][index] = _joint_linear_contours(
+            axis, obs, obs['joint_density'][frame])
         artists.append(image)
         artists.extend(state["contours"][index].collections)
     active1d, _, limits1d = _frame_heavy_focus(
@@ -3939,6 +3936,9 @@ def run(args):
         "effective_TDPES=TDPES+external_harmonic",
         "bo_surfaces=internal; legacy full-energy caches preserved",
         f"analysis_focus_floor={args.analysis_focus_floor}",
+        "masked_2d_density_basis=absolute_joint_density_a0^-2",
+        "masked_2d_density_cutoff=0.001",
+        "masked_2d_contours=colored_decades_black_uniform_minors_final_decade_half",
         "analysis_focus=per_frame_joint_density_peak_relative_bounding_box",
         "snapshot_frames="+",".join(str(int(frame)) for frame in snapshots),
         "snapshot_times_fs="+",".join(
@@ -4205,9 +4205,9 @@ def parse_args(argv=None):
         ),
     )
     parser.add_argument("--no-animation", action="store_true")
-    parser.add_argument('--nested-density-contours', choices=('relative', 'absolute', 'both'), default='both')
-    parser.add_argument('--nested-absolute-density-floor', type=float, default=None,
-                        help='fixed joint-density cutoff in a0^-2; default power of ten at/below initial relative cutoff')
+    parser.add_argument('--nested-density-contours', choices=('absolute',), default='absolute')
+    parser.add_argument('--nested-absolute-density-floor', type=float, choices=(1e-3,), default=1e-3,
+                        help='shared fixed joint-density cutoff: 1e-3 a0^-2')
     args = parser.parse_args(argv)
     if args.nested_absolute_density_floor is not None and (
             not np.isfinite(args.nested_absolute_density_floor) or args.nested_absolute_density_floor <= 0):

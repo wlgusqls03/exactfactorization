@@ -5,6 +5,25 @@ from multi_component_exact_factorization import render_final_visualizations as r
 
 
 class DensityContourTests(unittest.TestCase):
+    def test_all_2d_focus_is_absolute_and_overlay_replaces_artists(self):
+        q = np.linspace(-2, 2, 20)
+        density = np.exp(-q[:, None]**2-q[None, :]**2)*.1
+        obs = {'q': q, 'R': q, 'joint_density': np.array([density, density*.1])}
+        for frame in (0, 1):
+            active, _, _ = render._frame_focus(obs, frame, .9)
+            np.testing.assert_array_equal(active, obs['joint_density'][frame] >= 1e-3)
+        fig, ax = render.plt.subplots()
+        try:
+            first = render._absolute_overlay(ax, obs, 0)
+            old = list(first.collections)
+            render._absolute_overlay(ax, obs, 1)
+            self.assertTrue(all(c not in ax.collections for c in old))
+        finally:
+            render.plt.close(fig)
+        args = render.parse_args(['dummy'])
+        self.assertEqual(args.nested_density_contours, 'absolute')
+        self.assertEqual(args.nested_absolute_density_floor, 1e-3)
+
     def test_decades_and_uniform_minors(self):
         major, minor = decade_levels(1e-3, 1.)
         np.testing.assert_allclose(major, [1e-3, .01, .1, 1.])

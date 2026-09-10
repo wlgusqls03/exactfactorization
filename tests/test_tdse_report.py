@@ -25,7 +25,7 @@ class TDSEReportTests(unittest.TestCase):
             cropped = render_final_visualizations._joint_linear_contours(
                 axes[0], {"q": q, "R": R}, density,
             )
-            full = axes[1].contour(q, R, (density/density.max()).T,
+            full = axes[1].contour(q, R, density.T,
                                    levels=cropped.levels)
             for a, b in zip(cropped.allsegs, full.allsegs):
                 a, b = np.concatenate(a), np.concatenate(b)
@@ -320,7 +320,7 @@ class TDSEReportTests(unittest.TestCase):
                 "joint_velocity_snapshots.png",
                 "vector_potential_composite_snapshots.png",
                 "current_density_composite_snapshots.png",
-                "nested_factorization_analysis_snapshots.png",
+                "nested_factorization_analysis_absolute_snapshots.png",
                 "heavy_analysis_snapshots.png",
                 "bo_combined_snapshots.png",
                 "bo_3d_channel_dynamics_snapshots.png",
@@ -335,7 +335,7 @@ class TDSEReportTests(unittest.TestCase):
                 "joint_velocity_frames",
                 "vector_potential_composite_frames",
                 "current_density_composite_frames",
-                "nested_factorization_analysis_frames",
+                "nested_factorization_analysis_absolute_frames",
                 "heavy_analysis_frames",
                 "bo_combined_frames",
                 "bo_3d_channel_frames",
@@ -787,13 +787,13 @@ class TDSEReportTests(unittest.TestCase):
             ])
             render_final_visualizations.run(args)
             self.assertTrue((
-                output/"nested_factorization_analysis_movie.gif"
+                output/"nested_factorization_analysis_absolute_movie.gif"
             ).is_file())
             self.assertTrue((
-                output/"nested_factorization_analysis_snapshots.png"
+                output/"nested_factorization_analysis_absolute_snapshots.png"
             ).is_file())
             self.assertEqual(len(list((
-                output/"nested_factorization_analysis_frames"
+                output/"nested_factorization_analysis_absolute_frames"
             ).glob("*.png"))), 2)
             manifest = (output/"final_visualizations_manifest.txt").read_text()
             self.assertIn(
@@ -804,7 +804,7 @@ class TDSEReportTests(unittest.TestCase):
             self.assertIn("nested_conditional_proton_vmax=", manifest)
             self.assertTrue((output/'nested_factorization_analysis_absolute_movie.gif').is_file())
             self.assertTrue((output/'nested_factorization_analysis_absolute_snapshots.png').is_file())
-            self.assertIn('nested_density_contour_modes=relative,absolute', manifest)
+            self.assertIn('nested_density_contour_modes=absolute', manifest)
             self.assertIn('nested_absolute_density_cutoff=', manifest)
 
     def test_joint_velocity_uses_mass_scaled_positive_gauge_connections(self):
