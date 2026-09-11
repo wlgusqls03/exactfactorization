@@ -48,7 +48,7 @@ from .visualize import NUMBER_FORMATTER, selected_frames
 
 FINAL_PRODUCTS = (
     "marginal", "joint", "velocity", "vector", "current", "nested",
-    "heavy", "bo", "bo3d", "tdpes1", "tdpes2", "geometry", "external", "curvature",
+    "heavy", "bo", "bo3d", "bo_local", "tdpes1", "tdpes2", "geometry", "external", "curvature",
 )
 
 
@@ -3716,7 +3716,7 @@ def run(args):
         name in selected
         for name in (
             "velocity", "vector", "current", "nested", "heavy", "bo",
-            "bo3d", "tdpes1", "tdpes2", "geometry", "external", "curvature",
+            "bo3d", "bo_local", "tdpes1", "tdpes2", "geometry", "external", "curvature",
         )
     )
     ef = None
@@ -3770,7 +3770,7 @@ def run(args):
             field_keys.extend(("epsilon_2", "alpha"))
         if "bo" in selected:
             field_keys.extend(("bo_state_density_q", "bo_state_density_R"))
-        if "bo3d" in selected:
+        if "bo3d" in selected or "bo_local" in selected:
             field_keys.append("bo_channel_density_qR")
         if "tdpes1" in selected:
             field_keys.append("bo_channel_density_qR")
@@ -3852,6 +3852,9 @@ def run(args):
     if "bo" in selected:
         products.extend(render_bo_combined(obs, ef, output, args, snapshots))
     bo3d_prep = None
+    if 'bo_local' in selected:
+        from .bo_local_population import render_bo_local_population
+        products.extend(render_bo_local_population(obs, ef, output, args, snapshots))
     if "bo3d" in selected:
         generated, bo3d_prep = render_bo3d_channels(
             obs, ef, output, args, snapshots,
@@ -3978,6 +3981,14 @@ def run(args):
             "heavy_marginal_current=heavy_density*alpha/heavy_mass",
             f"current_q_limits={current_prep['q_limits']}",
             f"current_R_limits={current_prep['R_limits']}",
+        ))
+    if 'bo_local' in selected:
+        manifest.extend((
+            'bo_local_population=rho_j(q,R,t)/rho_qR(q,R,t)',
+            'bo_local_heavy_population=integral_q_rho_j/integral_q_rho_qR',
+            'bo_local_population_scale=fixed_0_to_100_percent_no_two_channel_renormalization',
+            'bo_local_support=absolute_joint_density_ge_1e-3_a0^-2',
+            'bo_local_energy=internal_BO_trap_excluded_fixed_camera',
         ))
     if nested_prep is not None:
         manifest.extend((

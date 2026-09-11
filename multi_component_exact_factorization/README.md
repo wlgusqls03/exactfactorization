@@ -1,5 +1,30 @@
 # 1D Multi-Component Exact Factorization
 
+## Configuration-resolved BO character (final visualization)
+
+`render_final_visualizations RUN --only bo_local` adds a separate four-panel
+movie and representative snapshots without changing existing BO movies:
+
+1. Fixed ground BOPES, colored by `p0(q,R,t)=rho0/rho_qR`.
+2. Fixed first-excited BOPES, colored by `p1(q,R,t)=rho1/rho_qR`.
+3. Ground local population map with absolute joint-density contours.
+4. `Pj(R,t)=integral dq rho_j / integral dq rho_qR` for j=0,1,
+   with a scaled heavy-density guide and omitted fraction if present.
+
+Population colors/axes are fixed at 0–100%. These are instantaneous local
+characters, **not transition rates**. There is no two-channel renormalization.
+Grey 3D wireframes preserve the BO landscape; occupied colored surfaces and
+the 2D map use `rho_qR >= 1e-3 a0^-2`. 3D energy and coordinate limits/cameras
+remain fixed. BO energies exclude the external trap as in other final figures.
+The lower-right heavy silhouette is scaled to 15 percentage points solely as
+a position guide, not a population. Only saved channel densities/BO energies
+are used; no EF recomputation or new propagation is required.
+
+Output: `bo_local_population_movie.mp4`, `bo_local_population_snapshots.png`,
+and `bo_local_population_frames/*.png` under the selected final report folder.
+The full command (no `--only`) also includes this product. Same `--fps`,
+`--max-frames`, and snapshot selector as all other final movies.
+
 이 디렉터리는 기존 `exact_factorization/`과 완전히 분리된 교육용 구현이다.
 왼쪽 고정 양전하, 전자 하나, 양성자 하나, 움직이는 무거운 핵 하나를
 모두 1차원 실공간에서 다룬다. 움직이는 세 입자의 full wavefunction은
