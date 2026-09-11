@@ -2699,7 +2699,7 @@ def _tdpes1_origin_preparation(obs, ef_zero, args):
 
 _TDPES1_KEYS = ("total", "wbo_1", "wbo_2", "gd", "geo_q", "geo_R")
 _TDPES1_TITLES = (
-    r"TDPES1 $\widetilde\epsilon_{\rm total}^{(1)}$ (external trap excluded)",
+    r"TDPES1 $\epsilon_{\rm total}^{(1)}$ (external trap excluded)",
     r"$\epsilon_{\rm wBO,1}^{(1)}=|C_0|^2(E_0^{\rm BO}-E_{\rm ref})$",
     r"$\epsilon_{\rm wBO,2+}^{(1)}=\sum_{j\geq1}|C_j|^2(E_j^{\rm BO}-E_{\rm ref})$",
     r"Gauge dependent $\epsilon_{\rm GD}^{(1)}$",
@@ -2756,7 +2756,7 @@ def _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame, colorbars=True,
         titles = [title.replace(r"-E_{\rm ref}", "") for title in titles]
     if not prep.get("stored_decomposition", False):
         titles[0] = (
-            r"Total $\widetilde\epsilon_{\rm total}^{(1)}$ "
+            r"Total $\epsilon_{\rm total}^{(1)}$ "
             r"(legacy plotting reconstruction)"
         )
     for index, (axis, key, title) in enumerate(zip(axes, keys, titles)):
@@ -3076,8 +3076,8 @@ def _tdpes2_origin_frame(obs, ef_positive, prep, frame):
 
 _TDPES2_KEYS = ("total", "wbo_1", "wbo_2", "gd", "geo_q", "geo_R")
 _TDPES2_TITLES = (
-    r"$\widetilde\epsilon_{\rm total}^{(2)}="
-    r"\widetilde\epsilon_{\rm GI}^{(2)}+\epsilon_{\rm GD}^{(2)}$",
+    r"$\epsilon_{\rm total}^{(2)}="
+    r"\epsilon_{\rm GI}^{(2)}+\epsilon_{\rm GD}^{(2)}$",
     r"$\epsilon_{\rm wBO,1}^{(2)}$ (ground, $j=0$)",
     r"$\epsilon_{\rm wBO,2+}^{(2)}$ (all $j\geq1$)",
     r"Gauge dependent $\epsilon_{\rm GD}^{(2)}$",
@@ -3197,14 +3197,14 @@ def _draw_tdpes2_origin(axes, obs, ef_positive, prep, frame, *, compact=False):
         line, = axis.plot(
             R, np.where(active, current[key], np.nan),
             color="0.08", lw=(1.15 if compact else 2.2),
-            label=(r"$\widetilde\epsilon_{\rm total}^{(2)}$"
+            label=(r"$\epsilon_{\rm total}^{(2)}$"
                    if panel == 0 else None), zorder=5,
         )
         if panel == 0:
             gi_line, = axis.plot(
                 R, np.where(active, current["gi"], np.nan),
                 color="#2A7F62", lw=(0.95 if compact else 1.9),
-                label=r"$\widetilde\epsilon_{\rm GI}^{(2)}$",
+                label=r"$\epsilon_{\rm GI}^{(2)}$",
                 zorder=4,
             )
             gd_line, = axis.plot(

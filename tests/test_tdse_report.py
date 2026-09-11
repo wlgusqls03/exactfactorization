@@ -16,6 +16,12 @@ from multi_component_exact_factorization import (
 
 
 class TDSEReportTests(unittest.TestCase):
+    def test_tdpes_titles_use_epsilon_without_tilde(self):
+        for title in (render_final_visualizations._TDPES1_TITLES
+                      + render_final_visualizations._TDPES2_TITLES):
+            self.assertNotIn(r'\widetilde', title)
+            self.assertNotIn(r'\tilde', title)
+
     def test_nested_contour_crop_preserves_full_grid_vertices(self):
         plot = render_final_visualizations.plt
         q, R = np.linspace(-12, 28, 300), np.linspace(5, 14, 180)
