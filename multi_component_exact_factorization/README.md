@@ -13,7 +13,9 @@ movie and representative snapshots without changing existing BO movies:
 
 Population colors/axes are fixed at 0–100%. These are instantaneous local
 characters, **not transition rates**. There is no two-channel renormalization.
-Grey 3D wireframes preserve the BO landscape; occupied colored surfaces and
+Enlarged upper 3D panels use pale blue/beige BO surfaces with a visible mesh;
+only occupied regions carry the quantitative population colormap. These pale
+background colors do not encode population. Occupied colored surfaces and
 the 2D map use `rho_qR >= 1e-3 a0^-2`. 3D energy and coordinate limits/cameras
 remain fixed. BO energies exclude the external trap as in other final figures.
 The lower-right heavy silhouette is scaled to 15 percentage points solely as

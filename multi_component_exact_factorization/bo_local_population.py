@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from matplotlib.cm import ScalarMappable
-from matplotlib.colors import Normalize
+from matplotlib.colors import Normalize, to_rgba
 from matplotlib.ticker import PercentFormatter
 
 from .report_plot_style import MASK_COLOR
@@ -50,28 +50,34 @@ def render_bo_local_population(obs, ef, output, args, snapshots):
     cmap.set_bad(MASK_COLOR)
 
     def build(first):
-        fig = plt.figure(figsize=(16.5, 11.8))
-        grid = fig.add_gridspec(2, 2, left=.07, right=.86, bottom=.13,
-                               top=.89, hspace=.32, wspace=.27)
+        fig = plt.figure(figsize=(18, 13))
+        grid = fig.add_gridspec(2, 2, left=.06, right=.88, bottom=.15,
+                               top=.90, height_ratios=(1.65, 1), hspace=.18, wspace=.20)
         surfaces = [fig.add_subplot(grid[0, j], projection='3d') for j in range(2)]
         plane = fig.add_subplot(grid[1, 0])
         lines_axis = fig.add_subplot(grid[1, 1])
         for j, ax in enumerate(surfaces):
+            ax.computed_zorder = False
             ax.plot_wireframe(Q, RR, energy[j], rstride=max(1,len(qi)//12),
-                              cstride=max(1,len(ri)//12), color='0.6', alpha=.35, linewidth=.45)
+                              cstride=max(1,len(ri)//12), color='#374151', alpha=.45, linewidth=.55, zorder=3)
             ax.set(xlim=prep['q_limits'], ylim=prep['R_limits'], zlim=(lo-pad, hi+pad),
                    xlabel=r'proton $q$ ($a_0$)', ylabel=r'heavy $R$ ($a_0$)', zlabel='BO energy (Ha)')
-            ax.view_init(elev=29, azim=-132)
-            ax.set_box_aspect((1.3, 1, .7))
-            ax.tick_params(labelsize=10)
-            ax.set_title(('Ground' if j==0 else 'First excited')+rf' BO surface | $p_{j}(q,R,t)$',
-                         fontsize=14, pad=12)
+            ax.view_init(elev=32, azim=-132)
+            ax.set_proj_type('ortho')
+            ax.set_box_aspect((1.3, 1, .85), zoom=1.12)
+            ax.tick_params(labelsize=11, pad=2)
+            ax.xaxis.label.set_size(12)
+            ax.yaxis.label.set_size(12)
+            ax.zaxis.label.set_size(12)
+            ax.set_title(('(1) Ground' if j==0 else '(2) First excited')+rf' BOPES + local $p_{j}$',
+                         fontsize=16, pad=14, fontweight='semibold')
         image = plane.imshow(np.zeros((len(R),len(q))), origin='lower', aspect='auto',
             extent=(q[0],q[-1],R[0],R[-1]), cmap=cmap, norm=norm, interpolation='nearest')
         plane.set_facecolor(MASK_COLOR)
         plane.set(xlim=prep['q_limits'], ylim=prep['R_limits'],
                   xlabel=r'proton $q$ ($a_0$)', ylabel=r'heavy $R$ ($a_0$)')
-        plane.set_title(r'Local ground character $p_0=\rho_0/\rho_{qR}$', fontsize=14, pad=12)
+        plane.set_title('(3) Ground fraction at each configuration\n'+r'$p_0(q,R,t)=\rho_0/\rho_{qR}$',
+                        fontsize=14, pad=12)
         lines = [lines_axis.plot(R, np.zeros_like(R), lw=2.3, color=color, label=label)[0]
                  for color,label in [('tab:blue',r'Ground $P_0(R,t)$'),
                                      ('tab:orange',r'Excited $P_1(R,t)$'),
@@ -81,7 +87,8 @@ def render_bo_local_population(obs, ef, output, args, snapshots):
         lines_axis.set(xlim=prep['R_limits'], ylim=(-2,102), yticks=[0,20,40,60,80,100], xlabel=r'heavy $R$ ($a_0$)',
                        ylabel='Proton-averaged BO population')
         lines_axis.yaxis.set_major_formatter(PercentFormatter(100))
-        lines_axis.set_title(r'$P_j(R,t)=\int dq\,|\Lambda_R|^2p_j$', fontsize=14, pad=12)
+        lines_axis.set_title('(4) BO fractions at each heavy position\n'+r'$P_j(R,t)=\int dq\,|\Lambda_R|^2p_j$',
+                             fontsize=14, pad=12)
         lines_axis.grid(alpha=.18)
         silhouette, = lines_axis.plot(R, np.zeros_like(R), color='forestgreen', alpha=.35,
                                        lw=1.2, label='Heavy density (scaled guide)')
@@ -89,7 +96,7 @@ def render_bo_local_population(obs, ef, output, args, snapshots):
             ax.tick_params(labelsize=11)
             ax.xaxis.label.set_size(12)
             ax.yaxis.label.set_size(12)
-        cax = fig.add_axes((.91,.30,.016,.47))
+        cax = fig.add_axes((.935,.33,.014,.43))
         bar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), cax=cax,
                            ticks=[0,20,40,60,80,100], format=PercentFormatter(100))
         bar.set_label('Local BO population (fixed scale)', fontsize=12)
@@ -99,8 +106,8 @@ def render_bo_local_population(obs, ef, output, args, snapshots):
         heading = fig.suptitle('', fontsize=17, fontweight='bold')
         fig.text(.47,.945, r'Color = local BO character; height = fixed BO energy (trap excluded)',
                  ha='center', fontsize=12)
-        fig.text(.07,.045, r'Colored support: $\rho_{qR}\geq10^{-3}\,a_0^{-2}$; grey wireframe = BO landscape.'
-                 '\nLocal populations, not transition rates; density contours use absolute values.', fontsize=11)
+        fig.text(.06,.035, r'Saturated colors: $\rho_{qR}\geq10^{-3}\,a_0^{-2}$; pale surface + mesh: BOPES outside occupied support.'
+                 '\nColor = population (not density/energy). Green curve in (4) = scaled heavy-density guide, not a BO fraction.', fontsize=11)
         colored = []
 
         def update(frame):
@@ -113,10 +120,13 @@ def render_bo_local_population(obs, ef, output, args, snapshots):
             for j, ax in enumerate(surfaces):
                 occupied = active[np.ix_(qi,ri)] & np.isfinite(local[j][np.ix_(qi,ri)])
                 colors = cmap(norm(100*local[j][np.ix_(qi,ri)]))
-                colors[...,3] = occupied.astype(float)
-                colored.append(ax.plot_surface(Q, RR, np.where(occupied, energy[j], np.nan),
+                # One continuous opaque surface avoids coincident surface
+                # occlusion. Pale background distinguishes the BOPES itself
+                # from the quantitative population colors on occupied support.
+                colors[~occupied] = to_rgba(('#b9c9dc', '#dcc7b7')[j])
+                colored.append(ax.plot_surface(Q, RR, energy[j],
                     facecolors=colors, shade=False, linewidth=0, antialiased=False,
-                    rcount=len(qi), ccount=len(ri)))
+                    rcount=len(qi), ccount=len(ri), zorder=2))
             image.set_data(np.ma.masked_where(~active, 100*local[0]).T)
             _absolute_overlay(plane, obs, frame)
             occupied_R = np.any(active, axis=0)
