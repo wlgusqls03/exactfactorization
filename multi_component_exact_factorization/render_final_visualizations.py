@@ -1489,7 +1489,6 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
     )
     _set_density_axis(axes["conditional"])
-    _absolute_overlay(axes['conditional'], obs, frame, compact)
     if compact:
         for name, image in (("electron_proton", electron_proton_image),
                             ("conditional", conditional_image)):
@@ -1610,7 +1609,6 @@ def _update_nested_composite(state, obs, ef_positive, prep, frame, args):
         current["electron_proton"].T,
     )
     state["conditional_image"].set_data(current["conditional"].T)
-    _absolute_overlay(state['axes']['conditional'], obs, frame)
     state["conditional_image"].set_alpha(
         current["conditional_opacity"].T,
     )

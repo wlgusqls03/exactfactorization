@@ -39,7 +39,10 @@ class ExternalHarmonicTests(unittest.TestCase):
             np.testing.assert_allclose(prep['heavy_force'], expected_force, atol=1e-12)
             fig, axes = render._new_nested_axes()
             state = render._draw_nested_composite(fig, axes, obs, ef, prep, 0, args)
+            self.assertEqual(len(axes['conditional'].collections), 0)
             render._update_nested_composite(state, obs, ef, prep, 1, args)
+            self.assertEqual(len(axes['conditional'].collections), 0)
+            self.assertGreater(len(axes['epsilon_1'].collections), 0)
             support = frame['heavy_support']
             np.testing.assert_allclose(state['epsilon_2_line'].get_ydata()[support],
                                        frame['epsilon_2_effective'][support])

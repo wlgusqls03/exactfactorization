@@ -561,10 +561,11 @@ Nested effective TDPES1 지도와 curvature 추가 비교본의 colour scale은
 
 Final visualization의 마스킹된 2D q-R 패널은 모두 **절대 joint density**
 `rho_qR >= 1e-3 a0^-2`를 표시하고 동일한 등고선을 사용한다. 프레임 최대값으로
-나누지 않는다. Vector/current, nested TDPES1 및 conditional proton,
+나누지 않는다. Vector/current, nested TDPES1,
 TDPES1 origin, geometry, curvature/zoom, external 비교 패널에 적용한다.
 Nested는 `nested_factorization_analysis_absolute_movie.mp4`와 개별 snapshot,
 8개 montage만 생성한다. 기존 상대밀도 결과 파일은 삭제하지 않는다.
+Nested의 검은 배경 conditional proton 밀도 패널에는 등고선을 표시하지 않는다.
 
 - 색선: 절대밀도 `10^k a0^-2` 경계. 색상은 모든 패널에서 동일하다.
 - 검은 보조선: decade 상한 `H`에 대해 `0.95H, 0.90H, ..., 0.15H`.
