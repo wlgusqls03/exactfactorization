@@ -1545,7 +1545,12 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         linewidth=(1.0 if compact else 2.0),
     )
     force_axis.set_ylim(prep['heavy_force_limits'])
-    force_axis.axhline(0.0, color='tab:red', ls='--', lw=0.9, alpha=0.6, zorder=0)
+    # Use the FORCE axis transform, not the energy-axis zero. Keep this
+    # reference above the grid/silhouette and opaque enough for movie encoding.
+    force_zero_line = force_axis.axhline(
+        0.0, color='tab:red', ls='--', lw=1.5 if not compact else 1.0,
+        alpha=1.0, zorder=5,
+    )
     force_axis.set_ylabel(r'Force (Hartree/$a_0$)', color='tab:red', fontsize=6 if compact else 11)
     force_axis.tick_params(axis='y', colors='tab:red', labelsize=5.2 if compact else 10)
     heavy_fill, heavy_line = _heavy_silhouette(
@@ -1593,6 +1598,7 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         "force_line": force_line,
         "force_tail": force_tail,
         "force_axis": force_axis,
+        "force_zero_line": force_zero_line,
         "heavy_fill": heavy_fill,
         "heavy_line": heavy_line,
         "axes": axes,

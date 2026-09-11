@@ -48,6 +48,12 @@ class ExternalHarmonicTests(unittest.TestCase):
                                        frame['epsilon_2_effective'][support])
             np.testing.assert_allclose(state['force_line'].get_ydata()[support], expected_force[1, support])
             self.assertEqual(state['force_line'].get_color(), 'tab:red')
+            zero = state['force_zero_line']
+            self.assertIs(zero.axes, state['force_axis'])
+            np.testing.assert_array_equal(zero.get_ydata(), [0., 0.])
+            self.assertEqual(zero.get_linestyle(), '--')
+            self.assertEqual(zero.get_alpha(), 1.)
+            self.assertGreater(zero.get_zorder(), 2)
             self.assertEqual(state['epsilon_2_line'].get_color(), 'black')
             for level in (1, 2):
                 np.testing.assert_array_equal(render._total_source(ef, level), render._total_source(before, level))
