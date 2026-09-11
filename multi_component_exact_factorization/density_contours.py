@@ -28,6 +28,10 @@ def decade_levels(cutoff, upper):
 
 
 def decade_color(value):
+    # Shared absolute masking boundary: black on both signed maps and legends.
+    # Keep the existing major-contour linewidth and all other decade colors.
+    if np.isclose(value, 1e-3, rtol=1e-10, atol=0):
+        return 'black'
     return DECADE_COLORS[int(round(-np.log10(value))) % len(DECADE_COLORS)]
 
 

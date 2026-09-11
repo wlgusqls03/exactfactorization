@@ -568,6 +568,7 @@ Nested는 `nested_factorization_analysis_absolute_movie.mp4`와 개별 snapshot,
 Nested의 검은 배경 conditional proton 밀도 패널에는 등고선을 표시하지 않는다.
 
 - 색선: 절대밀도 `10^k a0^-2` 경계. 색상은 모든 패널에서 동일하다.
+- 가장 바깥 `1e-3 a0^-2` 경계는 검은 실선이며 기존 색 경계선 두께를 유지한다.
 - 검은 보조선: decade 상한 `H`에 대해 `0.95H, 0.90H, ..., 0.15H`.
 - 마스킹 직전 decade만 `0.95H, ..., 0.50H`까지만 그린다.
   예: cutoff=`1e-4`이면 마지막 검은선은 `5e-4`이고, `1e-4` 경계는 색선이다.

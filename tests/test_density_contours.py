@@ -1,10 +1,15 @@
 import unittest
 import numpy as np
-from multi_component_exact_factorization.density_contours import decade_levels, automatic_absolute_cutoff
+from multi_component_exact_factorization.density_contours import decade_levels, decade_color, automatic_absolute_cutoff
 from multi_component_exact_factorization import render_final_visualizations as render
 
 
 class DensityContourTests(unittest.TestCase):
+    def test_outer_boundary_black_other_decades_unchanged(self):
+        self.assertEqual(decade_color(1e-3), 'black')
+        self.assertEqual(decade_color(1e-2), '#d89000')
+        self.assertEqual(decade_color(1e-1), '#c000c0')
+
     def test_all_2d_focus_is_absolute_and_overlay_replaces_artists(self):
         q = np.linspace(-2, 2, 20)
         density = np.exp(-q[:, None]**2-q[None, :]**2)*.1
