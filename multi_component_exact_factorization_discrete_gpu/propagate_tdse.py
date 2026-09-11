@@ -37,6 +37,7 @@ from .gpu_core import (
     make_discrete_gpu_model,
 )
 from .propagate_tdse_split import run_split_operator
+from multi_component_exact_factorization.direct_geometry import GeometryRecorder
 
 
 class _Tee:
@@ -95,7 +96,7 @@ def run(args):
     y_cpu = c_cpu*(lam_cpu*chi_cpu[None, :])[None, :, :]
     model = make_discrete_gpu_model(cpu_model)
     basis = to_gpu_basis(basis_cpu, model, args.bo_link_kernel)
-    compact_states = basis_cpu.states if args.bo_save_electron_density else None
+    compact_states = basis_cpu.states if (args.bo_save_electron_density or args.save_direct_geometry) else None
     y = cp.ascontiguousarray(cp.asarray(y_cpu, dtype=cp.complex128))
     # Eigenstates are not needed after initial projection.  Keep only the
     # immutable energies and links already uploaded by to_gpu_basis().
@@ -141,8 +142,13 @@ def run(args):
         "fixed_center_crossing_R_right": [],
         "fixed_center_crossing_R": [],
     }
-    if compact_states is not None:
+    if args.bo_save_electron_density:
         histories["electron_density"] = []
+
+    geometry = (GeometryRecorder(outdir, len(save_steps)+1, cpu_model, args.direct_geometry_R_block)
+                if args.save_direct_geometry else None)
+    if geometry is not None:
+        print('Saved-frame geometry: coherent Psi direct central-5 derivatives; no overlap S; CPU R blocks')
 
     def save(step):
         action = discrete_tdse_action_gpu(y, model, basis)
@@ -170,6 +176,9 @@ def run(args):
         q_edge = min(5, len(cpu_model.q)//2)
         R_edge = min(5, len(cpu_model.R)//2)
         y_out = cp.asnumpy(y)
+        if geometry is not None:
+            geometry.save(lambda ids: np.einsum(
+                'nqR,nxqR->xqR', y_out[:, :, ids], compact_states[:, :, :, ids], optimize=True))
         histories["times_fs"].append(step*args.dt_au/AU_PER_FS)
         histories["tdse_coefficients"].append(y_out)
         histories["norm"].append(_scalar(norm))
@@ -182,7 +191,7 @@ def run(args):
         histories["joint_density"].append(cp.asnumpy(joint/norm))
         histories["proton_density"].append(cp.asnumpy(q_density))
         histories["heavy_density"].append(cp.asnumpy(R_density))
-        if compact_states is not None:
+        if args.bo_save_electron_density:
             histories["electron_density"].append(
                 electron_marginal_from_bo(
                     y_out, compact_states, cpu_model.dq, cpu_model.dR,
@@ -291,6 +300,8 @@ def run(args):
     completed = not failure
     interrupted = failure.startswith("사용자가 step ")
     payload = {key: np.asarray(value) for key, value in histories.items()}
+    if geometry is not None:
+        payload.update(geometry.payload())
     payload.update(
         kind=np.array("direct_discrete_born_huang_tdse_gpu"),
         representation=np.array("full_wavefunction_bo_coefficients"),
@@ -318,6 +329,9 @@ def run(args):
     )
     archive = outdir/"multi_component_discrete_tdse_gpu.npz"
     np.savez_compressed(archive, **payload)
+    if geometry is not None:
+        geometry.cleanup()
+        print(f'Direct geometry diagnostics: {geometry.count} frames; {geometry.seconds:.3f} s; staging consolidated into NPZ')
     status_name = "completed" if completed else ("interrupted" if interrupted else "failed")
     (outdir/"propagation_status.log").write_text(
         f"status={status_name}\n"
@@ -419,6 +433,10 @@ def parse_args(argv=None):
         help="저장 frame의 exact electron marginal 복원을 생략",
     )
     parser.add_argument("--electron-density-R-block", type=int, default=24)
+    parser.set_defaults(save_direct_geometry=True)
+    parser.add_argument('--no-save-direct-geometry', dest='save_direct_geometry', action='store_false',
+                        help='skip saved-frame direct-Psi derivative geometry diagnostics')
+    parser.add_argument('--direct-geometry-R-block', dest='direct_geometry_R_block', type=int, default=8)
     parser.add_argument("--tdse-projection-R-block", type=int, default=8)
     parser.add_argument("--tdse-q-fft-R-block", type=int, default=64)
     parser.add_argument("--tdse-R-fft-x-block", type=int, default=32)
@@ -439,6 +457,8 @@ def parse_args(argv=None):
     )
     add_model_arguments(parser)
     args = parser.parse_args(argv)
+    if args.direct_geometry_R_block < 1:
+        parser.error('--direct-geometry-R-block must be positive')
     if args.dt_au <= 0.0 or args.t_final_fs < 0.0:
         parser.error("dt must be positive and final time nonnegative")
     if not np.isfinite(args.step_sleep_ms) or args.step_sleep_ms < 0.0:

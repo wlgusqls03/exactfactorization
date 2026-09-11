@@ -1,5 +1,48 @@
 # Discrete MCEF CUDA solver
 
+## Direct-wavefunction geometry at saved TDSE frames
+
+Both `bo_rk4` and `spectral_split` now default to computing direct-derivative
+diagnostics at `--save-every` frames (including initial/final frames), not at
+every integrator substep. No overlap S or difference of energy components is
+used. The coherent Psi is normalized to Phi(x|q,R) and Gamma(x,q|R) in the
+positive-density gauge; derivatives use periodic central five-point first
+derivatives in q/R. This does not change either propagation Hamiltonian.
+
+The propagation NPZ contains:
+
+| Key | Meaning |
+|---|---|
+| `direct_geo1_q` | squared orthogonal q derivative of Phi / (2 m_p) |
+| `direct_geo1_R` | squared orthogonal R derivative of Phi / (2 M) |
+| `direct_geo2_R` | squared orthogonal R derivative of Gamma / (2 M), integrated over x,q |
+| `direct_internal_q_kinetic` | integral over x,q of abs(d_q Gamma)^2 / (2 m_p); **not** a pure metric |
+
+The orthogonal derivative is `du-u*<u|du>`: projection is part of the
+geometric definition, not adjustment to force an energy sum to close.
+Undefined conditional states/stencils at exact numerical nodes remain NaN.
+No density display mask or energy-reference subtraction is applied.
+
+BO RK4 reconstructs the coherent wavefunction with the coordinate-dependent
+BO states, so basis derivatives are included. Spectral propagation uses the
+full current wavefunction, not its truncated BO analysis projection. Geometry
+diagnostics still use the documented central-five derivative in both modes.
+
+These **new independent diagnostics** do not silently replace existing
+`tdpes*_geo_*`, GD, or total definitions in the EF postprocessor/plots. In
+particular no new total is defined by summing these diagnostics. The existing
+native/link decomposition remains available for comparison. The internal-q
+contribution at level 2 must not be called a pure geometry merely by subtracting
+the BO energy from a scalar.
+
+`--direct-geometry-R-block 8` bounds temporary CPU memory; small R halos include
+periodic neighbors. Additional disk staging is about 3.49 GiB for 415 frames
+on a 1250 x 450 nuclear grid, plus space for final compressed output. Staging
+is removed only after successful NPZ writing; it remains recoverable on failure.
+Use a new outdir for a new run. Recorded `direct_geometry_seconds` measures the
+extra saving cost; no performance equivalence is promised.
+`--no-save-direct-geometry` explicitly disables this new diagnostic.
+
 Harmonic confinement is now an explicit external term by default. **TDPES1/2
 exclude that term; effective TDPES1/2 include it.** No propagation flag changes
 are required. The total TDSE Hamiltonian, initial state and overlap cache remain

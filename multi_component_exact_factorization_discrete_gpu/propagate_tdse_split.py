@@ -159,7 +159,14 @@ def run_split_operator(args, cpu_model, outdir: Path):
         shape=(len(save_steps), n_states, len(cpu_model.q), len(cpu_model.R)),
     )
 
+    from multi_component_exact_factorization.direct_geometry import GeometryRecorder
+    geometry = (GeometryRecorder(outdir, len(save_steps), cpu_model, args.direct_geometry_R_block)
+                if args.save_direct_geometry else None)
+
     def save(step, frame_index):
+        if geometry is not None:
+            # Full spectral Psi, never the truncated BO analysis projection.
+            geometry.save(lambda ids: cp.asnumpy(wavefunction[:, :, cp.asarray(ids)]))
         # ``conj(Psi)*Psi`` creates two full complex128 temporaries.  A
         # complex absolute-value ufunc followed by an in-place square needs
         # only one full float64 density array (half the bytes of Psi).
@@ -370,6 +377,8 @@ def run_split_operator(args, cpu_model, outdir: Path):
     coefficient_stage.flush()
     action_stage.flush()
     payload = {key: np.asarray(value) for key, value in histories.items()}
+    if geometry is not None:
+        payload.update(geometry.payload())
     payload["tdse_coefficients"] = coefficient_stage[:saved_frames]
     payload["tdse_action_coefficients"] = action_stage[:saved_frames]
     payload.update(
@@ -413,6 +422,9 @@ def run_split_operator(args, cpu_model, outdir: Path):
     archive_written = False
     try:
         np.savez_compressed(archive, **payload)
+        if geometry is not None:
+            geometry.cleanup()
+            print(f'Direct geometry diagnostics: {geometry.count} frames; {geometry.seconds:.3f} s; staging consolidated into NPZ')
         archive_written = True
     finally:
         # Close the mmap before removing only our own staging file.
