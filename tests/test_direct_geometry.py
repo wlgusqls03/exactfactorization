@@ -8,6 +8,31 @@ from multi_component_exact_factorization.direct_geometry import direct_geometry_
 
 
 class DirectGeometryTests(unittest.TestCase):
+    def test_random_complex_fields_match_full_grid_reference(self):
+        from multi_component_exact_factorization.direct_geometry import derivative5
+        rng = np.random.default_rng(72)
+        psi = rng.normal(size=(4, 13, 17))+1j*rng.normal(size=(4, 13, 17))
+        dx, dq, dr, mp, mass = .3, .2, .4, 2., 3.
+        rho = np.sum(abs(psi)**2, axis=0)*dx
+        phi = psi/np.sqrt(rho)[None]
+        gamma = psi/np.sqrt(rho.sum(axis=0)*dq)[None, None]
+        expected = {}
+        for key, u, axis, spacing, axes, measure, m in (
+            ('direct_geo1_q', phi, 1, dq, 0, dx, mp),
+            ('direct_geo1_R', phi, 2, dr, 0, dx, mass),
+            ('direct_geo2_R', gamma, 2, dr, (0, 1), dx*dq, mass),
+        ):
+            du = derivative5(u, spacing, axis)
+            inner = np.sum(u.conj()*du, axis=axes, keepdims=True)*measure
+            expected[key] = np.sum(abs(du-u*inner)**2, axis=axes)*measure/(2*m)
+        expected['direct_internal_q_kinetic'] = np.sum(
+            abs(derivative5(gamma, dq, 1))**2, axis=(0, 1))*dx*dq/(2*mp)
+        for block in (1, 3, 8, 17, 23):
+            fields = direct_geometry_frame(lambda ids: psi[:, :, ids], psi.shape,
+                                          dx, dq, dr, mp, mass, block)
+            for key in expected:
+                np.testing.assert_allclose(fields[key], expected[key], rtol=2e-14, atol=1e-14)
+
     def calculate(self, psi, block=3):
         return direct_geometry_frame(lambda ids: psi[:, :, ids], psi.shape,
                                      1., 2*np.pi/psi.shape[1], 2*np.pi/psi.shape[2], 2., 3., block)

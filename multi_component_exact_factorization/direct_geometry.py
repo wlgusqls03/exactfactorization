@@ -41,20 +41,26 @@ def direct_geometry_frame(read_R, shape, dx, dq, dR, proton_mass, heavy_mass, bl
         heavy = rho.sum(axis=0)*dq
         phi = np.divide(psi, np.sqrt(rho)[None], out=np.full_like(psi, np.nan),
                         where=rho[None] > tiny)
-        gamma = np.divide(psi, np.sqrt(heavy)[None, None], out=np.full_like(psi, np.nan),
-                          where=heavy[None, None] > tiny)
         core = slice(2, -2)
         def dR_core(a):
             return (a[:, :, :-4]-8*a[:, :, 1:-3]+8*a[:, :, 3:-1]-a[:, :, 4:])/(12*dR)
         # Project derivatives orthogonally to normalized conditional states:
         # ||(1-|u><u|)du||^2 is nonnegative without cancellation/clipping.
-        for name, derivative, mass in (
-                ('direct_geo1_q', derivative5(phi, dq, 1)[:, :, core], proton_mass),
-                ('direct_geo1_R', dR_core(phi), heavy_mass)):
-            u = phi[:, :, core]
+        u = phi[:, :, core]
+        for name, mass in (('direct_geo1_q', proton_mass),
+                           ('direct_geo1_R', heavy_mass)):
+            # q derivatives never use the R halo. Evaluate one derivative at
+            # a time instead of retaining both large arrays in a tuple.
+            derivative = (derivative5(u, dq, 1) if name == 'direct_geo1_q'
+                          else dR_core(phi))
             inner = np.sum(u.conj()*derivative, axis=0)*dx
             perpendicular = derivative-u*inner[None]
             result[name][:, start:stop] = np.sum(np.abs(perpendicular)**2, axis=0)*dx/(2*mass)
+            del derivative, perpendicular
+        # The two conditional states are never needed simultaneously.
+        del u, phi, inner
+        gamma = np.divide(psi, np.sqrt(heavy)[None, None], out=np.full_like(psi, np.nan),
+                          where=heavy[None, None] > tiny)
         derivative = dR_core(gamma)
         u = gamma[:, :, core]
         inner = np.sum(u.conj()*derivative, axis=(0, 1))*dx*dq
@@ -62,8 +68,9 @@ def direct_geometry_frame(read_R, shape, dx, dq, dR, proton_mass, heavy_mass, bl
             np.abs(derivative-u*inner[None, None])**2, axis=(0, 1))*dx*dq/(2*heavy_mass)
         # The second-level internal q term is kinetic, NOT a pure metric.
         result['direct_internal_q_kinetic'][start:stop] = np.sum(
-            np.abs(derivative5(gamma, dq, 1)[:, :, core])**2,
+            np.abs(derivative5(gamma[:, :, core], dq, 1))**2,
             axis=(0, 1))*dx*dq/(2*proton_mass)
+        del psi, gamma, derivative, u, inner
     return result
 
 
