@@ -51,12 +51,15 @@ def _project_basis_derivative(states, spacing, coordinate_axis, order, dx):
     result = np.empty(shape, dtype=np.result_type(states.dtype, np.float64))
     # Removing the state axis makes q/R axes 1/2 in one electronic state.
     state_axis = coordinate_axis-1
+    # Real BO eigenstates need no conjugated copy. For complex states reuse
+    # one conjugate instead of copying the whole basis for every right state.
+    bra = np.conj(states) if np.iscomplexobj(states) else states
     for right in range(n_states):
         changed = derivative(
             states[right], spacing, axis=state_axis, order=order
         )
         result[:, right] = np.einsum(
-            "lxqr,xqr->lqr", np.conj(states), changed, optimize=True
+            "lxqr,xqr->lqr", bra, changed, optimize=True
         )*dx
     return result
 
@@ -100,8 +103,9 @@ def _fill_forward_links(output, states, coordinate_axis, offset, dx):
             right = np.take(states, indices, axis=3)
         else:
             raise ValueError("BO link coordinate axis must be q(2) or R(3)")
+        bra = np.conj(left) if np.iscomplexobj(left) else left
         output[:, :, :, start:stop] = np.einsum(
-            "axqr,bxqr->abqr", np.conj(left), right, optimize=True
+            "axqr,bxqr->abqr", bra, right, optimize=True
         )*dx
 
 

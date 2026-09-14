@@ -1389,19 +1389,23 @@ def _joint_linear_contours(axis, obs, density, compact=False, *,
     """Thin equally spaced minors and distinct colored decade boundaries."""
     density = np.maximum(np.asarray(density, float), 0.0)
     peak = max(float(np.max(density)), 1.0e-300)
-    absolute = True
-    shown = density if absolute else density/peak
+    shown = density
     cutoff = getattr(args, '_nested_absolute_cutoff', 1e-3)
     upper = max(peak, cutoff*10)
     major, minor = decade_levels(cutoff, upper)
     levels = np.sort(np.r_[major, minor])
-    levels = levels[(levels > np.min(shown)) & (levels < np.max(shown))]
+    levels = levels[(levels > np.min(shown)) & (levels < peak)]
     if not levels.size:
         return SimpleNamespace(collections=[])
-    is_major = [bool(np.any(np.isclose(v, major, rtol=1e-10, atol=0))) for v in levels]
+    is_major = np.any(np.isclose(levels[:, None], major[None, :],
+                                rtol=1e-10, atol=0), axis=1)
     colors = [to_rgba(decade_color(v), .95) if flag else to_rgba(color, .55) for v, flag in zip(levels, is_major)]
     widths = [(0.85 if compact else 1.15) if flag else (0.18 if compact else 0.25) for flag in is_major]
-    indices = np.nonzero(shown >= levels[0])
+    # A bounding box needs occupied rows/columns, not two indices for every
+    # occupied cell. Keep the identical one-cell contour padding.
+    occupied = shown >= levels[0]
+    indices = (np.flatnonzero(np.any(occupied, axis=1)),
+               np.flatnonzero(np.any(occupied, axis=0)))
     crop = tuple(
         slice(max(0, int(index.min())-1), min(size, int(index.max())+2))
         for index, size in zip(indices, shown.shape)

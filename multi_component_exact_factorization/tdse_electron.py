@@ -45,15 +45,21 @@ def electronic_reduced_densities_from_bo(
             "nqR,nxqR->xqR", y_cpu[:, :, start:stop],
             states[:, :, :, start:stop], optimize=True,
         )
-        probability = np.abs(psi_block)**2
-        if electron_marginal:
+        probability = np.abs(psi_block)
+        np.square(probability, out=probability)
+        del psi_block
+        if electron_proton:
+            # Reuse the R integral if both reduced densities are requested.
+            reduced = np.sum(probability, axis=2, dtype=np.float64)*dR/norm
+            result["electron_proton_density"] += reduced
+            if electron_marginal:
+                result["electron_density"] += np.sum(reduced, axis=1)*dq
+            del reduced
+        elif electron_marginal:
             result["electron_density"] += np.sum(
                 probability, axis=(1, 2), dtype=np.float64,
             )*dq*dR/norm
-        if electron_proton:
-            result["electron_proton_density"] += np.sum(
-                probability, axis=2, dtype=np.float64,
-            )*dR/norm
+        del probability
     return result
 
 

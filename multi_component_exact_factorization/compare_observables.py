@@ -37,18 +37,24 @@ def common_frame_indices(reference_times, candidate_times, tolerance):
     return np.asarray(pairs, dtype=int)
 
 
-def _spacing(data, grid_key, density_key):
+def _spacing(data, grid_key, density_key, density=None):
     if grid_key in data.files:
         grid = data[grid_key]
         return float(grid[1]-grid[0])
     # 이전 analysis archive에는 grid가 없었다. 정규화된 첫 density에서 복원한다.
-    return 1.0/float(np.sum(data[density_key][0]))
+    return 1.0/float(np.sum((data[density_key] if density is None else density)[0]))
 
 
 def compare(reference, candidate, time_tolerance_fs=1.0e-9):
     """Return maximum discrepancies at common saved physical times."""
-    ref = np.load(resolve_observables(reference))
-    test = np.load(resolve_observables(candidate))
+    with np.load(resolve_observables(reference)) as ref, np.load(
+        resolve_observables(candidate)
+    ) as test:
+        return _compare_loaded(ref, test, time_tolerance_fs)
+
+
+def _compare_loaded(ref, test, time_tolerance_fs):
+    """Read each compressed density/population member only once."""
     pairs = common_frame_indices(
         ref["times_fs"], test["times_fs"], time_tolerance_fs
     )
@@ -67,20 +73,24 @@ def compare(reference, candidate, time_tolerance_fs=1.0e-9):
         ("x", "electron_density"), ("q", "proton_density"),
         ("R", "heavy_density"),
     ):
-        if ref[density_key].shape[1:] != test[density_key].shape[1:]:
+        reference_density, candidate_density = ref[density_key], test[density_key]
+        if reference_density.shape[1:] != candidate_density.shape[1:]:
             results[f"max_l1_{density_key}"] = np.nan
+            del reference_density, candidate_density
             continue
-        spacing = _spacing(ref, grid_key, density_key)
+        spacing = _spacing(ref, grid_key, density_key, reference_density)
         l1 = np.sum(
-            np.abs(ref[density_key][ir]-test[density_key][it]), axis=1
+            np.abs(reference_density[ir]-candidate_density[it]), axis=1
         )*spacing
         results[f"max_l1_{density_key}"] = float(np.max(l1))
+        del reference_density, candidate_density
 
     if "state_populations" in ref.files and "state_populations" in test.files:
-        states = min(ref["state_populations"].shape[1], test["state_populations"].shape[1])
+        reference_population, candidate_population = ref["state_populations"], test["state_populations"]
+        states = min(reference_population.shape[1], candidate_population.shape[1])
         difference = np.abs(
-            ref["state_populations"][ir, :states]
-            -test["state_populations"][it, :states]
+            reference_population[ir, :states]
+            -candidate_population[it, :states]
         )
         for state in range(states):
             results[f"max_abs_population_{state}"] = float(np.max(difference[:, state]))

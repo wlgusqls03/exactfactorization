@@ -189,8 +189,10 @@ def run(args):
         histories["norm_rate"].append(abs(_scalar(norm_rate)))
         histories["bo_populations"].append(cp.asnumpy(populations))
         histories["joint_density"].append(cp.asnumpy(joint/norm))
-        histories["proton_density"].append(cp.asnumpy(q_density))
-        histories["heavy_density"].append(cp.asnumpy(R_density))
+        q_density_cpu = cp.asnumpy(q_density)
+        R_density_cpu = cp.asnumpy(R_density)
+        histories["proton_density"].append(q_density_cpu)
+        histories["heavy_density"].append(R_density_cpu)
         if args.bo_save_electron_density:
             histories["electron_density"].append(
                 electron_marginal_from_bo(
@@ -204,8 +206,6 @@ def run(args):
         histories["outer_probability_R"].append(_scalar(
             (cp.sum(R_density[:R_edge])+cp.sum(R_density[-R_edge:]))*model.dR
         ))
-        q_density_cpu = cp.asnumpy(q_density)
-        R_density_cpu = cp.asnumpy(R_density)
         q_references = crossing_reference_positions(cpu_model, args, "q")
         R_references = crossing_reference_positions(cpu_model, args, "R")
         q_cross = fixed_center_crossing_probabilities(

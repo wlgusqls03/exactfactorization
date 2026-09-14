@@ -16,6 +16,7 @@ from multi_component_exact_factorization.born_huang import (
     projected_residual_momentum,
     projected_residual_square,
     reconstruct_electronic_grid,
+    _project_basis_derivative,
 )
 from multi_component_exact_factorization.core import (
     build_model, covariant_square, derivative,
@@ -25,6 +26,25 @@ from multi_component_exact_factorization.compare import psi_from_archive
 
 
 class BornHuangOperatorTests(unittest.TestCase):
+    def test_project_basis_reuses_conjugate_without_changing_values(self):
+        rng = np.random.default_rng(71)
+        real = rng.normal(size=(3, 5, 9, 11))
+        for states in (real, real+1j*rng.normal(size=real.shape)):
+            original = states.copy()
+            for axis in (2, 3):
+                for order in (1, 2):
+                    expected = np.stack([
+                        np.einsum('lxqr,xqr->lqr', states.conj(),
+                                  derivative(states[j], .2, axis-1, order))* .3
+                        for j in range(3)
+                    ], axis=1)
+                    with patch('multi_component_exact_factorization.born_huang.np.conj',
+                               wraps=np.conj) as conjugate:
+                        actual = _project_basis_derivative(states, .2, axis, order, .3)
+                    self.assertEqual(conjugate.call_count, int(np.iscomplexobj(states)))
+                    np.testing.assert_allclose(actual, expected, rtol=2e-14, atol=1e-12)
+            np.testing.assert_array_equal(states, original)
+
     def setUp(self):
         self.ns, self.nx, self.nq, self.nR = 3, 5, 17, 13
         self.dq = 2.0*np.pi/self.nq

@@ -8,10 +8,35 @@ from multi_component_exact_factorization_discrete_gpu.compare_tdse import compar
 from multi_component_exact_factorization.tdse_electron import (
     electron_marginal_from_bo,
     electron_proton_density_from_bo,
+    electronic_reduced_densities_from_bo,
 )
 
 
 class DiscreteTDSEComparisonTests(unittest.TestCase):
+    def test_combined_electronic_densities_all_modes_and_blocks(self):
+        rng = np.random.default_rng(82)
+        states = rng.normal(size=(2, 9, 7, 11))+1j*rng.normal(size=(2, 9, 7, 11))
+        y = rng.normal(size=(2, 7, 11))+1j*rng.normal(size=(2, 7, 11))
+        original_y, original_states = y.copy(), states.copy()
+        dq, dr = .2, .3
+        psi = np.einsum('nqR,nxqR->xqR', y, states)
+        norm = np.sum(abs(y)**2)*dq*dr
+        expected_ep = np.sum(abs(psi)**2, axis=2)*dr/norm
+        expected_e = expected_ep.sum(axis=1)*dq
+        for block in (1, 4, 11, 20):
+            for marginal, joint in ((True, True), (True, False), (False, True), (False, False)):
+                result = electronic_reduced_densities_from_bo(
+                    y, states, dq, dr, block, electron_marginal=marginal, electron_proton=joint)
+                self.assertEqual(set(result),
+                    ({'electron_density'} if marginal else set()) |
+                    ({'electron_proton_density'} if joint else set()))
+                if marginal:
+                    np.testing.assert_allclose(result['electron_density'], expected_e, rtol=2e-15)
+                if joint:
+                    np.testing.assert_allclose(result['electron_proton_density'], expected_ep, rtol=2e-15)
+        np.testing.assert_array_equal(y, original_y)
+        np.testing.assert_array_equal(states, original_states)
+
     def test_electron_marginal_matches_direct_grid_contraction(self):
         rng = np.random.default_rng(12)
         states = rng.normal(size=(3, 7, 5, 6))

@@ -5,6 +5,37 @@ from multi_component_exact_factorization import render_final_visualizations as r
 
 
 class DensityContourTests(unittest.TestCase):
+    def test_contour_bounding_box_and_styles_match_cell_index_reference(self):
+        class Capture:
+            def contour(self, *args, **kwargs):
+                return args, kwargs
+        rng = np.random.default_rng(44)
+        q, R = np.arange(37.), np.arange(29.)
+        for density in (rng.random((37, 29))*.2,
+                        np.pad(rng.random((9, 11))*.03, ((7, 21), (8, 10)))):
+            original = density.copy()
+            obs = dict(q=q, R=R)
+            for compact in (True, False):
+                (cq, cr, z), style = render._joint_linear_contours(Capture(), obs, density, compact)
+                major, minor = decade_levels(1e-3, max(density.max(), .01))
+                levels = np.sort(np.r_[major, minor])
+                levels = levels[(levels > density.min()) & (levels < density.max())]
+                indices = np.nonzero(density >= levels[0])
+                crop = tuple(slice(max(0, int(i.min())-1), min(n, int(i.max())+2))
+                             for i, n in zip(indices, density.shape))
+                np.testing.assert_array_equal(cq, q[crop[0]])
+                np.testing.assert_array_equal(cr, R[crop[1]])
+                np.testing.assert_array_equal(z, density[crop].T)
+                np.testing.assert_array_equal(style['levels'], levels)
+                flags = [np.any(np.isclose(v, major, rtol=1e-10, atol=0)) for v in levels]
+                expected_colors = [render.to_rgba(decade_color(v), .95) if f
+                                   else render.to_rgba('black', .55) for v, f in zip(levels, flags)]
+                np.testing.assert_array_equal(style['colors'], expected_colors)
+                self.assertEqual(style['linestyles'], 'solid')
+                self.assertEqual(style['linewidths'], [(.85 if compact else 1.15) if f
+                                 else (.18 if compact else .25) for f in flags])
+            np.testing.assert_array_equal(density, original)
+
     def test_outer_boundary_black_other_decades_unchanged(self):
         self.assertEqual(decade_color(1e-3), 'black')
         self.assertEqual(decade_color(1e-2), '#d89000')
