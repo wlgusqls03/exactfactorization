@@ -14,6 +14,7 @@ import numpy as np
 from .audit_pg_curvature import curvature_terms, heavy_curvature_terms
 from .external_potential import harmonic_potential
 from .report_plot_style import MASK_COLOR, SIGNED_CMAP
+from .tdpes_velocity import overlay as velocity_overlay
 
 TDPES1_ZOOM_BOUND_HA = 0.1
 
@@ -114,6 +115,7 @@ def render_curvature_movies(obs, ef, output, args, snapshots):
                     artist.set_extent((*limits[0], *limits[1]))
                     ax.set(xlim=limits[0], ylim=limits[1])
                     _absolute_overlay(ax, obs, f)
+                    velocity_overlay(ax, obs, ef, f)
             else:
                 rho = obs['heavy_density'][f]
                 support = (rho >= floor*rho.max()) & (rho > 0)

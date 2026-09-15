@@ -22,7 +22,7 @@ class ExternalHarmonicTests(unittest.TestCase):
             obs = tdse_report.calculate_observables(tdse_report.load_observables(
                 Path(directory)/'multi_component_discrete_tdse_gpu.npz'))
             ef = tdse_report._load_ef_fields(obs, field_keys=(
-                'electron_proton_density', 'epsilon_1', 'epsilon_2', 'alpha'))
+                'electron_proton_density', 'epsilon_1', 'epsilon_2', 'alpha', 'a', 'b'))
             ef['alpha'][:] = .001*np.asarray(obs['times_fs'])[:, None]*tdse_report.AU_PER_FS
             obs['options'].update(heavy_trap_alpha=.03, heavy_trap_center=.7)
             V = harmonic_potential(obs['R'], obs['options'])

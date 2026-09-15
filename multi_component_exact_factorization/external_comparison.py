@@ -7,6 +7,7 @@ from matplotlib.colors import Normalize
 
 from .external_potential import harmonic_potential
 from .report_plot_style import SIGNED_CMAP, MASK_COLOR
+from .tdpes_velocity import overlay as velocity_overlay
 
 
 def render_external_comparison(obs, ef, output, args, snapshots):
@@ -58,6 +59,7 @@ def render_external_comparison(obs, ef, output, args, snapshots):
                 im.set_data(np.ma.masked_where(~mask,a)[np.ix_(iq,iR)].T)
                 im.set_extent((*limits[0],*limits[1])); axis.set(xlim=limits[0],ylim=limits[1])
                 _absolute_overlay(axis, obs, f)
+                velocity_overlay(axis, obs, ef, f)
             for line,a in zip(lines,(e2[f],V,e2[f]+V)):
                 line.set_ydata(a)
             occupied = obs['heavy_density'][f]>=args.analysis_focus_floor*obs['heavy_density'][f].max()

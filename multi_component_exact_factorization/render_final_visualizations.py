@@ -28,6 +28,7 @@ from matplotlib.lines import Line2D
 from .density_contours import decade_levels, decade_color, automatic_absolute_cutoff
 
 from . import tdse_collision_report, tdse_report
+from .tdpes_velocity import overlay as velocity_overlay
 from .external_potential import harmonic_center, harmonic_potential, effective_scalar
 from .render_all import find_archive, resolve_run_input
 from .report_plot_style import (
@@ -1521,6 +1522,7 @@ def _draw_nested_composite(fig, axes, obs, ef_positive, prep, frame, args, *,
         r"Effective TDPES1 $\epsilon_{\rm PG}^{(1)}+V_{\rm ext}^{R}$ + density contours",
         loc="left", fontweight="semibold", fontsize=(6.2 if compact else 10),
     )
+    velocity_overlay(axes['epsilon_1'], obs, ef_positive, frame)
     absolute = getattr(args, '_nested_contour_mode', 'relative') == 'absolute'
     cutoff = args._nested_absolute_cutoff if absolute else args.analysis_focus_floor
     major, _ = decade_levels(cutoff, args._nested_absolute_upper if absolute else 1.0)
@@ -1628,6 +1630,7 @@ def _update_nested_composite(state, obs, ef_positive, prep, frame, args):
         state["axes"][axis_name].set_xlim(joint_limits[0])
         state["axes"][axis_name].set_ylim(joint_limits[1])
     state["axes"]["epsilon_2"].set_xlim(heavy_limits)
+    velocity_overlay(state['axes']['epsilon_1'], obs, ef_positive, frame)
     for collection in state["contours"].collections:
         collection.remove()
     state["contours"] = _joint_linear_contours(
@@ -2787,6 +2790,8 @@ def _draw_tdpes1_origin(fig, axes, obs, ef_zero, prep, frame, colorbars=True,
         if colorbar_axis is None:
             raise ValueError("TDPES origin colorbar requires a dedicated axis")
         _tdpes1_colorbar(fig, prep, colorbar_axis)
+    for axis in axes:
+        velocity_overlay(axis, obs, ef_zero, frame)
     return {"images": images, "contours": contours}
 
 
@@ -2819,6 +2824,7 @@ def _update_tdpes1_origin(state, axes, obs, ef_zero, prep, frame):
         state["contours"][index] = _joint_linear_contours(axis, obs, obs['joint_density'][frame])
         artists.append(image)
         artists.extend(state["contours"][index].collections)
+        artists.append(velocity_overlay(axis, obs, ef_zero, frame))
     return artists
 
 
@@ -3577,6 +3583,8 @@ def _draw_tdpes_geometry(fig, axes, obs, ef_positive, prep, frame,
         bar.update_ticks()
         bar.set_label("geometry energy (Hartree; shared log scale)")
         bar.ax.tick_params(labelsize=7)
+    for axis in axes[:2]:
+        velocity_overlay(axis, obs, ef_positive, frame)
     return {"images": images, "contours": contours, "lines": lines}
 
 
@@ -3611,6 +3619,7 @@ def _update_tdpes_geometry(state, axes, obs, ef_positive, prep, frame):
             axis, obs, obs['joint_density'][frame])
         artists.append(image)
         artists.extend(state["contours"][index].collections)
+        artists.append(velocity_overlay(axis, obs, ef_positive, frame))
     active1d, _, limits1d = _frame_heavy_focus(
         obs, frame, prep["focus_floor"],
     )
@@ -3752,6 +3761,8 @@ def run(args):
         complete = {level: all(key in decomposition_keys for key in keys)
                     for level, keys in stored_components.items()}
         field_keys = []
+        if any(name in selected for name in ('nested', 'tdpes1', 'geometry', 'external', 'curvature')):
+            field_keys.extend(('a', 'b'))
         if 'external' in selected or 'curvature' in selected:
             for level in (1,2):
                 key = f'tdpes{level}_total'
@@ -4013,6 +4024,8 @@ def run(args):
                 f"{nested_prep['conditional_vmax']:.16g}"
             ),
             "epsilon_1_overlay=physical_joint_density_decade_contours",
+            "tdpes1_velocity_overlay=shared_mechanical_velocity_(Kq/mp,KR/M);not_force",
+            "tdpes1_velocity_sampling=38x18;absolute_density_cutoff=1e-3;trajectory_fixed_calibration",
             f"nested_density_contour_modes={','.join(nested_prep['contour_modes'])}",
             f"nested_absolute_density_cutoff={nested_prep['absolute_density_cutoff']:.16g}",
             "nested_density_contour_style=colored_decades_black_5percent_minor_final_decade_half",

@@ -149,3 +149,33 @@ cache and fused overlap-link CUDA kernel, and records both spatial
 recombination and RK4 temporal-consistency residuals.  See
 `multi_component_exact_factorization_discrete_gpu/README.md` for validation,
 smoke-run and rendering commands.
+# Shared TDPES1 velocity arrows
+
+All 2D TDPES1 panels in `render_final_visualizations` now use the same
+density-supported physical velocity overlay: nested analysis, TDPES1 origin
+(all six contributions), first-level geometry, PG curvature (including zoom),
+and external harmonic comparison. Standard TDSE exact-field/all-potential
+reports and GI/GD decomposition use the same helper as well.
+
+Arrows mean `(K_q/m_p, K_R/M)`, not a force or the response to an individual
+potential term. PG connections are used as mechanical momenta; zero-gauge
+reports use the retained mechanical-momentum arrays, never transformed `a=0`.
+The common sample grid is 38×18 before masking, with absolute joint density
+cutoff `1e-3 a0^-2`. A single trajectory-wide speed calibration is reused across
+panels. Green arrows, thin white outlines, and fixed speed-to-length scaling
+follow the approved preview. Compact panels scale glyphs proportionally;
+the actual velocities are unchanged. Axis changes affect direction on screen
+but do not normalize each arrow's physical speed.
+
+Re-render just the affected final products (no propagation or EF rebuild):
+
+```bash
+python -m multi_component_exact_factorization.render_final_visualizations \
+  results/20260909 --only nested tdpes1 geometry external curvature \
+  --max-frames 415 --fps 12 --snapshot-count 8 --dpi 150 --animation-dpi 120
+```
+
+Omit `--only ...` to regenerate the entire final set. Existing MP4/PNG files
+are not changed until re-rendered. The field loader now requests `a,b` even
+when only a scalar product is selected. `tdpes_velocity.py` owns the shared
+sampling, masking, calibration and reusable artist; it does not alter NPZs.

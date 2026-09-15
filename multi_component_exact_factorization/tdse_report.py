@@ -40,6 +40,7 @@ from .marginal_movie import (
     make_relative_log_marginal_animation,
 )
 from .coordinate_focus_movie import make_coordinate_focus_animation
+from .tdpes_velocity import overlay as velocity_overlay
 
 
 _REQUIRED = (
@@ -1620,7 +1621,7 @@ def _scaled_heavy_density(axis, coordinate, density):
     return line
 
 
-def _draw_ef_maps(fig, axes, item, obs, limits):
+def _draw_ef_maps(fig, axes, item, obs, limits, ef, frame):
     q, R = obs["q"], obs["R"]
     extent = [q[0], q[-1], R[0], R[-1]]
     images = []
@@ -1643,6 +1644,7 @@ def _draw_ef_maps(fig, axes, item, obs, limits):
             image, ax=ax, pad=0.01, format=NUMBER_FORMATTER, extend="both"
         )
         images.append((image, key))
+    velocity_overlay(axes[0, 0], obs, ef, frame)
     return images
 
 
@@ -1651,7 +1653,7 @@ def plot_exact_factorization_fields(obs, ef, outdir, dpi, frame=-1):
     item = _ef_frame(obs, ef, frame)
     q, R = obs["q"], obs["R"]
     fig, axes = plt.subplots(2, 3, figsize=(15.8, 8.7), constrained_layout=True)
-    _draw_ef_maps(fig, axes, item, obs, limits)
+    _draw_ef_maps(fig, axes, item, obs, limits, ef, frame)
     eps_line, _ = _support_tail_lines(
         axes[1, 0], R, item["eps2"], item["eps2_full"], item["heavy_support"],
         color=COLORS[0], label=r"$\epsilon^{(2)}$", linewidth=2.0,
@@ -1994,6 +1996,8 @@ def _draw_tdpes_decomposition(
         tails.append(tail)
         bo_axes.append(bo_axis)
         bo_lines.append(local_bo_lines)
+    for axis in axes[0]:
+        velocity_overlay(axis, obs, ef, frame)
     return figure, axes, current, images, lines, tails, bo_axes, bo_lines
 
 
@@ -2059,6 +2063,7 @@ def make_tdpes_decomposition_animation(
         for image, key in images:
             image.set_data(current[key].T)
             image.set_alpha(current["density_alpha"].T)
+            velocity_overlay(image.axes, obs, ef, frame)
         for line, tail, key in zip(
             lines, tails, _TDPES_COMPONENT_KEYS[3:],
         ):
@@ -2111,7 +2116,7 @@ def make_exact_field_animation(obs, ef, outdir, fps, max_frames, dpi, fmt):
     first_item = _ef_frame(obs, ef, first)
     R = obs["R"]
     fig, axes = plt.subplots(2, 3, figsize=(15.8, 8.7), constrained_layout=True)
-    images = _draw_ef_maps(fig, axes, first_item, obs, limits)
+    images = _draw_ef_maps(fig, axes, first_item, obs, limits, ef, first)
     eps_line, eps_tail = _support_tail_lines(
         axes[1, 0], R, first_item["eps2"], first_item["eps2_full"], first_item["heavy_support"],
         color=COLORS[0], label=r"$\epsilon^{(2)}$", linewidth=2.0,
@@ -2166,6 +2171,8 @@ def make_exact_field_animation(obs, ef, outdir, fps, max_frames, dpi, fmt):
         for image, key in images:
             image.set_data(item[f"{key}_full"].T)
             image.set_alpha(item["density_alpha"].T)
+            if key == 'eps1':
+                velocity_overlay(image.axes, obs, ef, frame)
         eps_line.set_ydata(item["eps2"])
         eps_tail.set_ydata(np.where(~item["heavy_support"], item["eps2_full"], np.nan))
         density_line.set_ydata(item["heavy"]/max(float(np.max(item["heavy"])), 1.0e-300))
@@ -2235,7 +2242,7 @@ def make_all_exact_potentials_animation(
     fig, axes = plt.subplots(
         2, 3, figsize=(16.4, 9.2), constrained_layout=True,
     )
-    map_images = _draw_ef_maps(fig, axes, item, obs, limits)
+    map_images = _draw_ef_maps(fig, axes, item, obs, limits, ef, first)
 
     # epsilon^(2) and alpha share R but not units, so use colored twin axes.
     eps_axis = axes[1, 0]
@@ -2362,6 +2369,8 @@ def make_all_exact_potentials_animation(
         for image, key in map_images:
             image.set_data(current[f"{key}_full"].T)
             image.set_alpha(current["density_alpha"].T)
+            if key == 'eps1':
+                velocity_overlay(image.axes, obs, ef, frame)
         eps_line.set_ydata(current["eps2"])
         eps_tail.set_ydata(np.where(
             ~current["heavy_support"], current["eps2_full"], np.nan
