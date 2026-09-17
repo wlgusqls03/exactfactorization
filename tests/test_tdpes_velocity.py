@@ -34,7 +34,7 @@ class VelocityOverlayTests(unittest.TestCase):
         self.assertFalse(np.allclose(one.angles, two.angles))
         np.testing.assert_allclose(one.U[~one.Umask], np.sqrt(5.))
         self.assertTrue(np.any(one.Umask))
-        self.assertEqual(one.N, 38*18)
+        self.assertEqual(one.N, 42*20)
 
     def test_updates_do_not_accumulate_and_zero_speed_is_finite(self):
         self.ef['a'][1] = 0

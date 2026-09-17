@@ -7,9 +7,10 @@ import numpy as np
 from matplotlib.quiver import Quiver
 
 DENSITY_FLOOR = 1e-3
-Q_POINTS, R_POINTS = 38, 18
-REFERENCE_LENGTH = .21875  # inches, approved standalone preview
-SHAFT_WIDTH = .020625
+Q_POINTS, R_POINTS = 42, 20
+# Slightly larger (+10%) and closer-spaced than the original approved preview.
+REFERENCE_LENGTH = .240625  # inches at the reference speed
+SHAFT_WIDTH = .0226875
 
 
 class FlowQuiver(Quiver):

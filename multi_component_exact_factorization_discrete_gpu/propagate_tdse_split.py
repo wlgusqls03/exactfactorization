@@ -162,6 +162,12 @@ def run_split_operator(args, cpu_model, outdir: Path):
     from multi_component_exact_factorization.direct_geometry import GeometryRecorder
     geometry = (GeometryRecorder(outdir, len(save_steps), cpu_model, args.direct_geometry_R_block)
                 if args.save_direct_geometry else None)
+    coupling = None
+    if getattr(args, 'save_coupled_actions', False):
+        from multi_component_exact_factorization.coupled_actions import CoupledActionRecorder
+        coupling = CoupledActionRecorder(outdir, len(save_steps), cpu_model,
+            block_R=args.coupled_actions_R_block, map_stride=args.coupled_actions_map_stride,
+            electronic_method='spectral', source='full_grid_Psi_not_BO_projected')
 
     def save(step, frame_index):
         if geometry is not None:
@@ -199,6 +205,10 @@ def run_split_operator(args, cpu_model, outdir: Path):
             wavefunction, norm=norm_gpu,
             potential_energy=potential_energy_gpu,
         )
+        if coupling is not None:
+            coupling.save(step*args.dt_au/AU_PER_FS,
+                lambda ids: cp.asnumpy(wavefunction[:, :, cp.asarray(ids)]),
+                lambda ids: cp.asnumpy(full_action[:, :, cp.asarray(ids)]))
         # CuPy 11.6 vdot uses tensordot_core and materializes a full complex
         # product on this server.  The bounded custom reduction stores only
         # <=4096 complex partial sums instead of another 2.146-GiB array.
@@ -436,6 +446,8 @@ def run_split_operator(args, cpu_model, outdir: Path):
         if archive_written and action_stage_path.exists():
             action_stage_path.unlink()
     status_name = "completed" if completed else ("interrupted" if interrupted else "failed")
+    if coupling is not None:
+        coupling.finish()
     (outdir/"propagation_status.log").write_text(
         f"status={status_name}\narchive={archive}\n"
         f"last_saved_time_fs={payload['times_fs'][-1]:.12g}\n"

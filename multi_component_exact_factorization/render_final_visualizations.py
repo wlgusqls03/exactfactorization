@@ -49,7 +49,7 @@ from .visualize import NUMBER_FORMATTER, selected_frames
 
 FINAL_PRODUCTS = (
     "marginal", "joint", "velocity", "vector", "current", "nested",
-    "heavy", "bo", "bo3d", "bo_local", "tdpes1", "tdpes2", "geometry", "external", "curvature",
+    "heavy", "bo", "bo3d", "bo_local", "tdpes1", "tdpes2", "geometry", "external", "curvature", "coupling",
 )
 
 
@@ -3707,6 +3707,11 @@ def run(args):
     )
     output.mkdir(parents=True, exist_ok=True)
     selected = tuple(args.only or FINAL_PRODUCTS)
+    action_cache = run_dir/'coupled_action_diagnostics.npz'
+    if not action_cache.exists():
+        action_cache = run_dir/'coupled_action_analysis'/'coupled_action_diagnostics.npz'
+    if args.only is None and action_cache.exists():
+        selected += ('six_coupling',)
     snapshots = _snapshot_frames(obs, args.snapshot_count)
     print(
         f"final visualization: archive={archive}; output={output}; "
@@ -3720,6 +3725,9 @@ def run(args):
     )
 
     products = []
+    if 'six_coupling' in selected:
+        from .coupled_action_report import render as render_six_actions
+        products.extend(render_six_actions(action_cache, output, args))
     if "marginal" in selected:
         products.extend(render_marginal_time_position(obs, output, args, snapshots))
     if "joint" in selected:
@@ -3729,7 +3737,7 @@ def run(args):
         name in selected
         for name in (
             "velocity", "vector", "current", "nested", "heavy", "bo",
-            "bo3d", "bo_local", "tdpes1", "tdpes2", "geometry", "external", "curvature",
+            "bo3d", "bo_local", "tdpes1", "tdpes2", "geometry", "external", "curvature", "coupling",
         )
     )
     ef = None
@@ -3761,6 +3769,8 @@ def run(args):
         complete = {level: all(key in decomposition_keys for key in keys)
                     for level, keys in stored_components.items()}
         field_keys = []
+        if 'coupling' in selected:
+            field_keys.extend(('b', 'alpha'))
         if any(name in selected for name in ('nested', 'tdpes1', 'geometry', 'external', 'curvature')):
             field_keys.extend(('a', 'b'))
         if 'external' in selected or 'curvature' in selected:
@@ -3840,6 +3850,9 @@ def run(args):
             )
 
     velocity_prep = None
+    if 'coupling' in selected:
+        from .coupling_diagnostics import render_coupling_diagnostics
+        products.extend(render_coupling_diagnostics(obs, ef, output, args, snapshots))
     if 'curvature' in selected:
         from .curvature_movies import render_curvature_movies
         products.extend(render_curvature_movies(obs, ef, output, args, snapshots))
@@ -4169,7 +4182,7 @@ def parse_args(argv=None):
         help="default: RUN_DIRECTORY/report/final_visualizations",
     )
     parser.add_argument(
-        "--only", nargs="+", choices=FINAL_PRODUCTS,
+        "--only", nargs="+", choices=FINAL_PRODUCTS+('six_coupling',),
         help="render only selected product groups",
     )
     parser.add_argument("--format", choices=("mp4", "gif"), default="mp4")

@@ -96,7 +96,8 @@ def run(args):
     y_cpu = c_cpu*(lam_cpu*chi_cpu[None, :])[None, :, :]
     model = make_discrete_gpu_model(cpu_model)
     basis = to_gpu_basis(basis_cpu, model, args.bo_link_kernel)
-    compact_states = basis_cpu.states if (args.bo_save_electron_density or args.save_direct_geometry) else None
+    compact_states = basis_cpu.states if (args.bo_save_electron_density or args.save_direct_geometry
+                                         or getattr(args, 'save_coupled_actions', False)) else None
     y = cp.ascontiguousarray(cp.asarray(y_cpu, dtype=cp.complex128))
     # Eigenstates are not needed after initial projection.  Keep only the
     # immutable energies and links already uploaded by to_gpu_basis().
@@ -149,6 +150,12 @@ def run(args):
                 if args.save_direct_geometry else None)
     if geometry is not None:
         print('Saved-frame geometry: coherent Psi direct central-5 derivatives; no overlap S; CPU R blocks')
+    coupling = None
+    if getattr(args, 'save_coupled_actions', False):
+        from multi_component_exact_factorization.coupled_actions import CoupledActionRecorder
+        coupling = CoupledActionRecorder(outdir, len(save_steps)+1, cpu_model,
+            block_R=args.coupled_actions_R_block, map_stride=args.coupled_actions_map_stride,
+            source='coherent_BO_propagated_state')
 
     def save(step):
         action = discrete_tdse_action_gpu(y, model, basis)
@@ -176,6 +183,11 @@ def run(args):
         q_edge = min(5, len(cpu_model.q)//2)
         R_edge = min(5, len(cpu_model.R)//2)
         y_out = cp.asnumpy(y)
+        if coupling is not None:
+            action_out = cp.asnumpy(action)
+            coupling.save(step*args.dt_au/AU_PER_FS,
+                lambda ids: np.einsum('nqR,nxqR->xqR', y_out[:, :, ids], compact_states[:, :, :, ids], optimize=True),
+                lambda ids: np.einsum('nqR,nxqR->xqR', action_out[:, :, ids], compact_states[:, :, :, ids], optimize=True))
         if geometry is not None:
             geometry.save(lambda ids: np.einsum(
                 'nqR,nxqR->xqR', y_out[:, :, ids], compact_states[:, :, :, ids], optimize=True))
@@ -329,6 +341,8 @@ def run(args):
     )
     archive = outdir/"multi_component_discrete_tdse_gpu.npz"
     np.savez_compressed(archive, **payload)
+    if coupling is not None:
+        coupling.finish()
     if geometry is not None:
         geometry.cleanup()
         print(f'Direct geometry diagnostics: {geometry.count} frames; {geometry.seconds:.3f} s; staging consolidated into NPZ')
@@ -437,6 +451,11 @@ def parse_args(argv=None):
     parser.add_argument('--no-save-direct-geometry', dest='save_direct_geometry', action='store_false',
                         help='skip saved-frame direct-Psi derivative geometry diagnostics')
     parser.add_argument('--direct-geometry-R-block', dest='direct_geometry_R_block', type=int, default=8)
+    parser.add_argument('--save-coupled-actions', action='store_true',
+                        help='optional CPU blockwise six-action PG diagnostics at saved frames; adds analysis cost')
+    parser.add_argument('--coupled-actions-R-block', type=int, default=4)
+    parser.add_argument('--coupled-actions-map-stride', type=int, default=2,
+                        help='decimate saved diagnostic maps only; statistics use full resolution')
     parser.add_argument("--tdse-projection-R-block", type=int, default=8)
     parser.add_argument("--tdse-q-fft-R-block", type=int, default=64)
     parser.add_argument("--tdse-R-fft-x-block", type=int, default=32)
@@ -459,6 +478,8 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if args.direct_geometry_R_block < 1:
         parser.error('--direct-geometry-R-block must be positive')
+    if min(args.coupled_actions_R_block, args.coupled_actions_map_stride) < 1:
+        parser.error('coupled-action block and map stride must be positive')
     if args.dt_au <= 0.0 or args.t_final_fs < 0.0:
         parser.error("dt must be positive and final time nonnegative")
     if not np.isfinite(args.step_sleep_ms) or args.step_sleep_ms < 0.0:
