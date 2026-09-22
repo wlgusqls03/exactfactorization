@@ -3707,6 +3707,8 @@ def run(args):
     )
     output.mkdir(parents=True, exist_ok=True)
     selected = tuple(args.only or FINAL_PRODUCTS)
+    if getattr(args, 'with_proton_heavy', False) and 'proton_heavy' not in selected:
+        selected += ('proton_heavy',)
     action_cache = run_dir/'coupled_action_diagnostics.npz'
     if not action_cache.exists():
         action_cache = run_dir/'coupled_action_analysis'/'coupled_action_diagnostics.npz'
@@ -3737,7 +3739,7 @@ def run(args):
         name in selected
         for name in (
             "velocity", "vector", "current", "nested", "heavy", "bo",
-            "bo3d", "bo_local", "tdpes1", "tdpes2", "geometry", "external", "curvature", "coupling",
+            "bo3d", "bo_local", "tdpes1", "tdpes2", "geometry", "external", "curvature", "coupling", "proton_heavy",
         )
     )
     ef = None
@@ -3771,6 +3773,8 @@ def run(args):
         field_keys = []
         if 'coupling' in selected:
             field_keys.extend(('b', 'alpha'))
+        if 'proton_heavy' in selected:
+            field_keys.extend(('a', 'b', 'alpha'))
         if any(name in selected for name in ('nested', 'tdpes1', 'geometry', 'external', 'curvature')):
             field_keys.extend(('a', 'b'))
         if 'external' in selected or 'curvature' in selected:
@@ -3850,6 +3854,9 @@ def run(args):
             )
 
     velocity_prep = None
+    if 'proton_heavy' in selected:
+        from .proton_heavy_report import render_proton_heavy
+        products.extend(render_proton_heavy(obs, ef, output, args, snapshots))
     if 'coupling' in selected:
         from .coupling_diagnostics import render_coupling_diagnostics
         products.extend(render_coupling_diagnostics(obs, ef, output, args, snapshots))
@@ -4182,7 +4189,7 @@ def parse_args(argv=None):
         help="default: RUN_DIRECTORY/report/final_visualizations",
     )
     parser.add_argument(
-        "--only", nargs="+", choices=FINAL_PRODUCTS+('six_coupling',),
+        "--only", nargs="+", choices=FINAL_PRODUCTS+('six_coupling','proton_heavy'),
         help="render only selected product groups",
     )
     parser.add_argument("--format", choices=("mp4", "gif"), default="mp4")
@@ -4250,10 +4257,29 @@ def parse_args(argv=None):
         ),
     )
     parser.add_argument("--no-animation", action="store_true")
+    parser.add_argument('--with-proton-heavy', action='store_true',
+                        help='append expanded proton-heavy analysis to the selected/full report')
+    parser.add_argument('--ph-density-floor', type=float, default=1e-3,
+                        help='expanded proton-heavy absolute joint-density mask (a0^-2)')
+    parser.add_argument('--ph-heavy-floor', type=float, default=1e-12,
+                        help='expanded proton-heavy division safety floor for rho_R (a0^-1)')
+    parser.add_argument('--ph-q-split', type=float, default=0.,
+                        help='coordinate partition for conditional right-side population (a0)')
+    parser.add_argument('--ph-map-stride', type=int, default=2,
+                        help='decimate displayed/saved snapshot maps AFTER full-grid derivatives')
+    parser.add_argument('--ph-color-quantile', type=float, default=.995,
+                        help='fixed expanded-PG color envelope quantile; 1 uses full extrema')
+    parser.add_argument('--ph-groups', nargs='+', choices=(
+        'state','density','real_terms','imag_terms','sums','relative','closure'),
+        help='expanded proton-heavy figure groups; default all seven')
     parser.add_argument('--nested-density-contours', choices=('absolute',), default='absolute')
     parser.add_argument('--nested-absolute-density-floor', type=float, choices=(1e-3,), default=1e-3,
                         help='shared fixed joint-density cutoff: 1e-3 a0^-2')
     args = parser.parse_args(argv)
+    if not np.isfinite(args.ph_q_split):
+        parser.error('--ph-q-split must be finite')
+    if not 0 < args.ph_color_quantile <= 1:
+        parser.error('--ph-color-quantile must lie in (0,1]')
     if args.nested_absolute_density_floor is not None and (
             not np.isfinite(args.nested_absolute_density_floor) or args.nested_absolute_density_floor <= 0):
         parser.error('--nested-absolute-density-floor must be finite and positive')
@@ -4267,6 +4293,7 @@ def parse_args(argv=None):
         "movie_bo3d_q_points", "movie_bo3d_R_points",
         "tdpes_contour_q_points", "tdpes_contour_R_points",
         "scale_sample_frames", "geometry_decades",
+        "ph_density_floor", "ph_heavy_floor", "ph_map_stride",
     )
     for name in positive:
         if not np.isfinite(getattr(args, name)) or getattr(args, name) <= 0:
