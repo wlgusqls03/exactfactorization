@@ -10,14 +10,19 @@ from .phase6_gpu_backend import PFBackend
 from .run_phase6_gpu import save_json
 
 
-def ground_pair(eigsh, operator, initial):
-    """Do not pass v0 to older CuPy; do not swallow solver TypeErrors."""
-    options = dict(k=1, which='SA', tol=1e-11, maxiter=20000)
+def ground_pair(eigsh, negative_operator, initial):
+    """Largest algebraic eigenpair of -H gives the ground eigenpair of H.
+
+    LA is supported by old and new CuPy. LM is NOT equivalent: the largest
+    magnitude eigenvalue may correspond to a high-energy state of H.
+    Only eigensolver initialization changes when v0 is unavailable.
+    """
+    options = dict(k=1, which='LA', tol=1e-11, maxiter=20000)
     supported = 'v0' in inspect.signature(eigsh).parameters
     if supported:
         options['v0'] = initial
-    values, vectors = eigsh(operator, **options)
-    return values, vectors, supported
+    values, vectors = eigsh(negative_operator, **options)
+    return -values, vectors, supported
 
 
 def stationary(packet, out, device=0, gpu=True):
@@ -35,7 +40,7 @@ def stationary(packet, out, device=0, gpu=True):
              rotation=np.ones((1,1)), displacement=np.zeros(1))
     h = PFBackend(p,.125,gpu,device); xp=h.xp
     op = LinearOperator((p['psi'].size,)*2,
-        matvec=lambda v:h.action(v.reshape(h.shape)).ravel(), dtype=xp.complex128)
+        matvec=lambda v:-h.action(v.reshape(h.shape)).ravel(), dtype=xp.complex128)
     eigenvalues, vectors, used_v0 = ground_pair(eigsh,op,xp.asarray(p['psi']).ravel())
     u = vectors[:,0].reshape(h.shape)/np.sqrt(h.volume)
     residual = float(h.host(xp.linalg.norm(h.action(u)-eigenvalues[0]*u)))*np.sqrt(h.volume)
@@ -49,6 +54,7 @@ def stationary(packet, out, device=0, gpu=True):
     save_json(out,dict(status='PASS' if passed else 'FAIL',eigen_residual=residual,
         density_L1=l1,final_norm=final['norm'],energy_drift=final['energy']-initial['energy'],
         steps=128,dt=.125,eigensolver_uses_v0=used_v0,
+        eigensolver_target='LA of -H; eigenvalue sign restored; residual and propagation use H',
         scope='Full selected production x,R grid; exact eta=0 n=0 sector, not coupled GS'))
     if not passed:
         raise RuntimeError('Stationary validation failed; results preserved')
