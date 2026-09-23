@@ -13,12 +13,11 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.animation import FFMpegWriter
-from scipy.signal import find_peaks
 from scipy.integrate import cumulative_trapezoid
 from .phase7_pilot_baseline import INPUT,digest
 from .phase7_native import bare_action
+from .phase7_transfer_utils import events,AU_FS
 
-AU_FS=0.024188843265857
 HA_EV=27.211386245988
 COLORS=['#2463A6','#D65B35','#6D529D']
 LABELS=['Uncoupled', 'Well resonance · 170.6 meV', 'Barrier frequency · 161.77 meV']
@@ -34,18 +33,6 @@ def common_times(series):
     common=np.array(sorted(set.intersection(*keys)))
     if len(common)<3:raise ValueError('At least three common saved times required for a movie')
     return common,[np.array([np.flatnonzero(abs(s['time_au']-t)<1e-8)[0] for t in common]) for s in series]
-
-
-def events(time,product,flux):
-    """First resolved local signed-flux maxima plus global max population."""
-    forward=find_peaks(flux)[0];back=find_peaks(-flux)[0]
-    forward=forward[flux[forward]>0];back=back[flux[back]<0]
-    # Exclude roundoff-only early maxima; relative threshold is documented.
-    forward=forward[flux[forward]>.01*np.max(flux)] if len(forward) else forward
-    back=back[-flux[back]>.01*np.max(-flux)] if len(back) else back
-    return {'initial':0,'first_forward_peak':int(forward[0]) if len(forward) else None,
-            'first_backward_peak':int(back[0]) if len(back) else None,
-            'max_product':int(np.argmax(product)),'final':len(time)-1}
 
 
 def load_case(case,folder,manifest):

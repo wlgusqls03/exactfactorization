@@ -10,8 +10,7 @@ from pathlib import Path
 import shutil
 import tarfile
 import numpy as np
-from .phase7_pilot_baseline import digest
-from .phase7_reaction_media import events,AU_FS
+from .phase7_transfer_utils import digest,events,AU_FS
 
 RUNS={
  'free':'free_recovery_campaign_v1/free_L36_dx0.3/full',

@@ -6,31 +6,31 @@ remain unchanged and NOT PASS.
 
 ## Implemented code
 
-`phase7_reaction_media.py lines 31–36`: intersect actual saved atomic-unit
+`phase7_reaction_media.py lines 30–35`: intersect actual saved atomic-unit
 times, no temporal interpolation. Fewer than three common times is an error.
 
-`phase7_reaction_media.py lines 39–48`: identify first signed local flux
+`phase7_transfer_utils.py lines 18–26`: identify first signed local flux
 extrema above 1% of that sign's global peak, maximum product, endpoints.
 This is a declared event-selection threshold, not a physical parameter.
 
-`phase7_reaction_media.py lines 51–75`: load `(time,R)` densities/current and
+`phase7_reaction_media.py lines 38–62`: load `(time,R)` densities/current and
 `(time,)` observables; verify SHA packet association, finite values, monotone
 time, norm and product integrals. Reuses Phase7 `bare_action` and packet BO
 ground states to draw the static bare PES. No new dynamics or model fitting.
 
-`phase7_reaction_media.py lines 78–101`: cached Phase2 eigenvalues and photon/
+`phase7_reaction_media.py lines 65–88`: cached Phase2 eigenvalues and photon/
 vibrational transition doorway strengths. Each channel is normalized within
 the original vibrational energy window, not converted into Hopfield weights.
 Markers have horizontal offsets +/-0.8 meV solely for readability; physical
 pair energies and splitting remain unchanged in the manifest. The two
 uncoupled transitions have anharmonic detuning, not a Rabi splitting.
 
-`phase7_reaction_media.py lines 104–185`: fixed-scale 1600x900 movie with
+`phase7_reaction_media.py lines 91–172`: fixed-scale 1600x900 movie with
 three nuclear densities, product population, signed flux, photon occupation.
 Snapshots use the same plots/times. All data are actual saved observables;
 no classical point trajectory or invented interpolated TDPES is drawn.
 
-`phase7_wave_inventory.py lines 22–76`: read-only server wave inventory and
+`phase7_wave_inventory.py lines 21–75`: read-only server wave inventory and
 optional event-frame archive. No propagation/delete/overwrite. Selects a
 saved wave within 0.5 fs of each event; reports actual time deviation.
 Initial/final frames already supplied are not duplicated. Files too far
@@ -122,3 +122,16 @@ no fabricated recrossing, and archive preservation. Density/product/norm
 cross-checks passed for all three 414-frame series. ffprobe independently
 confirmed actual video frame count, dimensions, codec and duration.
 Existing MCEF and historical Phase1–6 files were not edited.
+
+## Server portability fix
+
+The original inventory imported `digest` through `phase7_pilot_baseline`,
+which unnecessarily imported local-only `phase567_integrity`. It also
+imported the renderer for event selection. This prevented execution on the
+server even after git pull. The exporter now depends only on committed
+`phase7_transfer_utils.py`, standard-library modules, NumPy and SciPy.
+No plots, audit baseline, local archives, or extra tar bundle are needed.
+Seven transfer/media tests pass, including a subprocess with only the two
+exporter source files present, exercising actual event selection and packing.
+Event selection and hashes are unchanged. Publish the fix with git push
+before pulling it on the server; no propagation or data regeneration needed.
