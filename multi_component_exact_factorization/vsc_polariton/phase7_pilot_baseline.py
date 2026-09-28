@@ -5,8 +5,6 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-from .phase567_integrity import verify
-from .phase567_smoke import smoke
 
 INPUT=Path('results/vsc_polariton/phase7/results/phase7_pilot_inputs')
 OUTPUT=Path('results/vsc_polariton/phase7/pilot_v1')
@@ -20,6 +18,10 @@ def digest(path):
 
 
 def main():
+    # Read-only utilities/constants are also used by portable server tools.
+    # Local historical audit dependencies belong only to baseline execution.
+    from .phase567_integrity import verify
+    from .phase567_smoke import smoke
     out=OUTPUT/'baseline';out.mkdir(parents=True,exist_ok=False)
     git={key:subprocess.check_output(['git']+args,text=True) for key,args in
          [('head',['rev-parse','HEAD']),('status',['status','--short']),
