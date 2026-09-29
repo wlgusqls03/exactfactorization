@@ -10,6 +10,7 @@ from matplotlib.ticker import ScalarFormatter
 from .proton_heavy_terms import (TermConfig, conditional_density, time_rate,
                                 frame_terms, summarize_frame, peak_integrals)
 from .report_plot_style import MASK_COLOR, SIGNED_CMAP
+from .density_contours import ABSOLUTE_DENSITY_FLOOR
 
 
 LABELS = {
@@ -79,7 +80,7 @@ def render_proton_heavy(obs, ef, output, args, snapshots):
         _save_individual_frames, _absolute_overlay, _movie_frames)
     if ef.get('gauge') not in ('positive_density','positive_density_marginals'):
         raise ValueError('Expanded coupling analysis requires positive marginals')
-    config = TermConfig(getattr(args,'ph_density_floor',1e-3),
+    config = TermConfig(getattr(args,'ph_density_floor',ABSOLUTE_DENSITY_FLOOR),
                         getattr(args,'ph_heavy_floor',1e-12), getattr(args,'ph_q_split',0.))
     groups = getattr(args,'ph_groups',None) or tuple(GROUPS)
     stride = int(getattr(args,'ph_map_stride',2))

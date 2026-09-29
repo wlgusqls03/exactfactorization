@@ -10,7 +10,7 @@ class VelocityOverlayTests(unittest.TestCase):
     def setUp(self):
         q, R = np.linspace(-2, 2, 45), np.linspace(8, 12, 25)
         rho = np.ones((2, len(q), len(R)))*.1
-        rho[:, :3] = 1e-5
+        rho[:, :3] = 1e-6  # Below the expanded absolute 1e-5 boundary.
         self.obs = dict(q=q, R=R, joint_density=rho,
                         options=dict(proton_mass=2., heavy_mass=4.))
         self.ef = dict(a=np.ones_like(rho)*2., b=np.ones_like(rho)*8.)

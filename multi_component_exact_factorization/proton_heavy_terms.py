@@ -8,11 +8,12 @@ Axes: (q,R); atomic units throughout; Lambda and chi are positive real.
 from dataclasses import dataclass
 import numpy as np
 from .core import derivative, covariant_square, AU_PER_FS
+from .density_contours import ABSOLUTE_DENSITY_FLOOR
 
 
 @dataclass(frozen=True)
 class TermConfig:
-    density_floor: float = 1e-3
+    density_floor: float = ABSOLUTE_DENSITY_FLOOR
     heavy_floor: float = 1e-12
     q_split: float = 0.
     connection_location: str = 'bond'

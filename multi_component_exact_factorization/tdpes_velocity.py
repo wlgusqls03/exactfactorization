@@ -6,7 +6,9 @@ momenta are sampled once; gauge transformations do not change these arrows.
 import numpy as np
 from matplotlib.quiver import Quiver
 
-DENSITY_FLOOR = 1e-3
+from .density_contours import ABSOLUTE_DENSITY_FLOOR
+
+DENSITY_FLOOR = ABSOLUTE_DENSITY_FLOOR
 Q_POINTS, R_POINTS = 42, 20
 # Slightly larger (+10%) and closer-spaced than the original approved preview.
 REFERENCE_LENGTH = .240625  # inches at the reference speed

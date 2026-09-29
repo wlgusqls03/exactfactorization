@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from multi_component_exact_factorization.density_contours import decade_levels, decade_color, automatic_absolute_cutoff
+from multi_component_exact_factorization.density_contours import decade_levels, decade_color, automatic_absolute_cutoff, ABSOLUTE_DENSITY_FLOOR
 from multi_component_exact_factorization import render_final_visualizations as render
 
 
@@ -17,7 +17,7 @@ class DensityContourTests(unittest.TestCase):
             obs = dict(q=q, R=R)
             for compact in (True, False):
                 (cq, cr, z), style = render._joint_linear_contours(Capture(), obs, density, compact)
-                major, minor = decade_levels(1e-3, max(density.max(), .01))
+                major, minor = decade_levels(ABSOLUTE_DENSITY_FLOOR, max(density.max(), .01))
                 levels = np.sort(np.r_[major, minor])
                 levels = levels[(levels > density.min()) & (levels < density.max())]
                 indices = np.nonzero(density >= levels[0])
@@ -37,7 +37,8 @@ class DensityContourTests(unittest.TestCase):
             np.testing.assert_array_equal(density, original)
 
     def test_outer_boundary_black_other_decades_unchanged(self):
-        self.assertEqual(decade_color(1e-3), 'black')
+        self.assertEqual(decade_color(1e-5), 'black')
+        self.assertEqual(decade_color(1e-3, cutoff=1e-3), 'black')
         self.assertEqual(decade_color(1e-2), '#d89000')
         self.assertEqual(decade_color(1e-1), '#c000c0')
 
@@ -47,7 +48,7 @@ class DensityContourTests(unittest.TestCase):
         obs = {'q': q, 'R': q, 'joint_density': np.array([density, density*.1])}
         for frame in (0, 1):
             active, _, _ = render._frame_focus(obs, frame, .9)
-            np.testing.assert_array_equal(active, obs['joint_density'][frame] >= 1e-3)
+            np.testing.assert_array_equal(active, obs['joint_density'][frame] >= ABSOLUTE_DENSITY_FLOOR)
         fig, ax = render.plt.subplots()
         try:
             first = render._absolute_overlay(ax, obs, 0)
@@ -58,7 +59,18 @@ class DensityContourTests(unittest.TestCase):
             render.plt.close(fig)
         args = render.parse_args(['dummy'])
         self.assertEqual(args.nested_density_contours, 'absolute')
-        self.assertEqual(args.nested_absolute_density_floor, 1e-3)
+        self.assertEqual(args.nested_absolute_density_floor, 1e-5)
+
+    def test_expanded_absolute_boundary_and_arrows_agree(self):
+        from multi_component_exact_factorization.tdpes_velocity import DENSITY_FLOOR
+        self.assertEqual(DENSITY_FLOOR, 1e-5)
+        density = np.array([[9e-6, 1e-5], [1e-4, 1e-3]])
+        obs = {'joint_density': density[None], 'q': np.arange(2.), 'R': np.arange(2.)}
+        active, _, _ = render._frame_focus(obs, 0, .9)
+        np.testing.assert_array_equal(active, [[False, True], [True, True]])
+        major, minor = decade_levels(DENSITY_FLOOR, .1)
+        np.testing.assert_allclose(major, [1e-5, 1e-4, 1e-3, 1e-2, .1])
+        self.assertAlmostEqual(minor.min(), 5e-5)
 
     def test_decades_and_uniform_minors(self):
         major, minor = decade_levels(1e-3, 1.)

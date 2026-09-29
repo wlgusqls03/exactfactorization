@@ -25,7 +25,7 @@ from matplotlib.colors import LogNorm, Normalize, SymLogNorm, to_rgba
 from matplotlib.ticker import LogFormatterMathtext, LogLocator
 import numpy as np
 from matplotlib.lines import Line2D
-from .density_contours import decade_levels, decade_color, automatic_absolute_cutoff
+from .density_contours import decade_levels, decade_color, automatic_absolute_cutoff, ABSOLUTE_DENSITY_FLOOR
 
 from . import tdse_collision_report, tdse_report
 from .tdpes_velocity import overlay as velocity_overlay
@@ -1225,7 +1225,7 @@ def _nested_frame(obs, ef_positive, frame, args):
     heavy_support = heavy >= focus_floor*max(
         float(np.max(heavy)), 1.0e-300,
     )
-    joint_support = joint >= 1e-3
+    joint_support = joint >= ABSOLUTE_DENSITY_FLOOR
     if getattr(args, '_nested_contour_mode', 'relative') == 'absolute':
         joint_support = joint >= args._nested_absolute_cutoff
     return {
@@ -1391,7 +1391,7 @@ def _joint_linear_contours(axis, obs, density, compact=False, *,
     density = np.maximum(np.asarray(density, float), 0.0)
     peak = max(float(np.max(density)), 1.0e-300)
     shown = density
-    cutoff = getattr(args, '_nested_absolute_cutoff', 1e-3)
+    cutoff = getattr(args, '_nested_absolute_cutoff', ABSOLUTE_DENSITY_FLOOR)
     upper = max(peak, cutoff*10)
     major, minor = decade_levels(cutoff, upper)
     levels = np.sort(np.r_[major, minor])
@@ -1400,7 +1400,7 @@ def _joint_linear_contours(axis, obs, density, compact=False, *,
         return SimpleNamespace(collections=[])
     is_major = np.any(np.isclose(levels[:, None], major[None, :],
                                 rtol=1e-10, atol=0), axis=1)
-    colors = [to_rgba(decade_color(v), .95) if flag else to_rgba(color, .55) for v, flag in zip(levels, is_major)]
+    colors = [to_rgba(decade_color(v, cutoff), .95) if flag else to_rgba(color, .55) for v, flag in zip(levels, is_major)]
     widths = [(0.85 if compact else 1.15) if flag else (0.18 if compact else 0.25) for flag in is_major]
     # A bounding box needs occupied rows/columns, not two indices for every
     # occupied cell. Keep the identical one-cell contour padding.
@@ -2266,9 +2266,9 @@ def render_bo_combined(obs, ef, outdir, args, snapshots):
 
 
 def _frame_focus(obs, frame, floor):
-    """Absolute rho_qR >= 1e-3 support; floor retained for caller compatibility."""
+    """Shared absolute density support; floor retained for caller compatibility."""
     density = obs['joint_density'][frame]
-    active = np.isfinite(density) & (density >= 1e-3)
+    active = np.isfinite(density) & (density >= ABSOLUTE_DENSITY_FLOOR)
     limits = []
     indices = []
     for coordinate, occupied in ((obs['q'], np.any(active, axis=1)),
@@ -4022,7 +4022,7 @@ def run(args):
             'bo_local_population=rho_j(q,R,t)/rho_qR(q,R,t)',
             'bo_local_heavy_population=integral_q_rho_j/integral_q_rho_qR',
             'bo_local_population_scale=fixed_0_to_100_percent_no_two_channel_renormalization',
-            'bo_local_support=absolute_joint_density_ge_1e-3_a0^-2',
+            f'bo_local_support=absolute_joint_density_ge_{ABSOLUTE_DENSITY_FLOOR:g}_a0^-2',
             'bo_local_energy=internal_BO_trap_excluded_fixed_camera',
         ))
     if nested_prep is not None:
@@ -4045,7 +4045,7 @@ def run(args):
             ),
             "epsilon_1_overlay=physical_joint_density_decade_contours",
             "tdpes1_velocity_overlay=shared_mechanical_velocity_(Kq/mp,KR/M);not_force",
-            "tdpes1_velocity_sampling=38x18;absolute_density_cutoff=1e-3;trajectory_fixed_calibration",
+            f"tdpes1_velocity_sampling=42x20;absolute_density_cutoff={ABSOLUTE_DENSITY_FLOOR:g};trajectory_fixed_calibration",
             f"nested_density_contour_modes={','.join(nested_prep['contour_modes'])}",
             f"nested_absolute_density_cutoff={nested_prep['absolute_density_cutoff']:.16g}",
             "nested_density_contour_style=colored_decades_black_5percent_minor_final_decade_half",
@@ -4259,7 +4259,7 @@ def parse_args(argv=None):
     parser.add_argument("--no-animation", action="store_true")
     parser.add_argument('--with-proton-heavy', action='store_true',
                         help='append expanded proton-heavy analysis to the selected/full report')
-    parser.add_argument('--ph-density-floor', type=float, default=1e-3,
+    parser.add_argument('--ph-density-floor', type=float, default=ABSOLUTE_DENSITY_FLOOR,
                         help='expanded proton-heavy absolute joint-density mask (a0^-2)')
     parser.add_argument('--ph-heavy-floor', type=float, default=1e-12,
                         help='expanded proton-heavy division safety floor for rho_R (a0^-1)')
@@ -4273,8 +4273,8 @@ def parse_args(argv=None):
         'state','density','real_terms','imag_terms','sums','relative','closure'),
         help='expanded proton-heavy figure groups; default all seven')
     parser.add_argument('--nested-density-contours', choices=('absolute',), default='absolute')
-    parser.add_argument('--nested-absolute-density-floor', type=float, choices=(1e-3,), default=1e-3,
-                        help='shared fixed joint-density cutoff: 1e-3 a0^-2')
+    parser.add_argument('--nested-absolute-density-floor', type=float, choices=(ABSOLUTE_DENSITY_FLOOR,), default=ABSOLUTE_DENSITY_FLOOR,
+                        help='shared fixed joint-density cutoff: 1e-5 a0^-2')
     args = parser.parse_args(argv)
     if not np.isfinite(args.ph_q_split):
         parser.error('--ph-q-split must be finite')
