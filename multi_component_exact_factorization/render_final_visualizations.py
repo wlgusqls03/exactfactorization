@@ -4269,6 +4269,12 @@ def parse_args(argv=None):
                         help='decimate displayed/saved snapshot maps AFTER full-grid derivatives')
     parser.add_argument('--ph-color-quantile', type=float, default=.995,
                         help='fixed expanded-PG color envelope quantile; 1 uses full extrema')
+    parser.add_argument('--ph-movies-only', action='store_true',
+                        help='proton-heavy only: MP4/GIF and numerical diagnostics, no snapshot/summary images')
+    parser.add_argument('--ph-source-scale', choices=('symlog','linear'), default='symlog',
+                        help='density source panels: fixed symmetric log reveals small values without lowering the maximum')
+    parser.add_argument('--ph-source-linear-fraction', type=float, default=.01,
+                        help='symlog linear core as a fraction of the fixed source limit')
     parser.add_argument('--ph-groups', nargs='+', choices=(
         'state','density','real_terms','imag_terms','sums','relative','closure'),
         help='expanded proton-heavy figure groups; default all seven')
@@ -4276,6 +4282,10 @@ def parse_args(argv=None):
     parser.add_argument('--nested-absolute-density-floor', type=float, choices=(ABSOLUTE_DENSITY_FLOOR,), default=ABSOLUTE_DENSITY_FLOOR,
                         help='shared fixed joint-density cutoff: 1e-5 a0^-2')
     args = parser.parse_args(argv)
+    if not 0 < args.ph_source_linear_fraction <= 1:
+        parser.error('--ph-source-linear-fraction must lie in (0,1]')
+    if args.ph_movies_only and args.no_animation:
+        parser.error('--ph-movies-only conflicts with --no-animation')
     if not np.isfinite(args.ph_q_split):
         parser.error('--ph-q-split must be finite')
     if not 0 < args.ph_color_quantile <= 1:

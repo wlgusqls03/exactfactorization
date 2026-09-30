@@ -1,0 +1,111 @@
+MOVIE-ONLY WORKFLOW (2026-09-30)
+==============================
+
+WHY A REPLAY
+The existing real-grid base run saved only 7 event wavefunctions. These cannot
+yield a smooth, scientifically faithful movie of a,b,epsilon1,epsilon2. Increasing
+FPS or interpolating pictures does not supply missing quantum evolution.
+The new driver replays exactly the same validated RealGridPF operator/initial
+state/grid/dt. It extracts fields at 4 au = 0.096755373 fs: 414 frames over
+39.959969 fs, about 17.25 seconds at 24 FPS. No extrapolation or parameter change.
+Requires SAME GPU/software as the original CPU/GPU check; otherwise redo that check.
+
+VSC SERVER: after the new code is on the remote and git pull has succeeded,
+run from the repository in tmux (the existing 11-GB GPU is sufficient for the
+unchanged base_Q384 propagator; CPU field extraction needs several GiB host RAM):
+
+CUDA_VISIBLE_DEVICES=1 bash \
+  multi_component_exact_factorization/vsc_polariton/run_dense_movies_server.sh
+
+This runs storage plan -> short 8-au probe -> full identical replay -> 3 MP4s.
+Old results are not touched. Same command resumes after a graceful interruption.
+Unexpected errors preserve their FAILED_DIAGNOSTIC report; do not delete it or
+force a PASS. A killed process may leave active.lock: verify no process runs
+before removing only that lock. Do not run two copies in the same output.
+
+Default existing input:
+results/vsc_polariton/phase6_gpu/barrier_f240_server_transfer_v1/inputs/barrier_F240.npz
+Default existing campaign: results/vsc_polariton/photon_real_grid/barrier_v1
+Default NEW output: results/vsc_polariton/photon_real_grid/dense_movies_server_v1
+To override: bash run_dense_movies_server.sh INPUT_NPZ CAMPAIGN_ROOT NEW_OUTPUT_ROOT
+No transfer archive is required if the packet NPZ + SHA sidecar JSON, original
+validation and original observables/status remain on the server.
+
+STORAGE/TIME
+414 compact fields: conservative 2.94 GiB. One restart: 0.322 GiB.
+Atomic writes + reserved headroom: require >=5.59 GiB free for the full run.
+Allow >=7 GiB including probe and movies. NOT 414 full 3D wavefunctions.
+Stored GPU-only forecast ~21 minutes; previous full propagation actually ~24
+minutes. Total additionally includes 414 CPU MCEF extractions + 1242 rendered
+video frames. Probe field JSON gives analysis_seconds; multiply its median by
+414 and add propagation/render time. Do not promise a GPU-only total runtime.
+Local full-size CPU extraction measured 41.2 seconds for one initial frame
+(including contention with a small test run). At that throughput, extraction
+alone is ~4.7 hours; a similar CPU would need roughly 5-6 hours overall.
+The SERVER probe measurement, not this local estimate, should set expectations.
+Compact fields are lossless float64/complex128. Checkpoint is full precision.
+
+MOVIES (no PNG/PDF)
+full/movies/vsc_state_movie.mp4:
+  |Lambda_R|^2, |Lambda_R|^2|chi|^2, |chi|^2, b, alpha, b-alpha.
+full/movies/vsc_nuclear_movie.mp4:
+  nuclear density, product population, total EF force, epsilon2.
+full/movies/vsc_photon_movie.mp4:
+  epsilon1 and a; joint-density contours on both.
+JSON/NPZ diagnostics remain necessary; they are not still-image outputs.
+
+READING THE FIGURES
+Q=sqrt(omega)*q_c is dimensionless quadrature, NOT photon position/number.
+Displayed Q densities include rho_Q=rho_q/sqrt(omega); conditional density too.
+Contour levels are joint density / ONE movie-wide joint-density maximum:
+1e-5,1e-4,1e-3,1e-2,1e-1. Lowest contour black; others teal.
+Density display floor is relative 1e-5, fixed in time, not 1e-5 a0^-2.
+Potentials/connections additionally use excluded-probability budget 1e-8.
+Grey regions are undefined/not displayed, not zero potential. No support filling.
+Axes/color limits fixed throughout each movie. Signed fields use symmetric log.
+epsilon1/epsilon2 have a density-weighted mean removed solely for display;
+offsets are in movie_manifest.json. This is not an alpha=0 transformation.
+Natural positive-marginal gauge force = -d_R epsilon2 + d_t alpha.
+Force and epsilon2 panels show faint nuclear-density silhouettes.
+Scalar elevations alone do not determine crossing. MCEF force does not include
+the nuclear Bohm quantum potential as an extra hydrodynamic acceleration.
+No matched free real-grid case is fabricated; one coupled movie cannot by
+itself prove suppression. Fields remain diagnostic, not a Phase7 certificate.
+
+HISTORICAL PROTON-HEAVY: no TDSE rerun, no GPU required
+python -m multi_component_exact_factorization.render_final_visualizations \
+  results/20260916/erf_fullgrid_BOcurvature_compact_qR_analysisBO2_100fs \
+  --only proton_heavy --ph-groups state density --ph-movies-only \
+  --ph-source-scale symlog --ph-source-linear-fraction .01 \
+  --max-frames 100000 --fps 24 --animation-dpi 110 \
+  --outdir results/20260916/proton_heavy_movies_clean_v1
+
+Uses every existing frame (no interpolation). State: exactly six panels as
+above, with historical q=proton and R=heavy, NOT the photon convention.
+Density: d_t |Lambda_R|^2, S_q, S_adv, S_rel, alpha, b-alpha.
+The square is necessary for the density continuity decomposition.
+Absolute joint-density cutoff remains 1e-5 a0^-2, with existing MCEF contours.
+This is NOT the VSC relative threshold. Source maps share one fixed symmetric
+log scale (linear core 1% of limit); maxima are not silently rescaled each frame.
+--ph-source-scale linear restores the old linear mapping. All raw arrays/RMS/
+closure diagnostics remain available; no equation/derivative/propagator changes.
+
+IMPLEMENTATION MAP
+proton_heavy_report.py: GROUPS / display_norm / render_proton_heavy:
+  six-panel layouts, movie-only switch, fixed viewport and source scale;
+  frame_terms/time_rate and absolute contours reused without numerical edits.
+vsc_movie_only.py: compact_fields / supports / inspect / draw / render:
+  (R,q) fields -> unit-correct Q display, streaming MP4, no image interpolation.
+run_vsc_dense_movies.py: schedule / estimate / compare_observation / replay:
+  identity/hardware gates, original-observable comparison, native FFT/Hpsi fields,
+  atomic restart and compact storage. Original real_grid_mcef_fields.analyze reused.
+run_dense_movies_server.sh: sequential safe server entry point.
+
+VALIDATION AT IMPLEMENTATION
+VSC suite: 141 tests PASS; new movie/replay tests include six-panel layout,
+MP4-only output, sparse-frame rejection, source-observable agreement, checkpoint
+interruption/restart, and completed-run reuse. CPU substitutes for GPU only in
+small orchestration tests; this local machine has no GPU production test.
+Historical suite: 183/184 PASS. The remaining test expects an older 1e-3
+mask; it also fails when the HEAD renderer is loaded without these changes.
+No physical/core/propagation functions or historical outputs were changed.

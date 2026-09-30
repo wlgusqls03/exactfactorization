@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from matplotlib.colors import Normalize
+from matplotlib.colors import Normalize, SymLogNorm
 from matplotlib.ticker import ScalarFormatter
 from .proton_heavy_terms import (TermConfig, conditional_density, time_rate,
                                 frame_terms, summarize_frame, peak_integrals)
@@ -14,8 +14,8 @@ from .density_contours import ABSOLUTE_DENSITY_FLOOR
 
 
 LABELS = {
-    'lambda_density': r'$|\Lambda_R|^2$', 'joint_density': r'$\rho_{pR}$',
-    'heavy_density': r'$\rho_R$', 'a': r'$a$', 'b': r'$b$', 'alpha': r'$\alpha$',
+    'lambda_density': r'$|\Lambda_R|^2$', 'joint_density': r'$|\Lambda_R|^2|\chi|^2$',
+    'heavy_density': r'$|\chi|^2$', 'a': r'$a$', 'b': r'$b$', 'alpha': r'$\alpha$',
     'delta': r'$b-\alpha$', 'delta_squared': r'$(b-\alpha)^2$',
     'density_dt': r'$\partial_t|\Lambda_R|^2$', 'S_q': r'$S_q$',
     'S_adv': r'$S_{\mathrm{adv}}$', 'S_rel': r'$S_{\mathrm{rel}}$',
@@ -35,8 +35,8 @@ LABELS = {
     'T8': r'$\mathrm{Im}\,T_8=-(\partial_R\chi/\chi)(b-\alpha)\Lambda/M$',
 }
 GROUPS = {
-    'state': ('lambda_density','joint_density','heavy_density','a','b','alpha','delta','delta_squared'),
-    'density': ('density_dt','S_q','S_adv','S_rel','S_U','residual_density'),
+    'state': ('lambda_density','joint_density','heavy_density','b','alpha','delta'),
+    'density': ('density_dt','S_q','S_adv','S_rel','alpha','delta'),
     'real_terms': ('T1','T2','T3','T4'),
     'imag_terms': ('T5','T6','T7','T8'),
     'sums': ('U_quad.real','U_lin.real','U_total.real','U_quad.imag','U_lin.imag','U_total.imag'),
@@ -44,6 +44,13 @@ GROUPS = {
     'closure': ('S_U','S_U_operator','residual_source_operator','residual_source_expanded',
                 'residual_product_rule.real','residual_product_rule.imag'),
 }
+
+
+def display_norm(category_name, positive, bound, source_scale='symlog', linear_fraction=.01):
+    """Fixed signed source scale: resolve small signals without hiding extrema."""
+    if category_name == 'density_rate' and source_scale == 'symlog':
+        return SymLogNorm(max(bound*linear_fraction,1e-15),vmin=-bound,vmax=bound)
+    return Normalize(0 if positive else -bound,bound)
 
 
 def component(fields, key):
@@ -85,6 +92,9 @@ def render_proton_heavy(obs, ef, output, args, snapshots):
     groups = getattr(args,'ph_groups',None) or tuple(GROUPS)
     stride = int(getattr(args,'ph_map_stride',2))
     color_quantile = float(getattr(args,'ph_color_quantile',.995))
+    movies_only = getattr(args,'ph_movies_only',False)
+    source_scale = getattr(args,'ph_source_scale','symlog')
+    linear_fraction = getattr(args,'ph_source_linear_fraction',.01)
     output = Path(output); output.mkdir(parents=True, exist_ok=True)
     times, q, R = obs['times_fs'], obs['q'], obs['R']
     dq, dR = obs['dq'], obs['dR']
@@ -96,6 +106,7 @@ def render_proton_heavy(obs, ef, output, args, snapshots):
         return frame_terms(obs['joint_density'][f],obs['heavy_density'][f],ef['a'][f],
             ef['b'][f],ef['alpha'][f],dq,dR,*masses,time_rate(density,times,f),config)
     rows, peaks, bounds = [], [], {}
+    visible_q=np.zeros(len(q),bool);visible_R=np.zeros(len(R),bool)
     products = []
     for f in range(len(times)):
         result = values(f)
@@ -103,6 +114,7 @@ def render_proton_heavy(obs, ef, output, args, snapshots):
         row['time_fs'] = float(times[f])
         row['one_sided_time_derivative'] = f in (0,len(times)-1)
         fields, mask = result['fields'], result['valid']
+        visible_q |= mask.any(axis=1);visible_R |= mask.any(axis=0)
         coarse = time_rate(density,times,f,stride=2)
         diff = coarse-fields['density_dt']
         weight = np.where(mask,fields['joint_density'],0)
@@ -132,7 +144,7 @@ def render_proton_heavy(obs, ef, output, args, snapshots):
                 # Fixed trajectory-wide envelope of frame quantiles, shared by units.
                 # Clipping is explicit (colorbar extensions/footer); raw maxima remain in JSON.
                 bounds[cat] = max(bounds.get(cat,0),float(np.quantile(abs(data),color_quantile)))
-        if f in snapshots:
+        if f in snapshots and not movies_only:
             path = output/f'proton_heavy_terms_frame_{f:04d}.npz'
             np.savez_compressed(path, q=q[::stride],R=R[::stride],time_fs=times[f],
                 valid=mask[::stride,::stride], map_stride=stride,
@@ -152,6 +164,7 @@ def render_proton_heavy(obs, ef, output, args, snapshots):
         metrics='joint-density weighted RMS on common finite display support',
         map_stride=stride,source_archive=str(obs.get('archive_path','')),ef_cache=str(ef.get('path','')),
         color_quantile=color_quantile, fixed_color_bounds=bounds,
+        source_scale=source_scale,source_linear_fraction=linear_fraction,
         color_policy='max over frames of per-frame occupied-site absolute-value quantile; residuals separate',
         records=rows)
     path=output/'proton_heavy_terms_diagnostics.json'
@@ -160,6 +173,11 @@ def render_proton_heavy(obs, ef, output, args, snapshots):
     np.savez_compressed(path,times_fs=times,R=R,q_split=config.q_split,
                        **{k:np.array([p[k] for p in peaks]) for k in peaks[0]})
     products.append(path)
+    fixed_limits=[]
+    for coord,visible in ((q,visible_q),(R,visible_R)):
+        ids=np.flatnonzero(visible)
+        if not ids.size:ids=np.arange(len(coord))
+        fixed_limits.append((coord[max(0,ids[0]-3)],coord[min(len(coord)-1,ids[-1]+3)]))
     def build(first, group):
         keys = GROUPS[group]; cols = 4 if len(keys)==8 else 2 if len(keys)==4 else 3
         fig,axes=plt.subplots(2,cols,figsize=(6*cols,9),squeeze=False,constrained_layout=True)
@@ -174,28 +192,25 @@ def render_proton_heavy(obs, ef, output, args, snapshots):
             else:
                 cmap=plt.get_cmap('magma' if positive else SIGNED_CMAP).copy();cmap.set_bad(MASK_COLOR)
                 image=ax.imshow(np.zeros((2,2)),origin='lower',aspect='auto',interpolation='nearest',
-                    cmap=cmap,norm=Normalize(0 if positive else -bound,bound))
+                    cmap=cmap,norm=display_norm(cat,positive,bound,source_scale,linear_fraction))
                 fmt=ScalarFormatter(useMathText=True);fmt.set_powerlimits((-3,3))
                 units={'action':r'Ha $a_0^{-1/2}$','density_rate':r'$a_0^{-1}t_{au}^{-1}$',
                        'action_residual':r'Ha $a_0^{-1/2}$','source_residual':r'$a_0^{-1}t_{au}^{-1}$',
                        'momentum':'momentum (a.u.)','joint_density':r'$a_0^{-2}$',
                        'lambda_density':r'$a_0^{-1}$','delta_squared':'momentum squared (a.u.)',
                        'relative_current':'relative current (a.u.)'}
-                fig.colorbar(image,ax=ax,pad=.02,shrink=.82,format=fmt,label=units[cat],
+                color_format={} if cat=='density_rate' and source_scale=='symlog' else {'format':fmt}
+                fig.colorbar(image,ax=ax,pad=.02,shrink=.82,**color_format,
+                             label=units[cat]+(' (symlog)' if cat=='density_rate' and source_scale=='symlog' else ''),
                              extend='max' if positive else 'both')
                 ax.set(xlabel=r'$q$ ($a_0$)',ylabel=r'$R$ ($a_0$)');artists.append(image)
             ax.set_title(title(key),fontsize=14);ax.tick_params(labelsize=11)
         heading=fig.suptitle('',fontsize=17)
-        fig.supxlabel(f'PG | central5 diagnostic, not native TDSE identity | fixed {100*color_quantile:g}% scale; '
-                      'colorbar tips indicate saturation; residual scales separate',fontsize=10)
+        fig.supxlabel(f'PG | source: {source_scale}, fixed in time | absolute joint-density contours down to '
+                      f'{config.density_floor:g} a.u. | colorbar tips = saturation',fontsize=10)
         def update(f):
             result=values(int(f));mask=result['valid']
-            found=[np.flatnonzero(mask.any(axis=k)) for k in (1,0)]
-            limits=[]
-            for coord,ids in zip((q,R),found):
-                if not ids.size:ids=np.arange(len(coord))
-                lo,hi=max(0,ids[0]-3),min(len(coord)-1,ids[-1]+3)
-                limits.append((coord[lo],coord[hi]))
+            limits=fixed_limits  # No distracting frame-by-frame camera zoom.
             for ax,key,artist in zip(axes.flat,keys,artists):
                 if key in ('heavy_density','alpha'):
                     line=result['heavy_density'] if key=='heavy_density' else result['alpha_line']
@@ -214,13 +229,17 @@ def render_proton_heavy(obs, ef, output, args, snapshots):
         update(first);return fig,update
     for group in groups:
         stem='proton_heavy_'+group
-        products.extend(_save_individual_frames(lambda f:build(f,group)[0],snapshots,times,
-                                               output/(stem+'_frames'),stem,args.dpi))
+        if not movies_only:
+            products.extend(_save_individual_frames(lambda f:build(f,group)[0],snapshots,times,
+                                                   output/(stem+'_frames'),stem,args.dpi))
         if not args.no_animation:
             frames=_movie_frames(obs,args.max_frames)
             fig,update=build(int(frames[0]),group)
             animation=FuncAnimation(fig,lambda i:update(int(frames[i])),frames=len(frames),blit=False)
             products.append(_save_analysis_movie(animation,fig,output,stem+'_movie',args))
+    if movies_only:
+        values.cache_clear()
+        return products
     fig,axes=plt.subplots(4,1,figsize=(13,15),constrained_layout=True)
     for ax,keys in zip(axes[:3],(('S_q','S_adv','S_rel','S_U'),tuple(f'T{i}' for i in range(1,9)),
                                 ('residual_density','residual_source_operator','residual_source_expanded'))):
