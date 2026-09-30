@@ -1,0 +1,151 @@
+Full-coordinate photon PF runner (2026-09-30)
+===========================================
+
+Scope
+-----
+Independent implementation; historical MCEF/Fock sources are unchanged.
+Same Li physical Hamiltonian and same initial packet, including FULL DSE
+g_chi^2*(R-x)^2/omega. No fitted PES, BO electronic propagation reduction,
+new Gaussian, initial-state retuning, or photon truncation in propagation.
+
+Array: Psi_Q[R,x,Q], Q=sqrt(omega)*q_c, integral |Psi_Q|^2 dR dx dQ = 1.
+H = -d_x^2/2 - d_R^2/(2M) - omega*d_Q^2/2
+    + V_mol(x,R) + omega/2*[Q+sqrt(2)*g_chi*(R-x)/omega]^2.
+All three coordinates use periodic spectral FFT derivatives. The box edges
+must remain unoccupied. Physical q-space wave = omega^(1/4)*Psi_Q.
+Do NOT feed these new snapshots into an old Fock-to-q converter.
+
+Method and limits
+-----------------
+Fourth-order Yoshida V/2-T-V/2 composition, three 3D FFT pairs per step.
+Potential half-kicks have two cached complex arrays. Kinetic phases are
+1D arrays. No large kinetic tensor in propagation and no dense Fock rotation.
+Only observe/checkpoint steps transfer small observables / full wave to CPU.
+This is a DIFFERENT split from the old exact-H_ph Fock split; dt is audited.
+
+Predeclared comparison settings (one factor changed at a time):
+base_Q384:    Q=[-24,24), N=384, dQ=.125,    dt=.125 au
+spacing_Q512: Q=[-24,24), N=512, dQ=.09375,  dt=.125 au
+box28_Q448:   Q=[-28,28), N=448, dQ=.125,    dt=.125 au
+dt00625_Q384: Q=[-24,24), N=384, dQ=.125,    dt=.0625 au
+
+At 170.6 meV the base physical q half-box is 303.1078; at 161.768922 meV
+it is 311.2713 (mass-one photon coordinates, NOT photon positions).
+Initial finite-Fock-to-grid conversion must pass norm difference 1e-10 and
+back-projection L2 1e-8, without renormalization. Choosing this grid does NOT
+certify existing F200/F240 errors or local conditional MCEF scalar fields.
+
+Conservation/boundary limits: norm 1e-9, energy drift 1e-6 Ha,
+electron outer 10% strips 1e-8, nuclear outer .3-a0 strips 1e-8,
+photon outer 1-Q strips 1e-8, integrated continuity residual 2e-6 au.
+Observable differences: product 2e-4, flux 2e-6 au, n_ph 2e-3, mean R 2e-4 a0.
+Hardware gate: full-size instantaneous CPU/GPU H action, 8 identical
+CPU/GPU steps (all comparison errors <1e-9), and 128 GPU benchmark steps.
+Short hardware PASS is NOT scientific convergence or Phase7 PASS.
+
+Server requirements
+-------------------
+RTX 2080 Ti, 11 GB VRAM; float64/complex128. NumPy, SciPy, CuPy 11.6 supported
+by design; actual GPU execution MUST pass the server hardware gate.
+One case at a time: no simultaneous GPU jobs from this campaign.
+The conservative working-memory forecast reserves 14 complex wave arrays
+plus .5 GiB, and additionally leaves 1 GiB free before GPU allocation.
+Recorded pool reservation is NOT a claim about exact peak VRAM.
+
+REUSE the existing input packet and its adjacent SHA256 JSON:
+results/vsc_polariton/phase6_gpu/barrier_f240_transfer_v1/inputs/barrier_F240.npz
+results/vsc_polariton/phase6_gpu/barrier_f240_transfer_v1/inputs/barrier_F240.json
+If your unpacked bundle has another path, substitute THAT path below.
+No new tar.gz INPUT bundle is needed. git pull fetches all new source files.
+The only old imports are tracked run_phase6_gpu.py and phase6_gpu_backend.py.
+
+Commands (from /home/hbji/exactfactorization)
+--------------------------------------------
+git pull
+export OPENBLAS_NUM_THREADS=1
+export CUDA_VISIBLE_DEVICES=1
+
+# Recommended first stage: all 4 CPU/GPU checks, then all 4 short 64-au
+# (1.5481-fs) pilots, then automatic comparison and a small return archive.
+python -m multi_component_exact_factorization.vsc_polariton.run_photon_grid_campaign \
+  --input results/vsc_polariton/phase6_gpu/barrier_f240_transfer_v1/inputs/barrier_F240.npz \
+  --out results/vsc_polariton/photon_real_grid/barrier_v1 \
+  --device 0 --stage pilot
+
+# Hardware/timing only: same command with --stage check.
+# No computation: same command with --stage all --preflight-only.
+# After reviewing pilot, or to run through all numerical stages in sequence:
+# same command with --stage all. Existing valid checks/pilots are reused.
+# It only enters the 39.959969-fs campaign if the pilot comparison PASSES.
+# The 40-fs campaign compares all 4 settings; not just one long trajectory.
+
+# Optional cross-representation comparison against the old F240 run:
+# Add the following to the FIRST invocation and keep it on all later invocations:
+# --fock-reference results/vsc_polariton/phase6_gpu/phase7_barrier_f240_v1/full
+# The directory must contain status.json and observable_*.npz for the SAME
+# packet SHA256, and a failure-free completed 1652-au run. Not wave files only.
+# Changing the comparison reference later requires a new campaign output root.
+
+Disk, outputs, restart
+----------------------
+For NR=352,Nx=160, the four-setting complete campaign (pilot + full) forecasts
+about 12.74 GiB free including the 2-GiB safety reserve and pending checkpoint.
+The pilot alone reserves about 6.78 GiB. No old files are deleted.
+384-Q wave: .322 GiB; 512-Q wave: .430 GiB.
+Only base full run stores event waves at 0,160,608,672,1408,1440,1652 au.
+Refinements/pilots retain initial/final waves; every run has ONE restart.npz.
+Observables: every 4 au. Restart: every 64 au + events + requested interruption.
+Checkpoint replacement is atomic; previous checkpoint remains until new one
+has been flushed. This temporarily needs one extra wave's disk space.
+Full wave data are uncompressed for bounded memory/I/O; only return diagnostics
+are gzip-compressed. No lossy precision or compression is used.
+
+Re-run the SAME command to resume after a graceful interruption. A completed
+run is reused. A FAILED_DIAGNOSTIC is preserved, not resumed into apparent PASS.
+Do not remove restart/waves during a running campaign. After a forced kill a
+lock can remain: first verify the recorded PID is no longer running; do not
+blindly remove a lock from an active process.
+
+Send back:
+results/vsc_polariton/photon_real_grid/barrier_v1/pilot_diagnostics.tar.gz
+(or check_diagnostics.tar.gz for --stage check)
+After --stage all: full_diagnostics.tar.gz
+These contain JSON gates, measured timings, logs, all saved small observables,
+and SHA256 manifest. They intentionally omit restart and large wave snapshots.
+Keep wave snapshots on the server for later MCEF validation/analysis.
+
+Measured timing summary:
+.../barrier_v1/time_estimates.json
+Per-case actual GPU seconds per step, 39.96-fs propagation-hour estimate,
+and summed four-run estimate (not including setup/I/O/MCEF).
+All actual scientific outputs live below repository results/, not /tmp.
+
+Validation performed locally
+----------------------------
+No CUDA device is available locally; no GPU performance claim is made.
+Small dense Hamiltonian Hermiticity, full DSE identity, Fock/grid H-action
+agreement, 4th-order temporal convergence, stationary-state density, norm,
+photon number/current/energy, initial transform, restart and fail-closed
+campaign tests are in tests/test_photon_real_grid.py.
+The original baseline visualization test test_final_visualization_uses_shared_
+point_one_percent_focus already fails against the existing density-mask
+implementation (historical source/test not modified here). This is reported,
+NOT silently patched or marked all-tests-PASS.
+
+Local results on 2026-09-30:
+- New real-grid unittest cases: 9/9 PASS; VSC unittest suite: 127/127 PASS.
+- Existing suite: 182 tests, same one baseline failure before and after.
+- Protected source SHA256 comparison: 329 files unchanged.
+- Historical model/coupled-step/reference/TDPES/report smoke: PASS.
+- Actual barrier-F240 packet, Q384, dt=.125, two CPU steps: initial
+  back-projection L2=9.8832e-16, norm difference=5.1974e-16,
+  energy drift=1.3233e-10 Ha; no instantaneous diagnostic failure.
+  This is NOT a full-interval or GPU convergence result.
+
+Next research step
+------------------
+Even full observable-convergence PASS is not Phase7 PASS. Compare real-grid
+fields on common support, derivative/gauge consistency and matched Fock
+snapshots separately before interpreting epsilon1/epsilon2. Additional event
+snapshots for refinements or movies can be requested after numerical review;
+do not blindly launch all physical cases or delete old evidence.
