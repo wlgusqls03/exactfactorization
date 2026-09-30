@@ -1,0 +1,73 @@
+REAL-GRID NESTED MCEF DIAGNOSTIC FIGURES
+======================================
+
+This reads existing full 3DOF TDSE waves. No propagation, deletion, model
+change, or historical-file overwrite. CPU only (no GPU memory allocation).
+Use a NEW --out each time. Output lives under the repository's results/.
+
+From /home/hbji/exactfactorization, after git pull:
+
+OPENBLAS_NUM_THREADS=1 python -m \
+  multi_component_exact_factorization.vsc_polariton.run_real_grid_mcef_preview \
+  --input results/vsc_polariton/phase6_gpu/barrier_f240_server_transfer_v1/inputs/barrier_F240.npz \
+  --waves results/vsc_polariton/photon_real_grid/barrier_v1 \
+  --observables results/vsc_polariton/photon_real_grid/barrier_v1/full/base_Q384/full \
+  --out results/vsc_polariton/photon_real_grid/mcef_preview_server_v1 \
+  --movie
+
+No new transfer/input archive is necessary on the server: use its originals.
+After this finishes, changing figure style does NOT require TDSE or field
+recalculation. Re-render its small fields with a new output directory:
+
+OPENBLAS_NUM_THREADS=1 python -m \
+  multi_component_exact_factorization.vsc_polariton.render_real_grid_mcef_preview \
+  --fields results/vsc_polariton/photon_real_grid/mcef_preview_server_v1 \
+  --observables results/vsc_polariton/photon_real_grid/barrier_v1/full/base_Q384/full \
+  --out results/vsc_polariton/photon_real_grid/mcef_render_server_v1 \
+  --movie
+
+For an initial smoke run use a different --out and add --max-frames 1.
+--block 2 reduces per-R-block workspace; several full HOST wave arrays are
+still needed. Do not run alongside another memory-heavy simulation. A host
+with 8 GiB RAM can be tight; 12+ GiB free host RAM is preferable for Q512.
+The 11 GiB GPU limit is irrelevant to this CPU postprocessor.
+
+Outputs:
+  figure1_nuclear_transfer.png/pdf: all saved scalar/marginal observables
+  figure2_outer_*.png/pdf: positive-gauge epsilon2 + density + exact EF force
+  figure3_joint_*.png/pdf: epsilon1, conditional BO0 character, joint density
+  real_grid_mcef_events.mp4 (GIF fallback): sparse saved-event slideshow
+  fields_*.npz: SMALL real-grid MCEF fields; no full conditional phi arrays
+  refinement_*.npz: available same-time cutoff/grid endpoints
+  summary.json: source/input/wave hashes, support tests, actual comparisons
+
+Figures 2/3 are DIAGNOSTIC PREVIEWS, not a Phase7 certificate. Both marginal
+amplitudes chi and Lambda are positive. alpha is NOT zero. The nuclear
+force is -partial_R epsilon2 + partial_t alpha, not just the scalar slope.
+The displayed scalar mean is subtracted for plotting ONLY. Raw values are
+preserved. Natural-gauge scalar heights must not be called activation
+barriers. Sign-changing fields use symlog scales without hiding extremes.
+Probability-budget support (default 1e-8) is intersected with a relative
+1e-5 density DISPLAY mask; diagnostics also evaluate 1e-6 and 1e-10 budgets.
+
+H Psi supplies instantaneous time derivatives. R/x/q derivatives use the
+native FFT symbols; Psi_Q is converted with Psi_q=omega^(1/4) Psi_Q and
+q=Q/sqrt(omega). Continuum quotient-rule fields need separate resolution
+validation, even when expectation/inversion identities agree to roundoff.
+Sparse movies do not interpolate or imply uniform physical frame spacing.
+One coupled case is NOT an uncoupled/coupled comparison.
+
+Existing input case is the Li-based barrier-frequency preparation (~161.77
+meV), NOT Lacombe et al. (2019)'s photoexcited PCET benchmark. We have not
+changed historical parameters or relabelled existing waves as that benchmark.
+Lacombe model changes require a NEW molecular potential, initial electronic
+state, photon preparation, coupling convention and convergence campaign.
+The same Shin-Metiu model family does NOT mean identical Hamiltonian values.
+
+Theory references:
+  Li, Mandal, Huo (2021): doi:10.1038/s41467-021-21610-9
+  Lacombe, Hoffmann, Maitra (2019): doi:10.1103/PhysRevLett.123.083201
+  Nested field algebra: PHASE7_NESTED_EF_DERIVATION.md (local derivation)
+
+Send summary.json first. Figures/movies may be sent separately. No need to
+send full Psi again if it was already received. Preserve the original waves.
