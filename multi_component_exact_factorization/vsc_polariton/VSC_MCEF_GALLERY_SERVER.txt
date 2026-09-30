@@ -1,0 +1,95 @@
+VSC REAL-GRID MCEF GALLERY
+=========================
+
+Same physical fields, NOT the historical proton/heavy file schema.
+Old renderer reference (read-only): render_final_visualizations.py
+410-619 current arrows; 620-875 vector fields; 1220-1770 nested panels.
+No historical source, propagation, gauge or parameter is changed.
+
+INTERPRETATION
+q_c is a continuous field quadrature, not photon position, photon number,
+or phase angle. Default Q=sqrt(omega_c)*q_c is dimensionless.
+rho_Q(Q)dQ is the probability of a quadrature measurement in that interval.
+rho_Q=rho_q/sqrt(omega_c); there IS a meaningful photon marginal density.
+References: Lacombe et al. PRL123,083201 Eq4; Li et al. NatCommun12,1315 Eq1.
+
+Natural gauge: positive chi(R) and Lambda(q,R).
+a=<Phi|-i d_q|Phi>, b=<Phi|-i d_R|Phi>, alpha=<Lambda Phi|-i d_R|Lambda Phi>.
+q mass=1, nuclear mass=M. Joint currents j_q=rho_qR*a, j_R=rho_qR*b/M.
+Thus arrows on (R,Q) are proportional to (b/M,sqrt(omega)*a), not (b/M,a/mp).
+They are instantaneous probability-current directions, NOT photon tracks.
+Arrow lengths are normalized for visibility: direction ONLY, not speed magnitude.
+Arrow masks use 1e-3 density. Positive squared fields use sequential symlog.
+Density/field visualization extends to relative 1e-5, additionally restricted
+by the specified excluded-probability budget. Gauge-dependent connections
+must not be treated as electromagnetic vector potentials or forces.
+
+The force is -d_R epsilon2 + d_t alpha in this convention. The gallery does
+NOT construct an alpha=0 gauge. W_F=-integral F_R dR is a force-work potential
+with an anchor within ONE occupied connected component, not an activation
+free energy. Undefined/disconnected references remain NaN. Spatial trapezoid
+integration/force derivatives require further convergence certification.
+The same moving reference is used for the bare comparison. Potential component
+means are removed for display, recorded as a convention, not a gauge change.
+Large scalar or connection components do not independently prove causality.
+
+Static reference: bare-BO expectation E0 from packet phi0 and native FFT T_x.
+Relaxed scalar-DSE BO CBO equals E0 identically. g^2 Var(mu)/w is saved only
+as a supplementary projection diagnostic. Neither is a cavity-relaxed full electronic
+surface. In full dynamics, photon lag relative to the bare BO valley includes
+possible electronic dressing, not solely a temporal response delay.
+
+FAST: EXISTING SMALL FIELDS (NO WAVE DIFFERENTIATION)
+From /home/hbji/exactfactorization after updating the repository:
+
+OPENBLAS_NUM_THREADS=1 python -m \
+  multi_component_exact_factorization.vsc_polariton.run_vsc_mcef_gallery \
+  --fields results/vsc_polariton/photon_real_grid/mcef_preview_server_v1 \
+  --input results/vsc_polariton/phase6_gpu/barrier_f240_server_transfer_v1/inputs/barrier_F240.npz \
+  --observables results/vsc_polariton/photon_real_grid/barrier_v1/full/base_Q384/full \
+  --out results/vsc_polariton/photon_real_grid/vsc_mcef_gallery_server_v1 \
+  --movie
+
+ONE COMMAND FROM ORIGINAL REAL-GRID WAVES
+If fields_*.npz have not been made, replace --fields above with:
+  --waves results/vsc_polariton/photon_real_grid/barrier_v1
+This calls the existing real-grid diagnostic extractor FIRST, then renders.
+NO TDSE propagation is executed. Its working memory is CPU RAM, preferably
+12+ GiB free for extraction; rendering from small fields is far cheaper.
+No new transfer archive is needed if original packet/waves/observables exist.
+Choose a NEW --out on each invocation. Historical data are never overwritten.
+
+Options: --coordinate q (physical q instead of dimensionless Q in new maps)
+--density-floor 1e-5 --support-budget 1e-8 --fps 1 --max-frames 1 (smoke only).
+Existing reused TDPES panels keep physical q and label it; new maps default Q.
+Movie playback uses actual saved frames with timestamps. Unequal physical
+time intervals are NOT interpolated into invented intermediate wavefunctions.
+
+FILES
+vsc_connections_*.png/pdf: a, b, alpha, b-alpha; common nuclear momentum scale.
+vsc_transport_*.png/pdf: density/current arrows, Jrel, (b-alpha)^2, alpha test.
+vsc_epsilon1_components_*.png/pdf: conditional, geometric, time, total TDPES1.
+vsc_connection_rms.png/pdf: occupied RMS momenta (separate photon/nuclear units).
+vsc_barrier_diagnostics.png/pdf: static references, force-work, scalar differences.
+vsc_photon_marginal_and_lag.png/pdf: rho_Q, width, conditional means, regional lag.
+vsc_photon_barrier_arrays.npz: derived curves; no full electronic wave storage.
+figure1*,figure2*,figure3*: reused transfer/TDPES/force/BO-character figures.
+vsc_*_events.mp4 (three families), real_grid_mcef_events.mp4; GIF if no ffmpeg.
+gallery_summary.json: hashes, shared scales, current residuals, scope/limitations.
+
+Not included: historical proton-mass T1..T8 copying; discrete link branch flags;
+photon-number inference from a coordinate density alone; automatic free/coupled
+comparison. Photon number needs p^2 as well as q^2, or source observables.
+Rendering is not Phase7 certification; only compared cases justify suppression.
+
+IMPLEMENTATION
+vsc_mcef_gallery.py: quantities (R,q) currents/momenta; configuration shared
+scales; component/heat/draw panel families; gallery PNG/PDF/movies/identity tests.
+vsc_mcef_photon_barrier.py: molecular_reference (NR) native FFT expectations;
+force_path (NR) connected-support work integral; photon_marginal (Nq) Jacobian;
+vsc_diagnostics static/force/photon figures and numerical arrays.
+run_vsc_mcef_gallery.py: input validation, read-only extractor wrapper, rendering.
+Tests: currents, coordinate scaling, photon normalization/variance, disconnected
+support, all math labels/PNG/PDF. No synthetic test is a physical production run.
+
+Send gallery_summary.json and chosen PNGs/movies; do not resend full Psi.
