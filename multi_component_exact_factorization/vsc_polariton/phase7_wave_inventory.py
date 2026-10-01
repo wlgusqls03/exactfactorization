@@ -15,7 +15,10 @@ from .phase7_transfer_utils import digest,events,AU_FS
 RUNS={
  'free':'free_recovery_campaign_v1/free_L36_dx0.3/full',
  'resonant':'orthogonal_campaign_v1/F120_dt0125/full',
- 'barrier':'free_recovery_campaign_v1/barrier_F120/full'}
+ 'barrier':'free_recovery_campaign_v1/barrier_F120/full',
+ 'barrier_F160':'free_recovery_campaign_v1/barrier_F160/full'}
+PACKETS={'barrier':'completion_transfer/inputs/barrier_F120.npz',
+         'barrier_F160':'completion_transfer/inputs/barrier_F160.npz'}
 
 
 def main():
@@ -24,7 +27,7 @@ def main():
     parser.add_argument('--out',type=Path,default=Path('results/vsc_polariton/phase7/wave_inventory_v1'))
     parser.add_argument('--pack-events',action='store_true')
     args=parser.parse_args()
-    args.out.mkdir(parents=True,exist_ok=False);report={};selected={}
+    args.out.mkdir(parents=True,exist_ok=False);report={};selected={};barrier_frames={}
     for case,relative in RUNS.items():
         folder=args.root/relative
         if not folder.is_dir():
@@ -36,6 +39,16 @@ def main():
         for path in sorted(folder.glob('wave_*.npz')):
             with np.load(path) as z:time=float(z['time_au'])
             waves.append((time,path))
+        packet=args.root/PACKETS[case] if case in PACKETS else None
+        provenance={'status':'UNKNOWN','path':str(packet) if packet else None}
+        if packet is not None:
+            if not packet.is_file():provenance['status']='MISSING'
+            else:
+                provenance.update(sha256=digest(packet),status='VERIFIED' if digest(packet)==status.get('input_sha256') else 'MISMATCH')
+                sidecar=packet.with_suffix('.json')
+                if sidecar.is_file():provenance['sidecar_sha256']=digest(sidecar)
+            if provenance['status']=='VERIFIED':
+                barrier_frames[case]=(packet,waves)
         rows=[]
         for path in sorted(folder.glob('observable_*.npz')):
             with np.load(path) as z:rows.append([float(z[k]) for k in ('time_au','product','flux')])
@@ -52,12 +65,16 @@ def main():
             wanted[name]={'target_fs':target*AU_FS,'saved_fs':time*AU_FS,
                           'time_error_fs':error,'path':str(path),
                           'status':'AVAILABLE' if error<=.5 else 'NO_NEARBY_FRAME'}
+            if error<=.5:wanted[name]['sha256']=digest(path)
             # Never substitute a distant frame silently or duplicate pilot endpoints.
             if error<=.5 and time>0 and time<float(status['time_au']):
                 selected[f'{case}/{path.name}']=path
         report[case]={'status':'INVENTORIED','run':str(folder),'input_sha256':status['input_sha256'],
-                      'wave_count':len(waves),'events':wanted,
+                      'packet_provenance':provenance,'wave_count':len(waves),'events':wanted,
                       'wave_times_fs':[float(t*AU_FS) for t,p in waves]}
+    from .phase7_barrier_comparison import compare
+    comparison=compare(barrier_frames,report)
+    (args.out/'barrier_fock_comparison.json').write_text(json.dumps(comparison,indent=2))
     size=sum(p.stat().st_size for p in selected.values())
     report['export']={'files':len(selected),'uncompressed_GiB':size/1024**3,
                       'scope':'Existing event snapshots only; initial/final already supplied; not all-time certification'}
