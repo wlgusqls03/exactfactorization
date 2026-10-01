@@ -39,7 +39,11 @@ class DenseMovieTests(unittest.TestCase):
             for i in range(2):
                 f['time_au']=i*4.;path=root/f'fields_{i:03d}.npz'
                 np.savez(path,**compact_fields(f));paths.append(path)
-            c=render(paths,root/'movies',p['omega'],families=('state','nuclear','photon'),dpi=45)
+            c=render(paths,root/'movies',p['omega'],families=('state','nuclear','photon'),dpi=45,
+                     signed_scale='linear',floor=1e-4)
+            self.assertEqual(c['signed_scale'],'linear')
+            self.assertEqual(c['omega_c_au'],float(p['omega']))
+            self.assertEqual(c['floor'],1e-4)
             self.assertEqual(c['frame_count'],2)
             self.assertFalse(c['sparse_preview'])
             self.assertEqual(len(list((root/'movies').glob('*.mp4'))),3)

@@ -154,6 +154,8 @@ def main(argv=None):
     p.add_argument('--epsilon1-vmax-ev',type=float,
                    help='Display epsilon1 in a FIXED +/- eV range; tails saturate, raw fields unchanged')
     p.add_argument('--epsilon1-scale',choices=('linear','symlog'),default='symlog')
+    p.add_argument('--signed-scale',choices=('linear','symlog'),default='symlog',
+                   help='Display scale for connections, force and epsilon2; densities remain log-scaled')
     p.add_argument('--allow-sparse-preview',action='store_true')
     p.add_argument('--no-render',action='store_true')
     a=p.parse_args(argv)
@@ -170,7 +172,7 @@ def main(argv=None):
         from .vsc_movie_only import render
         render(sorted(a.fields.glob('fields_*.npz')),a.out,omega,a.fps,a.density_floor,
                a.support_budget,a.allow_sparse_preview,a.families,
-               epsilon1_vmax_ev=a.epsilon1_vmax_ev,epsilon1_scale=a.epsilon1_scale)
+               epsilon1_vmax_ev=a.epsilon1_vmax_ev,epsilon1_scale=a.epsilon1_scale,signed_scale=a.signed_scale)
         return
     if not a.validation or not a.source_run:p.error('plan/replay requires --validation and --source-run')
     gate=json.loads(a.validation.read_text());source=json.loads((a.source_run/'status.json').read_text())
@@ -194,7 +196,7 @@ def main(argv=None):
             from .vsc_movie_only import render
             render(sorted((a.out/'fields').glob('fields_*.npz')),a.out/'movies',float(packet['omega']),
                    a.fps,a.density_floor,a.support_budget,False,a.families,
-                   epsilon1_vmax_ev=a.epsilon1_vmax_ev,epsilon1_scale=a.epsilon1_scale)
+                   epsilon1_vmax_ev=a.epsilon1_vmax_ev,epsilon1_scale=a.epsilon1_scale,signed_scale=a.signed_scale)
     finally:lock.unlink()
 
 

@@ -122,7 +122,8 @@ def epsilon1_display(paths,c,vmax_ev=None,scale='symlog'):
     c['limits']['e1']=limit
 
 
-def map_panel(fig,ax,f,c,z,title,unit,bound,mask,positive=False,scale='symlog',saturating=False):
+def map_panel(fig,ax,f,c,z,title,unit,bound,mask,positive=False,scale=None,saturating=False):
+    scale=scale or c.get('signed_scale','symlog')
     norm=LogNorm(max(bound*c['floor'],1e-300),bound) if positive else SymLogNorm(
         max(bound*.01,1e-14),vmin=-bound,vmax=bound)
     if not positive and scale=='linear':norm=Normalize(vmin=-bound,vmax=bound)
@@ -130,7 +131,7 @@ def map_panel(fig,ax,f,c,z,title,unit,bound,mask,positive=False,scale='symlog',s
     artist=ax.pcolormesh(f['R'],f['Q'],np.ma.array(z,mask=~mask).T,
                         shading='auto',norm=norm,cmap=cmap)
     contours(ax,f,c);ax.axvline(0,color='0.4',lw=.7,ls=':')
-    ax.set(title=title,xlabel=r'$R$ ($a_0$)',ylabel=r'$Q=\sqrt{\omega_c}q_c$',ylim=c['Q_limits'])
+    ax.set(title=title,xlabel=r'$R$ ($a_0$)',ylabel=r'$Q=\sqrt{\omega_c}q_c$ (dimensionless)',ylim=c['Q_limits'])
     fig.colorbar(artist,ax=ax,pad=.02,shrink=.8,extend='both' if saturating else 'neither',
                  label=unit+(' (log)' if positive else f' ({scale})'))
 
@@ -153,7 +154,8 @@ def draw(fig,f,c,omega,index,family):
         axs[1,1].plot(R,np.where(mr,f['alpha'],np.nan),color='#426b9a')
         axs[1,1].set(title=r'$\alpha$: marginal nuclear momentum',xlabel=r'$R$ ($a_0$)',ylabel='Momentum (a.u.)',
                      ylim=(-lim['momentum'],lim['momentum']))
-        axs[1,1].set_yscale('symlog',linthresh=max(.01*lim['momentum'],1e-14))
+        if c.get('signed_scale','symlog')=='symlog':
+            axs[1,1].set_yscale('symlog',linthresh=max(.01*lim['momentum'],1e-14))
     elif family=='nuclear':
         axs=fig.subplots(2,2)
         axs[0,0].fill_between(R,0,f['rho_R'],alpha=.45,color='#426b9a')
@@ -167,12 +169,14 @@ def draw(fig,f,c,omega,index,family):
         force=np.where(mr,f['force'],np.nan)
         axs[1,0].plot(R,force,color='#b23a48');axs[1,0].axhline(0,color='0.5',lw=.6)
         axs[1,0].set(title=r'Force: $-\partial_R\epsilon^{(2)}+\partial_t\alpha$',
-            xlabel=r'$R$ ($a_0$)',ylabel='Force (a.u.; symlog)',ylim=(-lim['force'],lim['force']))
-        axs[1,0].set_yscale('symlog',linthresh=max(.01*lim['force'],1e-14))
+            xlabel=r'$R$ ($a_0$)',ylabel='Force (a.u.)',ylim=(-lim['force'],lim['force']))
+        if c.get('signed_scale','symlog')=='symlog':
+            axs[1,0].set_yscale('symlog',linthresh=max(.01*lim['force'],1e-14))
         e=np.where(mr,(f['epsilon2_A'].real-c['offsets_Ha'][index][1])*HA_EV,np.nan)
         axs[1,1].plot(R,e,color='#426b9a');axs[1,1].set(title=r'$\epsilon^{(2)}$: scalar alone is NOT force',
             xlabel=r'$R$ ($a_0$)',ylabel='Mean-aligned energy (eV)',ylim=(-lim['e2'],lim['e2']))
-        axs[1,1].set_yscale('symlog',linthresh=max(.01*lim['e2'],1e-12))
+        if c.get('signed_scale','symlog')=='symlog':
+            axs[1,1].set_yscale('symlog',linthresh=max(.01*lim['e2'],1e-12))
         for ax in axs[1,:]:
             ax.fill_between(R,0,.16*f['rho_R']/c['peak_R'],transform=ax.get_xaxis_transform(),
                             color='0.5',alpha=.18)
@@ -185,7 +189,8 @@ def draw(fig,f,c,omega,index,family):
         map_panel(fig,axs[1],f,c,f['a'],r'$a$: photon quadrature momentum','Momentum (a.u.)',lim['a'],mj)
     for ax in np.asarray(axs).flat:
         if not (family=='nuclear' and ax is axs[0,1]):ax.set_xlim(R[0],R[-1])
-    fig.suptitle(f'{omega*27211.386245988:.3f} meV | t={c["times_fs"][index]:.3f} fs | positive-marginal gauge',fontsize=14)
+    fig.suptitle(f'Cavity: hbar omega_c = {omega*27211.386245988:.3f} meV; omega_c = {omega:.7f} a.u.\n'
+                 f't={c["times_fs"][index]:.3f} fs | positive-marginal gauge',fontsize=13)
     text=(f'Joint-density contours: decades down to {c["floor"]:g} of ONE movie-wide peak; grey = masked. '
           'Diagnostic fields, not Phase7 certification.')
     if c['sparse_preview']:text='SPARSE PREVIEW (not smooth dynamics). '+text
@@ -195,14 +200,16 @@ def draw(fig,f,c,omega,index,family):
 
 
 def render(paths,out,omega,fps=24,floor=1e-5,budget=1e-8,allow_sparse=False,
-           families=('state','nuclear','photon'),dpi=100,epsilon1_vmax_ev=None,epsilon1_scale='symlog'):
+           families=('state','nuclear','photon'),dpi=100,epsilon1_vmax_ev=None,epsilon1_scale='symlog',signed_scale='symlog'):
     """MP4 only; one loaded frame at a time. No PNG/PDF/GIF side products."""
     if not writers.is_available('ffmpeg'):raise RuntimeError('ffmpeg required for MP4')
     if fps<=0 or not 0<floor<1 or not 0<budget<1:raise ValueError('Invalid movie settings')
     if set(families)-{'state','nuclear','photon'}:raise ValueError('Unknown movie family')
+    if signed_scale not in ('linear','symlog'):raise ValueError('Invalid signed scale')
     out=Path(out)
     if out.exists():raise FileExistsError('Choose new movie output directory')
     c=inspect(paths,omega,floor,budget,allow_sparse=allow_sparse)
+    c.update(signed_scale=signed_scale,omega_c_au=float(omega),hbar_omega_c_meV=float(omega*27211.386245988))
     if 'photon' in families:epsilon1_display(paths,c,epsilon1_vmax_ev,epsilon1_scale)
     out.mkdir(parents=True)
     plt.rcParams.update({'font.size':11,'axes.titlesize':12,'axes.spines.top':False,'axes.spines.right':False})
