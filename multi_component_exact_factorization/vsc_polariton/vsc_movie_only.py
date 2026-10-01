@@ -10,7 +10,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib.colors import LogNorm, SymLogNorm
+from matplotlib.colors import LogNorm, SymLogNorm, Normalize
 from matplotlib.animation import FFMpegWriter, writers
 from .phase7_support import budget_support
 
@@ -97,15 +97,42 @@ def contours(ax,f,c):
                               colors=colors,linewidths=.65,alpha=.85)
 
 
-def map_panel(fig,ax,f,c,z,title,unit,bound,mask,positive=False):
+def epsilon1_display(paths,c,vmax_ev=None,scale='symlog'):
+    """Display only: fixed symmetric range, unchanged data/mask/energy offsets.
+
+    Record both site fraction and joint-probability fraction outside the range
+    on the displayed support, so saturated rare extrema are not hidden.
+    """
+    if scale not in ('linear','symlog'):raise ValueError('Invalid epsilon1 scale')
+    if vmax_ev is not None and (not np.isfinite(vmax_ev) or vmax_ev<=0):
+        raise ValueError('epsilon1-vmax-ev must be finite and positive')
+    original=c['limits']['e1'];limit=original if vmax_ev is None else float(vmax_ev)
+    records=[]
+    for i,path in enumerate(paths):
+        f=read_frame(path)
+        _,mask=supports(f,c['floor'],c['peak_joint_q'],c['budget'],c['peak_R'])
+        e=(f['epsilon1_A'].real-c['offsets_Ha'][i][0])*HA_EV
+        saturated=mask & (abs(e)>limit)
+        records.append(dict(time_fs=c['times_fs'][i],
+            saturated_site_fraction=float(saturated.sum()/mask.sum()),
+            saturated_joint_probability_fraction=float(f['rho_qR'][saturated].sum()/f['rho_qR'][mask].sum())))
+    c['epsilon1_display']=dict(scale=scale,vmax_ev=limit,original_max_abs_ev=original,
+        manual_limit=vmax_ev is not None,records=records,
+        meaning='Color saturation only; raw fields, masks and per-frame weighted-mean energy offsets unchanged')
+    c['limits']['e1']=limit
+
+
+def map_panel(fig,ax,f,c,z,title,unit,bound,mask,positive=False,scale='symlog',saturating=False):
     norm=LogNorm(max(bound*c['floor'],1e-300),bound) if positive else SymLogNorm(
         max(bound*.01,1e-14),vmin=-bound,vmax=bound)
+    if not positive and scale=='linear':norm=Normalize(vmin=-bound,vmax=bound)
     cmap=plt.get_cmap('magma' if positive else 'RdBu_r').copy();cmap.set_bad('#f1f1f1')
     artist=ax.pcolormesh(f['R'],f['Q'],np.ma.array(z,mask=~mask).T,
                         shading='auto',norm=norm,cmap=cmap)
     contours(ax,f,c);ax.axvline(0,color='0.4',lw=.7,ls=':')
     ax.set(title=title,xlabel=r'$R$ ($a_0$)',ylabel=r'$Q=\sqrt{\omega_c}q_c$',ylim=c['Q_limits'])
-    fig.colorbar(artist,ax=ax,pad=.02,shrink=.8,label=unit+(' (log)' if positive else ' (symlog)'))
+    fig.colorbar(artist,ax=ax,pad=.02,shrink=.8,extend='both' if saturating else 'neither',
+                 label=unit+(' (log)' if positive else f' ({scale})'))
 
 
 def draw(fig,f,c,omega,index,family):
@@ -152,7 +179,9 @@ def draw(fig,f,c,omega,index,family):
     else:
         axs=fig.subplots(1,2)
         e=(f['epsilon1_A'].real-c['offsets_Ha'][index][0])*HA_EV
-        map_panel(fig,axs[0],f,c,e,r'$\epsilon^{(1)}$: electronic-level scalar','Mean-aligned eV',lim['e1'],mj)
+        display=c.get('epsilon1_display',{})
+        map_panel(fig,axs[0],f,c,e,r'$\epsilon^{(1)}$: electronic-level scalar','Mean-aligned eV',lim['e1'],mj,
+                  scale=display.get('scale','symlog'),saturating=display.get('manual_limit',False))
         map_panel(fig,axs[1],f,c,f['a'],r'$a$: photon quadrature momentum','Momentum (a.u.)',lim['a'],mj)
     for ax in np.asarray(axs).flat:
         if not (family=='nuclear' and ax is axs[0,1]):ax.set_xlim(R[0],R[-1])
@@ -160,11 +189,13 @@ def draw(fig,f,c,omega,index,family):
     text=(f'Joint-density contours: decades down to {c["floor"]:g} of ONE movie-wide peak; grey = masked. '
           'Diagnostic fields, not Phase7 certification.')
     if c['sparse_preview']:text='SPARSE PREVIEW (not smooth dynamics). '+text
+    if family=='photon' and c.get('epsilon1_display',{}).get('manual_limit'):
+        text+=f'\nEpsilon1: fixed +/-{lim["e1"]:g} eV; end colors saturate beyond range (fractions in JSON).'
     fig.supxlabel(text,fontsize=9)
 
 
 def render(paths,out,omega,fps=24,floor=1e-5,budget=1e-8,allow_sparse=False,
-           families=('state','nuclear','photon'),dpi=100):
+           families=('state','nuclear','photon'),dpi=100,epsilon1_vmax_ev=None,epsilon1_scale='symlog'):
     """MP4 only; one loaded frame at a time. No PNG/PDF/GIF side products."""
     if not writers.is_available('ffmpeg'):raise RuntimeError('ffmpeg required for MP4')
     if fps<=0 or not 0<floor<1 or not 0<budget<1:raise ValueError('Invalid movie settings')
@@ -172,6 +203,7 @@ def render(paths,out,omega,fps=24,floor=1e-5,budget=1e-8,allow_sparse=False,
     out=Path(out)
     if out.exists():raise FileExistsError('Choose new movie output directory')
     c=inspect(paths,omega,floor,budget,allow_sparse=allow_sparse)
+    if 'photon' in families:epsilon1_display(paths,c,epsilon1_vmax_ev,epsilon1_scale)
     out.mkdir(parents=True)
     plt.rcParams.update({'font.size':11,'axes.titlesize':12,'axes.spines.top':False,'axes.spines.right':False})
     for family in families:

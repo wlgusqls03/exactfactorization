@@ -109,3 +109,23 @@ small orchestration tests; this local machine has no GPU production test.
 Historical suite: 183/184 PASS. The remaining test expects an older 1e-3
 mask; it also fails when the HEAD renderer is loaded without these changes.
 No physical/core/propagation functions or historical outputs were changed.
+
+EPSILON1 COLOR-RANGE RERENDER (2026-10-01)
+No TDSE replay, no full-wave extraction, no GPU, no new transfer archive:
+
+OPENBLAS_NUM_THREADS=1 python -m \
+  multi_component_exact_factorization.vsc_polariton.run_vsc_dense_movies \
+  --mode render \
+  --input results/vsc_polariton/phase6_gpu/barrier_f240_server_transfer_v1/inputs/barrier_F240.npz \
+  --fields results/vsc_polariton/photon_real_grid/dense_movies_server_v1/full/fields \
+  --families photon --epsilon1-vmax-ev 5 --epsilon1-scale linear --fps 24 \
+  --out results/vsc_polariton/photon_real_grid/epsilon1_linear5_v1
+
+Output: epsilon1_linear5_v1/vsc_photon_movie.mp4 + movie_manifest.json only.
+Fixed +/-5 eV is a DISPLAY window, NOT a claimed physical bound or converged
+barrier. Values outside saturate with colorbar extension triangles. The original
+extremum and each frame's saturated site/probability fractions are in the JSON.
+Density mask, contours, mean offsets, raw fields and the a panel are unchanged.
+Use e.g. --epsilon1-vmax-ev 2 with a NEW --out for a closer display window;
+--epsilon1-scale symlog is available. Do NOT rerun the replay shell script just
+to change a color range; its source identity correctly guards old restarts.

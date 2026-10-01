@@ -151,9 +151,14 @@ def main(argv=None):
     p.add_argument('--density-floor',type=float,default=1e-5)
     p.add_argument('--support-budget',type=float,default=1e-8)
     p.add_argument('--families',nargs='+',choices=('state','nuclear','photon'),default=['state','nuclear','photon'])
+    p.add_argument('--epsilon1-vmax-ev',type=float,
+                   help='Display epsilon1 in a FIXED +/- eV range; tails saturate, raw fields unchanged')
+    p.add_argument('--epsilon1-scale',choices=('linear','symlog'),default='symlog')
     p.add_argument('--allow-sparse-preview',action='store_true')
     p.add_argument('--no-render',action='store_true')
     a=p.parse_args(argv)
+    if a.epsilon1_vmax_ev is not None and (not np.isfinite(a.epsilon1_vmax_ev) or a.epsilon1_vmax_ev<=0):
+        p.error('--epsilon1-vmax-ev must be finite and positive')
     a.out=a.out.resolve();a.out.relative_to(ROOT.resolve())
     if a.block<1 or a.fps<=0 or not 0<a.density_floor<1 or not 0<a.support_budget<1:p.error('Invalid settings')
     # Set cache destinations before importing Matplotlib. Scientific outputs stay under results.
@@ -164,7 +169,8 @@ def main(argv=None):
         with np.load(a.input,allow_pickle=False) as z:omega=float(z['omega'])
         from .vsc_movie_only import render
         render(sorted(a.fields.glob('fields_*.npz')),a.out,omega,a.fps,a.density_floor,
-               a.support_budget,a.allow_sparse_preview,a.families)
+               a.support_budget,a.allow_sparse_preview,a.families,
+               epsilon1_vmax_ev=a.epsilon1_vmax_ev,epsilon1_scale=a.epsilon1_scale)
         return
     if not a.validation or not a.source_run:p.error('plan/replay requires --validation and --source-run')
     gate=json.loads(a.validation.read_text());source=json.loads((a.source_run/'status.json').read_text())
@@ -187,7 +193,8 @@ def main(argv=None):
         if not a.no_render and status['status']=='COMPLETE_DIAGNOSTIC' and not (a.out/'movies').exists():
             from .vsc_movie_only import render
             render(sorted((a.out/'fields').glob('fields_*.npz')),a.out/'movies',float(packet['omega']),
-                   a.fps,a.density_floor,a.support_budget,False,a.families)
+                   a.fps,a.density_floor,a.support_budget,False,a.families,
+                   epsilon1_vmax_ev=a.epsilon1_vmax_ev,epsilon1_scale=a.epsilon1_scale)
     finally:lock.unlink()
 
 

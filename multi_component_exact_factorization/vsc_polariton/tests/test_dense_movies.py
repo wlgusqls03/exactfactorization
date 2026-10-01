@@ -10,7 +10,7 @@ import numpy as np
 from multi_component_exact_factorization.vsc_polariton.tests.test_real_grid_mcef_preview import fixture
 from multi_component_exact_factorization.vsc_polariton.tests.test_photon_real_grid import fixture as packet_fixture
 from multi_component_exact_factorization.vsc_polariton.real_grid_mcef_fields import analyze
-from multi_component_exact_factorization.vsc_polariton.vsc_movie_only import compact_fields,inspect,render
+from multi_component_exact_factorization.vsc_polariton.vsc_movie_only import compact_fields,inspect,render,epsilon1_display
 from multi_component_exact_factorization.vsc_polariton import run_vsc_dense_movies as runner
 from multi_component_exact_factorization.vsc_polariton.photon_real_grid import RealGridPF,initial_grid
 
@@ -47,6 +47,30 @@ class DenseMovieTests(unittest.TestCase):
             self.assertFalse(list((root/'movies').glob('*.pdf')))
             f['time_au']=100.;np.savez(paths[1],**compact_fields(f))
             with self.assertRaises(ValueError):inspect(paths,p['omega'],1e-5,1e-8)
+
+    def test_epsilon1_manual_scale_preserves_raw_fields_and_offsets(self):
+        u,p,Q=fixture();f=analyze(u,p,Q)
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);paths=[]
+            for i in range(2):
+                f['time_au']=4.*i;path=root/f'fields_{i:03d}.npz'
+                np.savez(path,**compact_fields(f));paths.append(path)
+            before=[path.read_bytes() for path in paths]
+            c=inspect(paths,p['omega'],1e-5,1e-8);offsets=list(c['offsets_Ha'])
+            maximum=c['limits']['e1']
+            epsilon1_display(paths,c,.1,'linear')
+            self.assertEqual(c['limits']['e1'],.1)
+            self.assertEqual(c['epsilon1_display']['original_max_abs_ev'],maximum)
+            self.assertEqual(c['offsets_Ha'],offsets)
+            self.assertGreater(c['epsilon1_display']['records'][0]['saturated_site_fraction'],0)
+            self.assertGreater(c['epsilon1_display']['records'][0]['saturated_joint_probability_fraction'],0)
+            self.assertEqual([path.read_bytes() for path in paths],before)
+            for limit in (-1,0,np.nan,np.inf):
+                with self.assertRaises(ValueError):epsilon1_display(paths,c,limit,'linear')
+            shown=render(paths,root/'manual',p['omega'],families=('photon',),dpi=45,
+                         epsilon1_vmax_ev=.1,epsilon1_scale='linear')
+            self.assertEqual(shown['epsilon1_display']['scale'],'linear')
+            self.assertTrue((root/'manual/vsc_photon_movie.mp4').is_file())
 
     def test_identical_replay_and_completed_reuse(self):
         # Tiny CPU test double covers orchestration; not a production GPU check.
