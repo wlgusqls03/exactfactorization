@@ -73,7 +73,7 @@ def map_axis(ax,f,key,limits):
     im=ax.pcolormesh(f['R'],f['q'],v.T,cmap='RdBu_r',vmin=limits[0],vmax=limits[1],shading='auto')
     ax.contour(f['R'],f['q'],(rho/rho.max()).T,levels=LEVELS,colors='k',linewidths=.45,linestyles='dashed',alpha=.65)
     ax.axvline(4,color='#009E73',ls='--',lw=1.4)
-    ax.set(xlim=(0,6),ylim=(-8,8),xlabel=r'$R$ ($a_0$)',ylabel=r'$q_c$ (a.u.)')
+    ax.set(xlim=(f['R'][0],f['R'][-1]),ylim=(-8,8),xlabel=r'$R$ ($a_0$)',ylabel=r'$q_c$ (a.u.)')
     lo,hi=limits;clipped=float(rho[mask&((f[key]<lo)|(f[key]>hi))].sum()/rho.sum())
     ax.set_title(f'{key}; scale-clipped mass {100*clipped:.3g}%',fontsize=10)
     return im,clipped
@@ -128,7 +128,7 @@ def preflight(root,movies=True):
     return groups
 
 
-def render(root,out,movies=True):
+def render(root,out,movies=True,families=('vectors','tdpes1','outer','cuts')):
     """New figures/MP4 only; original fields and previous renderings remain intact."""
     root=Path(root);out=Path(out)
     if out.exists():raise FileExistsError(out)
@@ -143,18 +143,19 @@ def render(root,out,movies=True):
         # Paper Fig3-style six times and Fig4-style three pairs of cuts.
         for key in ['epsilon1','GI']:
             fig,ax=plt.subplots(2,3,figsize=(12,7),layout='constrained')
-            for axis,t in zip(ax.flat,[0,250,500,750,1000,1250]):
+            snapshot_times=[0,500,1000,1250,1500,2000] if times[-1]>1250 else [0,250,500,750,1000,1250]
+            for axis,t in zip(ax.flat,snapshot_times):
                 f=load(paths[int(np.argmin(abs(np.asarray(times)-t)))]);im,_=map_axis(axis,f,key,style['limits'][key]);axis.set_title(f't={float(f["time_au"]):g} au')
             fig.colorbar(im,ax=ax,label='Ha',extend='both');fig.suptitle(f'{name}: {key} | shared scale | diagnostic, not certified')
             fig.savefig(folder/f'fig3_{key}.png',dpi=150);plt.close(fig)
         fig,ax=plt.subplots(3,2,figsize=(13,11),layout='constrained')
-        for row,t in zip(ax,[250,750,1250]):
+        for row,t in zip(ax,[750,1250,2000] if times[-1]>1250 else [250,750,1250]):
             f=load(paths[int(np.argmin(abs(np.asarray(times)-t)))]);cuts(row,f,c,style)
             row[0].text(.02,.02,f't={float(f["time_au"]):g} au',transform=row[0].transAxes)
         fig.suptitle('PG decomposition | faint solid/dashed: static S0/S1 | triangles: outside energy band')
         fig.savefig(folder/'fig4_components.png',dpi=150);plt.close(fig)
         if movies:
-            for family in ['vectors','tdpes1','outer','cuts']:
+            for family in families:
                 print(f'Render {name}/{family}: {len(paths)} actual frames',flush=True)
                 fig=plt.figure(figsize=(13,6));writer=FFMpegWriter(fps=24,codec='libx264',extra_args=['-pix_fmt','yuv420p','-crf','20','-threads','2'])
                 with writer.saving(fig,str(folder/f'{family}_positive.mp4'),110):
@@ -168,21 +169,22 @@ def render(root,out,movies=True):
                             clipped.append(record)
                             if family=='vectors':
                                 R=f['R_line'];ok=f['rho_R']>ETA*f['rho_R'].max()
-                                axes[2].plot(R,np.where(ok,f['alpha'],np.nan));axes[2].set(xlim=(0,6),ylim=style['limits']['alpha'],xlabel='R (a0)',ylabel='alpha (a.u.)')
+                                axes[2].plot(R,np.where(ok,f['alpha'],np.nan));axes[2].set(xlim=(R[0],R[-1]),ylim=style['limits']['alpha'],xlabel=r'$R$ ($a_0$)',ylabel=r'$\alpha$ (a.u.)')
                                 axes[2].axvline(4,color='#009E73',ls='--')
                         elif family=='outer':
                             axes=fig.subplots(1,2);R=f['R_line'];ok=f['rho_R']>ETA*f['rho_R'].max()
-                            for key,label in [('epsilon2','Total PG'),('epsilon2_cond','Conditional'),('epsilon2_geo','geo'),('epsilon2_GD','GD')]:axes[0].plot(R,np.where(ok,f[key],np.nan),label=label)
-                            axes[0].set(ylim=style['limits']['epsilon2'],xlabel='R (a0)',ylabel='epsilon2 (Ha)');axes[0].legend(fontsize=8)
-                            den=axes[0].twinx();den.plot(R,f['rho_R'],'k:',lw=1);den.set(ylim=(0,style['rho_max']),ylabel='|chi|^2')
-                            axes[1].plot(R,np.where(ok,f['force'],np.nan));axes[1].set(ylim=style['limits']['force'],xlabel='R (a0)',ylabel='-dR epsilon2 + dt alpha (Ha/a0)')
-                            for ax in axes:ax.set_xlim(0,6);ax.axvline(4,color='#009E73',ls='--')
+                            for key,label in [('epsilon2',r'$\epsilon^{(2)}$ (PG)'),('epsilon2_cond',r'$\langle\Xi_R|T_q+V|\Xi_R\rangle$'),('epsilon2_geo',r'$G_R$'),('epsilon2_GD',r'$-i\langle\Xi_R|\partial_t\Xi_R\rangle$')]:axes[0].plot(R,np.where(ok,f[key],np.nan),label=label)
+                            axes[0].set(ylim=style['limits']['epsilon2'],xlabel=r'$R$ ($a_0$)',ylabel=r'$\epsilon^{(2)}$ and components (Ha)');axes[0].legend(fontsize=8)
+                            den=axes[0].twinx();den.plot(R,f['rho_R'],'k:',lw=1);den.set(ylim=(0,style['rho_max']),ylabel=r'$|\chi|^2$')
+                            axes[1].plot(R,np.where(ok,f['force'],np.nan));axes[1].set(ylim=style['limits']['force'],xlabel=r'$R$ ($a_0$)',ylabel=r'$F_R=-\partial_R\epsilon^{(2)}+\partial_t\alpha$ (Ha/$a_0$)')
+                            axes[1].axhline(0,color='0.35',ls='--',lw=1)
+                            for ax in axes:ax.set_xlim(R[0],R[-1]);ax.axvline(4,color='#009E73',ls='--')
                         else:cut_ranges.append(dict(time_au=float(f['time_au']),ranges=cuts(fig.subplots(1,2),f,c,style)))
                         fig.suptitle(f'Model A | g={c.g:g}, omega={c.omega:g} Ha | PG | t={float(f["time_au"]):g} au ({float(f["time_fs"]):.2f} fs)\nDiagnostic display; TDPES1 convergence NOT certified',fontsize=11)
                         fig.tight_layout(rect=(0,0,1,.92));writer.grab_frame()
                 plt.close(fig)
         manifests[name]=dict(frames=len(paths),times_au=times,fps=24,interpolation=False,
             clipped_probability=clipped,full_cut_energy_ranges=cut_ranges,
-            axes_R=[0,6],axes_q=[-8,8],note='R=4 is the population dividing surface, not automatically a static barrier.')
+            axes_R=[c.rmin,c.rmax-(c.rmax-c.rmin)/c.nr],axes_q=[-8,8],note='Maps use decimated grid extent; R=4 is the population dividing surface, not automatically a static barrier.')
     atomic_json(out/'manifest.json',dict(cases=manifests,style=style,certified=False))
     return manifests

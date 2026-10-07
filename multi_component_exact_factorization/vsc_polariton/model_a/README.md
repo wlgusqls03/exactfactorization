@@ -5,6 +5,116 @@
 실제 전자 x-grid도 추가하지 않습니다. 전자 두 상태 모델 안의 full TDSE를
 풀고, 그 파동함수를 positive gauge에서 두 번 exact factorization합니다.
 
+## 2026-10-07: 2000 au 확장 및 상태별 영상 (새 실행)
+
+**2000 au = 48.3777 fs**이다. VSC의 검증 시간창을 늘리는 명령이 아니며 Model A만
+확장한다. 이전 1250 au 결과와 실패 진단은 보존한다. 새 구간에 PASS를 미리 부여하지 않는다.
+
+```bash
+cd /home/hbji/exactfactorization
+git pull
+conda activate MCEF
+CUDA_VISIBLE_DEVICES=1 bash \
+  multi_component_exact_factorization/vsc_polariton/model_a/run_2000_server.sh
+```
+
+기존 서버 `results/vsc_polariton/model_a/server_v1/campaign/`의 여섯 case에
+identity.json, observables.json, ef_diagnostics.json, waves/wave_1250.npz가 필요하다.
+**추가 입력 tar는 필요 없다.** 출력은 `results/vsc_polariton/model_a/server_2000_v1/`.
+GPU는 기존 CPU/GPU equivalence 검사를 통과한 다음 사용하며 float64/complex128 유지.
+두 전자 label 모델이므로 기존 full electron x-grid VSC보다 작다. 11 GiB GPU를 대상으로
+직렬 실행한다. 로컬 GPU 실측은 하지 않았고 서버 backend_check.json이 실제 기준이다.
+
+신규 시작에 **디스크 여유 최소 10 GiB**, CPU RAM 4 GiB 여유를 권한다.
+저장량은 압축률에 따라 달라지며 표시용 fields, 작은 state-projection 파일, sparse wave,
+restart, 영상, return archive만 저장한다. 매 TDSE step의 파동함수는 저장하지 않는다.
+
+- coupled/free: **0–2000 au 재실행**. 기존 dense fields에는 상태별 전자 투영 정보가
+  없어서 필요한 재계산이다. 기존 1250 au wave와 L2 오차 <1e-8 재현 검사를 한다.
+- coupled_grid/coupled_dt/coupled_box/free_grid: **기존 1250 au wave에서 이어서**
+  2000 au까지 실행한다. 입력 grid/dt를 바꾸거나 wave를 보간하지 않는다.
+- 모든 case의 Hamiltonian/초기조건/물리 parameter는 그대로이며 수치 설정도 원래
+  identity에서 읽는다. 큰 box는 원래 존재하던 검증 case이지 기본 paper grid 교체가 아니다.
+- 2.5 au 간격 scalar; 두 기본 case는 801개 실제 EF/state 프레임.
+  full wave는 250 au 간격, restart는 25 au 간격. 재시작은 같은 명령이다.
+- conservation/edge/continuity는 기존 tolerance를 그대로 유지한다. 1250/1500/1750/2000
+  au에서 기존 `compare_fields`로 해상도 차이를 기록한다. 최종 상태는 의도적으로
+  `DIAGNOSTIC_COMPLETE_NOT_CERTIFIED`이며 이 workflow 자체가 전체 PASS를 발급하지 않는다.
+
+연장 전파는 서버 실측 기준으로 수십 분 정도의 규모를 예상하지만, 재전파·CPU EF 추출·
+801-frame 영상 여러 개를 포함한 총 wall time은 더 길다. 전체 작업에는 **1–3시간 정도의
+여유를 계획**하되 이는 benchmark 확정치가 아니다. 계산과 영상은 한 명령으로 연속 실행한다.
+렌더링 중단 시 미완성 영상은 보존하며 자동 덮어쓰지 않는다. 이 경우 재전파가 아니라
+별도 새 렌더링 경로로 복구해야 한다.
+
+### 새 영상에서 보는 것
+
+각 case의 `state_movies/`:
+
+1. `states_R_cuts.mp4`: q=0/약1.5 두 단면에서 R에 따른 surface와 전자 상태별 joint density.
+2. `states_q_cuts.mp4`: R=2/4 두 단면에서 q에 따른 같은 분석.
+3. `populations_and_photons.png`: 전체 bare BO/CBO population, photon number, 오른쪽 확률.
+
+두 영상은 윗줄 bare BO reference, 아랫줄 cavity-adiabatic electronic reference이다.
+`C_j(R,q)=sum_e S_j(e;R,q)^* Psi_e(R,q)`를 구해 `|C_j|^2`를 표시한다.
+전자 basis 두 개의 population 합은 원래 밀도/전체 norm과 일치해야 한다.
+색칠 높이는 **surface energy + 고정 배율×밀도**이며 실제 에너지/고전 궤적이 아니다.
+각 cut을 따로 정규화하지 않는다. 좌표는 nearest native-grid 값 그대로 제목에 표기한다.
+
+Bare BO는 `V_BO(R)` eigenstates, CBO는 `V(R,q)` eigenstates이다.
+**이 둘을 vibrational LP/UP라고 부르지 않는다.** VSC의 LP/UP 분석은 어떤 진동–광자
+eigenbasis에 project하는지 별도 정의가 필요하다. 기존 displaced n=0/1 결과도 LP/UP가 아니다.
+현재 명령은 VSC 결과를 가짜 two-polariton 영상으로 바꾸거나 VSC를 다시 전파하지 않는다.
+
+`plots/{coupled,free}/outer_positive.mp4`의 conditional 항은 정확히
+
+```
+Xi_R(q,e) = Lambda_R(q) Phi_Rq(e)
+conditional = <Xi_R | T_q + V(R,q) | Xi_R>_(q,e)
+G_R = (<d_R Xi_R|d_R Xi_R> - alpha^2)/(2M)
+GD = -i <Xi_R|d_t Xi_R>
+epsilon^(2) = conditional + G_R + GD
+F_R = -d_R epsilon^(2) + d_t alpha
+```
+
+즉 conditional에는 photon kinetic/harmonic과 전자 potential 및 LM coupling이 포함되며
+단순 bare BO energy가 아니다. y축 수식과 범례를 표시하고 force=0 수평 점선을 추가했다.
+
+`{coupled,free}/component_movies/components_resolved.mp4`는 왼쪽 R 방향/오른쪽 q 방향,
+위 potential zoom, 중간 geo_q/geo_R 전체 범위, 아래 밀도를 분리한다.
+zoom은 [-.5,.6] Ha로 미리 고정하고 범위 밖 항은 경계 tick으로 알린다. smoothing은 없다.
+기존 Fig.4 전체 범위 그림도 보존한다. 큰 peak가 작은 0.1 Ha 구조를 압축하는 문제를
+표시 패널 분리로 처리하는 것이며 수치 convergence 오류를 감추는 방식이 아니다.
+
+끝나면 **`results/vsc_polariton/model_a/server_2000_v1/model_a_2000_review.tar.gz` 하나**를
+전달하면 된다. JSON/영상/그림/작은 state frames 및 1500/2000 au wave가 포함된다.
+원본 restart와 dense fields는 서버에 보관한다.
+
+### 새 코드 위치 / shape / units / 검증
+
+- `extend_2000.py lines 25–108`: `check_source`, `evolve`. 기존 Model/Propagator/FFT
+  derivative/action/observables/analyze/compact/backend_check를 read-only 재사용한다.
+  wave `(NR,Nq,2)`, 시간 au, 에너지 Ha. 이어가기 vs 직접 split 두 step, 재시작 동일성,
+  원자료 SHA256 보존, source mismatch/overwrite 거부를 시험한다.
+- `extend_2000.py lines 111–166`: `main`. 여섯 기존 설정과 input hash를 사전 고정하고
+  직렬 propagation → 비교 → rendering → 단일 archive. 기준값 변경 없음.
+- `state_movies.py lines 17–50`: `Channels.__init__`, `Channels.project`.
+  논문 Eq.27 bare BO 및 Eq.28 local cavity potential의 고유벡터로 projection.
+  density `(NR,Nq,2)`, cut `(NR,2)`/`(Nq,2)`, population 무차원. 완비성·norm·
+  전자 eigenvector phase 불변성 및 기존 observables.P_Sj와의 일치를 검사.
+- `state_movies.py lines 53–121`: `load`, `render`. NPZ 읽기, 두 방향의 state movies,
+  time trace. source는 위 projection 값. surface Ha, 밀도 display scale을 manifest에 기록.
+  실제 frame cadence만 사용하고 sparse-event interpolation을 거부한다.
+- `component_detail.py lines 12–67`: `draw`, `render`. 기존 native-derivative compact
+  field를 읽고 3×2 패널 생성. synthetic geo=20 Ha에서도 potential zoom과 전체 geo
+  범위가 분리되는지 테스트한다. 새로운 미분은 하지 않는다.
+- `review_plot.py lines 131–190`: `render`. epsilon2 label/conditional 수식과 force
+  zero-line, 연장 시점 snapshots, outer R 전체 box 표시. physical arrays는 변경하지 않는다.
+- `test_extension.py lines 17–78`: 6개 새 테스트. 기존 Model A 테스트와 합쳐 31개.
+
+논문의 grid count/box/dt를 따르는 것과 quotient/second-derivative TDPES의 수렴은
+별개이다. 기본 paper case의 결과를 없애거나 parameter를 맞춰 tuning하지 않는다.
+
 ## 출처와 재현 범위
 
 - E. Sangiogo Gil, D. Lauvergnat, F. Agostini, JCP **161**, 084112 (2024),
