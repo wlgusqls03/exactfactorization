@@ -210,11 +210,122 @@ VSC에서는 Q=sqrt(omega)q이므로 저장된 rho_Q로 `<Q²>/2`를 계산하�
 상호작용 cavity에서 검출되는 방출 광자수와 같다고 해석하지 않습니다.
 VSC 초기 displaced vacuum은 bare N이 이미 0이 아닐 수 있습니다.
 
-## 단위 테스트
+## server_v1 결과를 받은 뒤: event audit + 그림/동영상 개선
+
+2026-10-07 review에서 전체 gate는 NOT_CERTIFIED였다. 큰 box의 internal gate는
+PASS였지만, 기본 box의 continuity와 epsilon1 convergence, P(R>=4)의 경계
+quadrature를 분리해서 확인해야 한다. 따라서 다음 명령은 새 TDSE를 돌리지 않고
+기존 여섯 case의 **1000,1250 au wave 12개**를 재분석한다. 이어서 coupled/free의
+기존 501-frame fields로 그림과 동영상을 다시 만든다. 전파나 GPU 계산은 없다.
+
+```bash
+cd /home/hbji/exactfactorization
+git pull
+conda activate MCEF
+bash multi_component_exact_factorization/vsc_polariton/model_a/run_event_audit_server.sh
+```
+
+GPU/CUDA 선택이 필요 없는 CPU 후처리이다. 실제 결과는 홈 디렉터리 내부
+`results/vsc_polariton/model_a/server_v1/next_review_v1/`에 저장된다.
+로그는 옆의 `next_review_v1.log`이다. 유닛 테스트의 임시 fixture만 /tmp에서
+자동 생성·정리되며 과학 분석 결과를 /tmp에 보관하지 않는다.
+
+**이 단계에서 원래 `run_server.sh`를 다시 실행하지 않는다.** 새 .py 파일 추가로
+전체-package source hash가 달라지므로 기존 전파의 restart가 거부될 수 있다.
+event audit은 원래 numerical kernel인 model.py/factorization.py의 원본 hash를
+검사하고, 원자료를 수정하지 않는 별도 경로이다.
+
+event audit은 대략 수 분~10분, 8개 영상 렌더링은 추가로 수십 분을 예상한다.
+이는 실측 총시간이 아니며 CPU/I/O 부하에 따라 더 길어질 수 있다.
+추가 디스크 최소 1 GiB, 시스템 RAM은 보수적으로 4 GiB 여유를 권한다.
+실제 256×256 저장 wave를 native+2x 평가한 로컬 시험은 약 1.16초,
+peak RAM 287 MiB였다. 가장 큰 624×800 wave는 그보다 큰 메모리가 필요하다.
+GPU의 11 GiB VRAM과는 무관하다. 모든 case를 직렬로 처리한다.
+
+끝나면 아래 파일 **하나만** 로컬로 보내면 된다.
+
+```
+results/vsc_polariton/model_a/server_v1/next_review_v1/model_a_next_review.tar.gz
+```
+
+파동함수 12개, identity/관측/검증 JSON, 재분석 JSON, 원자료 SHA256,
+새 PNG/MP4와 표시 설정을 포함한다. wave의 비압축 원소 크기 합은 약 120 MiB이다.
+동영상의 최종 크기는 인코딩에 따라 달라지며 원본과 return archive가 함께 저장된다.
+전체 fields나 restart는 포함하지 않는다. 별도 입력 압축파일 불필요.
+서버의 기존 wave/fields는 계속 보존해야 한다.
+
+중단된 audit 폴더를 덮어쓰지 않는다. 재실행이 필요하면 새 출력명을 지정한다.
+
+```bash
+bash multi_component_exact_factorization/vsc_polariton/model_a/run_event_audit_server.sh \
+  results/vsc_polariton/model_a/server_v1/campaign \
+  results/vsc_polariton/model_a/server_v1/next_review_v2
+```
+
+### 그림에서 달라진 점
+
+- `plots/coupled/`, `plots/free/`에 Fig.1/3/4 형식 PNG와
+  `vectors_positive.mp4`, `tdpes1_positive.mp4`, `outer_positive.mp4`,
+  `cuts_positive.mp4`를 각각 만든다. 원래 그림은 덮어쓰지 않는다.
+- 밀도 등고선은 매 프레임 joint density 최대값 대비 **1e-5~0.9의 20단계** 검은 점선.
+  색상 마스크는 기존 상대밀도 1e-6을 유지한다. 표시 기준이지 수렴 인증 기준이 아니다.
+- coupled/free 및 전체 시간에 **동일한 고정 축·색상 범위**를 적용한다.
+  b/alpha의 과거 ±60 고정 제한을 없앴다. alpha/force/epsilon2 line 범위는
+  occupied finite 값 전체를 포함한다. 맵과 단면은 밀도 가중 0.1~99.9% 분위수의
+  시간·case 전체 envelope를 사용한다. 색상 포화 확률질량을 프레임마다 저장한다.
+- 단면의 색상은 고정 좌표(q=0/약1.5 또는 R=2/4), 선 종류는
+  total, conditional potential, GI, GD, geo=geo_q+geo_R를 뜻한다.
+  cond는 점 marker를 추가하여 GI와 겹쳐도 구분한다. static S0/S1은 옅은 실선/파선.
+  밀도는 독립적인 오른쪽 축 점선이며 각 cut을 따로 정규화하지 않는다.
+- energy 범위 밖 값은 경계 삼각형과 전체 occupied extrema로 알린다.
+  큰 geometric peak를 삭제하거나 smoothing하지 않는다. `manifest.json`에 범위를 기록한다.
+- R=4 수직 점선은 product population 분할선이다. 자동으로 static barrier 위치를 뜻하지 않는다.
+- 501개 **실제 저장 프레임**을 24 fps로 출력한다. 시간 보간이나 재전파는 하지 않는다.
+
+이 수정은 표시 오류를 줄이지만, epsilon1의 grid convergence 실패를 해결했다고
+주장하지 않는다. 영상에도 diagnostic / not certified를 명시한다.
+
+### 새 코드 위치와 검증 범위
+
+- `event_audit.py lines 27–31`: SHA256 streaming; 원자료 전후 동일성 검증.
+- `event_audit.py lines 34–66`: `integral_fourier`, `populations`.
+  `(NR,Nq,2)` wave에서 rho_R를 구하고 기존 rectangle 합, 경계 half-weight,
+  주기 Fourier 보간함수의 정확한 구간 적분, 2NR wave-first density 적분을 비교한다.
+  probability는 무차원. 동일 Gaussian의 두 grid에서 생기는 가짜 차이 제거를 시험.
+- `event_audit.py lines 69–84`: `fields`. 기존 `analyze`와 `derivative`를 재사용.
+  `epsilon1 = Fqq/(2F) - a²/2 + FRR/(2MF) - b²/(2M)`의 4개 PG QHJ 항,
+  `(NR,Nq)`, Ha. expectation decomposition cond/geo/GD도 그대로 비교한다.
+- `event_audit.py lines 87–132`: `stats`, `compare_fields`. 상대밀도 threshold
+  1e-2/1e-4/1e-6/1e-8, R/q 영역별 RMS·최대 오차·위치·제외 영역·nonfinite
+  확률질량을 기록한다. potential offset fitting을 하지 않는다.
+- `event_audit.py lines 135–142`: `same_wave`. 같은 Fourier wave의 두 축을
+  2배 촘촘하게 평가한 후 native derivatives를 다시 구한다. 이는 후처리 sampling
+  diagnostic이지 새 TDSE propagation/basis convergence가 아니다. norm도 기록.
+- `event_audit.py lines 145–209`: `preflight`, `audit`. 입력 존재/shape/time/source
+  검사, 직렬 분석, wave hash 재확인, 한 개의 tar.gz 생성. 기존 gate 변경 없음.
+- `event_audit.py lines 212–218`: `main`, 명령행 옵션.
+- `test_event_audit.py lines 13–70`: 새 6개 테스트. Model A의 기존 14개와 합쳐
+  패키지 생성·원본 보존·출력 덮어쓰기 거부도 테스트한다.
+- `review_plot.py lines 24–68`: `quantile`, `scan`. 전체 시각/case 공통 표시 범위;
+  native derivative 이후 compact된 기존 map `(NR/2,Nq/2)`와 native line만 읽는다.
+  에너지 Ha, a/b/alpha momentum a.u., 밀도는 원래 quadrature convention.
+- `review_plot.py lines 71–119`: `map_axis`, `cuts`. 20단계 등고선, 포화질량,
+  component cut 및 독립 밀도축. synthetic b=120/alpha=95/geo=15 테스트로
+  예전 축 제한 회피와 clipping 경고를 검증한다. raw field 수정 없음.
+- `review_plot.py lines 122–188`: `preflight`, `render`. 기존 `plot.load`, `plot.fig1`,
+  `model.potential` 재사용; ffmpeg 확인, 원본 시각 사용, 새 그림과 MP4 저장.
+- `next_review.py lines 11–33`: `main`. event audit → rerender → 원본 hash 재검사
+  → 한 개 return archive. 단위 테스트에서 archive 내용/해시/원본 보존 검증.
+- `test_review_plot.py lines 17–77`: 5개 표시·preflight·패키징 테스트.
+  기존 14 + event 6 + 표시/연결 5 = 25개 테스트.
+
+## 단위 테스트 실행
 
 ```bash
 OPENBLAS_NUM_THREADS=1 python -m unittest \
-  multi_component_exact_factorization.vsc_polariton.model_a.test_model_a -v
+  multi_component_exact_factorization.vsc_polariton.model_a.test_model_a \
+  multi_component_exact_factorization.vsc_polariton.model_a.test_event_audit \
+  multi_component_exact_factorization.vsc_polariton.model_a.test_review_plot -v
 ```
 
 Hamiltonian Hermiticity, dense expm과 split 비교 및 수렴 차수, stationary eigenstate 밀도,
