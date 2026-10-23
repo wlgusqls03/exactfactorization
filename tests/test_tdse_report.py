@@ -41,14 +41,16 @@ class TDSEReportTests(unittest.TestCase):
         finally:
             plot.close(fig)
 
-    def test_final_visualization_uses_shared_point_one_percent_focus(self):
+    def test_final_visualization_uses_shared_absolute_density_focus(self):
         args = render_final_visualizations.parse_args(["dummy-run"])
         self.assertEqual(args.analysis_focus_floor, 1.0e-3)
         self.assertEqual(args.tdpes_energy_reference, "raw")
 
+        # The existing renderer uses the shared absolute 1e-5 policy.
+        # analysis_focus_floor is retained only for CLI/caller compatibility.
         density = np.array([[
-            [1.0, 9.9e-4],
-            [1.0e-3, 2.0e-3],
+            [1.0, 9.9e-6],
+            [1.0e-5, 2.0e-5],
         ]])
         obs = {
             "q": np.array([0.0, 1.0]),
@@ -62,6 +64,10 @@ class TDSEReportTests(unittest.TestCase):
             active,
             np.array([[True, False], [True, True]]),
         )
+        changed_compatibility_floor, _, _ = render_final_visualizations._frame_focus(
+            obs, 0, 0.5,
+        )
+        np.testing.assert_array_equal(changed_compatibility_floor, active)
 
     def _write_archive(self, root):
         root = Path(root)
