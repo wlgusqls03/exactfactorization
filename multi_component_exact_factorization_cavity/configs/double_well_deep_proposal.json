@@ -1,0 +1,10 @@
+{
+  "erf_r_lx": 4.0,
+  "erf_r_Rx": 4.0,
+  "erf_r_qx": 5.0,
+  "local_state_method": "local_wall",
+  "local_wall_R": 0.0,
+  "dividing_R": 0.0,
+  "p0": 0.0,
+  "dse": true
+}

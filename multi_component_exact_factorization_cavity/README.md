@@ -289,3 +289,68 @@ BO에 이미 포함된 trap을 중복으로 더하지 않는다. source는 저�
 진단을 그대로 사용하며, 원시 TDSE wave를 다시 계산하지 않는다.
 선택 시각은 가까운 실제 저장시각을 표시한다(이번 예: 0,40.153,80.065 fs).
 일치하는 independent bridge/force cache가 없으면 값을 만들어서 채우지 않는다.
+
+## 별도 double-well 분자 파라미터 탐색 (2026-10-23)
+
+기존 기본값/TDSE/결과를 바꾸지 않고 `double_well_search.py`로 ground BO를 탐색했다.
+외부 quartic potential이나 인위적인 반응 장벽은 추가하지 않았다.
+고정 site ±9.5, 질량 1836, 기존 Shin–Metiu potential 식을 유지한다.
+아래 값은 논문 파라미터를 그대로 복제한 것이 아니라 실제 수치 탐색 결과다.
+
+| 후보 | 변경값 | 우물 위치 a0 | bare 장벽 meV | local v01 meV | 장벽−local v1 meV |
+|---|---|---|---|---|---|
+| 최소 변경/깊은 우물 | erf_r_lx=4.0 (기존 3.1), qx=5 유지 | ±2.20361 | 195.748 | 48.719 | 122.396 |
+| 얕은 우물/반응 분석 후보 | erf_r_lx=4.0, erf_r_qx=2.8 (기존 5) | ±2.36929 | 50.8175 | 28.8520 | 6.0927 |
+
+두 경우 모두 erf_r_Rx=4 유지. 좌우 전자 smoothing은 같아지지만 기존 핵–핵 항은
+왼쪽 bare/right softened 그대로이므로 전역 대칭을 강제로 부여한 모델은 아니다.
+반응 영역에서 우물 에너지가 거의 같다. 기존 default는 single_well 그대로 보존했다.
+
+검증: nx=359→719, R sampling 401→801, 전자 box [-22,30]→[-28.5,36.5]
+(확대 box nx=899, 같은 fine dx). 매번 최소점 2개/장벽 1개와 양쪽 양의 장벽을 확인했다.
+최대 장벽 높이 변화는 깊은 후보 1.80e-8 Ha, 얕은 후보 3.27e-11 Ha였다.
+이 기준은 BO topology에 대한 검증이지 real-time TDSE convergence 인증이 아니다.
+
+얕은 후보의 DSE-on fixed-R 전자+광자 ground reference도 zero/weak/strong 모두
+double well을 유지했다. 국소 BO 진동 basis로 보정한 strong coupling에서 장벽은
+약 51.49 meV다. BO4→6 비교 최대 차이 8.17e-7 Ha, Fock32→64 차이 약 2.3e-16 Ha.
+이 reference를 global vibrational LP/UP surface로 부르지 않는다. 국소 6-state 진동
+보정은 장시간/전체 양자 동역학을 검증하지 않으며 strong의 의미도 linewidth 기준이 아니다.
+
+초기 local v1은 saddle의 Dirichlet preparation wall로 준비한다. 이 wall은 full TDSE에
+추가하지 않는다. 표의 주파수는 정확히 R=0에 wall을 둔 분석 값이다. 실제 native workflow의
+격자에서는 preparation endpoint가 R=0.02라서 얕은 후보 gap은 0.00105799553 Ha
+(표의 0.00106029026 Ha와 약 0.22% 차이)다. production은 저장된 실제 calibration을
+사용해야 하며 wall/초기상태 수렴도 확인해야 한다. p0=0, photon vacuum, S0 준비다.
+
+깊은 후보는 v1이 장벽보다 매우 낮아 짧은 시간의 반응 관찰에 불리하다.
+얕은 후보도 즉시 전달을 보장하지 않는다. BO global v1 doublet으로만 계산한
+pi*hbar/DeltaE는 약 789 fs이며, 이는 순수한 해당 doublet 조합의 교환 시간 척도이지
+실제 준비 상태/전체 전자–광자–핵 반응률이나 TDSE 예측은 아니다.
+
+실제 결과: `results/20261023/double_well_search_v1/`의 `validation/`(깊은 후보),
+`shallow_validation/`, `cavity/`, `shallow_cavity/`. 각각 PNG/PDF, 숫자 JSON, 작은 NPZ.
+새 폴더로 재현하려면:
+
+```bash
+OPENBLAS_NUM_THREADS=1 python -m multi_component_exact_factorization_cavity.double_well_search \
+  scan --out results/20261023/my_double_well_scan
+OPENBLAS_NUM_THREADS=1 python -m multi_component_exact_factorization_cavity.double_well_search \
+  validate --moving-range 2.8 --out results/20261023/my_double_well_validation
+OPENBLAS_NUM_THREADS=1 python -m multi_component_exact_factorization_cavity.double_well_search \
+  cavity --validation-dir results/20261023/my_double_well_validation \
+  --out results/20261023/my_double_well_static_cavity
+```
+
+저장소에 포함된 `configs/double_well_{deep,shallow}_proposal.json`은 **분자 설정 제안**이다.
+기존 실행 CLI에 연결 가능하지만 production 인증 preset은 아니다. 실제 격자 초기상태 보정:
+
+```bash
+OPENBLAS_NUM_THREADS=1 python -m multi_component_exact_factorization_cavity.workflow calibrate \
+  --config multi_component_exact_factorization_cavity/configs/double_well_shallow_proposal.json \
+  --out results/20261023/my_double_well_calibration
+```
+
+`--preset smoke`는 초기상태 method를 single_well로 override하므로 이중 우물 smoke에서
+사용할 경우 `--set 'local_state_method="local_wall"'`을 명시해야 한다.
+이번 탐색에서는 장시간 전파를 하지 않았고 원래 model을 대체하지 않았다.
