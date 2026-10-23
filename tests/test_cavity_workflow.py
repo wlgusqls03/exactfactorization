@@ -5,10 +5,17 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import numpy as np
-from multi_component_exact_factorization_cavity.workflow import run_case,write_npz,AU_PER_FS
+from multi_component_exact_factorization_cavity.workflow import run_case,write_npz,AU_PER_FS,main
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_render_cli_accepts_separate_output_and_reference_cache(self):
+        with patch('multi_component_exact_factorization_cavity.render.render_case',return_value={}) as render:
+            main(['render','--out','input_case','--report-out','new_report',
+                  '--references','refined/references.npz','--no-movies'])
+        render.assert_called_once_with(Path('input_case'),movies=False,
+            output_dir=Path('new_report'),reference_path=Path('refined/references.npz'))
+
     def config(self):
         return dict(nx=24,nR=48,nQ=24,Q_max=7.,R_left=-8.,R_right=8.,
                     n_bo=3,n_vib=4,n_fock_analysis=4,t_final_fs=0.,dt_au=.01,

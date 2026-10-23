@@ -388,6 +388,10 @@ def main(argv=None):
     p.add_argument('--jobs',type=int,choices=[1,2,3],default=1)
     p.add_argument('--gpu',action='store_true');p.add_argument('--resume',action='store_true')
     p.add_argument('--no-movies',action='store_true')
+    p.add_argument('--report-out',type=Path,
+                   help='render only: separate new report directory; preserve original report')
+    p.add_argument('--references',type=Path,
+                   help='render only: optional separately refined static reference cache')
     p.add_argument('--set',action='append',default=[],metavar='KEY=JSON')
     a=p.parse_args(argv)
     c=configuration(json.loads(a.config.read_text()) if a.config else {})
@@ -408,7 +412,8 @@ def main(argv=None):
         packet=cached_prepare(c,a.out/'cache');write_json(a.out/'calibration.json',packet['calibration']);return
     if a.command=='render':
         from .render import render_case
-        render_case(a.out,movies=not a.no_movies);return
+        render_case(a.out,movies=not a.no_movies,output_dir=a.report_out,
+                    reference_path=a.references);return
     campaigns=['pen','vsc'] if a.campaign=='both' else [a.campaign]
     cases=['zero','weak','strong'] if a.case=='all' else [a.case]
     if a.command=='run':

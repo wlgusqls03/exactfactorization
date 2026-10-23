@@ -234,3 +234,58 @@ short validation은 같은 공간 격자의 dt/dt2 fidelity·핵 밀도·에너�
 장시간 결론에는 x/R/Q 해상도, Q-box, dt, 분석 BO/Fock/vib 수, local-state 경계, support를
 각각 바꾼 수렴 검증이 필요하다. 반사/recrossing을 노이즈라고 자동 삭제하지 않는다.
 오래된 protected manifest와의 기존 불일치는 기록만 하고 원본을 갱신하지 않는다.
+
+## 표시 개선 및 저장된 결과의 재렌더
+
+밀도 등고선은 frame peak에 대한 상대값 1e-5부터 .95까지 28개다.
+2D 맵은 occupied support+margin을 따라가며, 1D 축은 시간열 전체의 occupied
+window 합집합으로 고정한다. total/GI/GD를 보기 좋게 만들기 위해 임의로 이동시키지 않는다.
+저장 시각 간격이 1 fs를 넘으면 camera smoothing을 초기화한다. 따라서 0/40/80 fs
+스냅샷은 이전 밀도 영역을 끌고 오지 않으며, 촘촘한 영상 프레임만 부드럽게 추적한다.
+별도 `reference_focus/`는 absolute GI와 가까운 기준면 두 개를 확대하고,
+차이는 명시적으로 meV로 표시한다. '가까운 기준면' 선택은 population이나 LP/UP 판정이 아니다.
+
+현재 positive-marginal gauge에서는 정규화된 밀도가중 평균 GD가 -<H>다.
+이는 초기만의 성질이 아니며, 각 R에서 GD가 동일한 상수라는 의미도 아니다.
+따라서 raw total의 절대 높이를 static BO/CBO/POL 높이와 곧바로 비교하여
+장벽 변화로 해석하지 않는다. force는 여전히 -partial_R epsilon2+alpha_t다.
+고정 heavy의 trap은 alpha_h*(heavy_fixed-heavy_trap_center)^2라는 상수다.
+기본값 둘 다 9.5이면 0이며, 새 proton R에 harmonic trap을 추가한 것이 아니다.
+
+VSC의 outer reference 라벨 `E^{x+q_c}_k`는 fixed-R 전자–광자 에너지다.
+zero coupling에서 낮은 네 개는 S0와 photon n=0,1,2,3의 ladder일 수 있다.
+T_R를 포함한 global vibrational LP/UP와 같은 상태들이 아니다.
+smoke의 Fock 분석 basis 4개는 coupling된 reference에도 충분하지 않을 수 있다.
+다음은 전파하지 않고 static reference만 확대하는 예다. 원래 population은 바꾸지 않는다.
+
+```bash
+python -m multi_component_exact_factorization_cavity.reference_refine \
+  --case-dir results/20261023/cavity_smoke_v3/vsc/strong \
+  --out results/20261023/my_static_refs_v1 --compare-fock 8 --fock 16
+python -m multi_component_exact_factorization_cavity.workflow render \
+  --out results/20261023/cavity_smoke_v3/vsc/strong \
+  --references results/20261023/my_static_refs_v1/refined_refs_vsc_strong.npz \
+  --report-out results/20261023/my_vsc_report_v1 --no-movies
+```
+
+`--no-movies`를 빼면 기존 실제 프레임으로 MP4도 생성한다. reference 계산은 기존
+config/metadata/analysis 및 molecular cache가 필요하고 physics source SHA를 검사한다.
+새 `--report-out` 경로를 지정하면 과거 report를 그대로 보존한다.
+
+일반 MCEF는 기존 소형 source snapshot과 postprocessed TDPES member만 읽어 연결한다:
+
+```bash
+python -m multi_component_exact_factorization_cavity.mcef_preview \
+  --run-dir results/20260916/erf_fullgrid_BOcurvature_compact_qR_analysisBO2_100fs \
+  --out results/20261023/my_mcef_display_cache_v1 --times-fs 0 40 80
+python -m multi_component_exact_factorization_cavity.workflow render \
+  --out results/20261023/my_mcef_display_cache_v1 \
+  --report-out results/20261023/my_mcef_report_v1 --no-movies
+```
+
+이 경우 q=proton(가로), R=heavy(세로), 기준면은 ordinary BO다.
+기존 external-harmonic convention에 맞춰 effective TDPES를 복원하고,
+BO에 이미 포함된 trap을 중복으로 더하지 않는다. source는 저장된 density continuity
+진단을 그대로 사용하며, 원시 TDSE wave를 다시 계산하지 않는다.
+선택 시각은 가까운 실제 저장시각을 표시한다(이번 예: 0,40.153,80.065 fs).
+일치하는 independent bridge/force cache가 없으면 값을 만들어서 채우지 않는다.

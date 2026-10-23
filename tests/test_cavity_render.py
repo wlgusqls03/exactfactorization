@@ -1,6 +1,7 @@
 """Lightweight layout/cache tests; no production simulations or video encoding."""
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,7 @@ from multi_component_exact_factorization_cavity.render import (
     outer_force_figure,
     static_context_figure,
     cbo_comparison_figure,
+    CONTOUR_LEVELS, reference_focus_figure, _prepare_reference_focus, render_case,
 )
 from multi_component_exact_factorization_cavity.schematics import (
     correlation_figure, resonance_figure,
@@ -145,6 +147,65 @@ class CavityRenderTests(unittest.TestCase):
             fig=source_figure(f,d,0,ref)
             source=next(line for line in fig.axes[4].lines if line.get_label()==r'$S_q$')
             self.assertTrue(np.all(np.isnan(source.get_ydata()[~qsupport])));plt.close(fig)
+
+    def test_mcef_orientation_dense_contours_and_fixed_union_viewport(self):
+        f=frame();f['system']='mcef';f['scalar_kind']='effective TDPES with external harmonic'
+        self.assertGreaterEqual(len(CONTOUR_LEVELS),22);self.assertLessEqual(len(CONTOUR_LEVELS),28)
+        self.assertAlmostEqual(CONTOUR_LEVELS[0],1e-5);self.assertAlmostEqual(CONTOUR_LEVELS[-1],.95)
+        with tempfile.TemporaryDirectory() as directory:
+            p=Path(directory)/'f.npz';np.savez(p,**f);d=prepare_display([p])
+            fig=bridge_figure(f,d,0)
+            self.assertIn('$q$',fig.axes[0].get_xlabel());self.assertIn('$R$',fig.axes[0].get_ylabel())
+            np.testing.assert_allclose(fig.axes[0].get_xlim(),d['windows'][0][2:])
+            np.testing.assert_allclose(fig.axes[0].get_ylim(),d['windows'][0][:2])
+            np.testing.assert_allclose(fig.axes[0].collections[0].get_array(),f['epsilon1'].ravel())
+            np.testing.assert_allclose(fig.axes[1].get_xlim(),d['line_xlim_R'])
+            np.testing.assert_allclose(fig.axes[3].get_xlim(),d['line_xlim_q'])
+            self.assertIn('eff',fig.axes[0].get_title());plt.close(fig)
+
+    def test_reference_focus_preserves_absolute_gi_and_marks_outer_subsystem(self):
+        f=frame();f['epsilon1_GI']=f['epsilon1']-.22;f['epsilon2_GI']=f['epsilon2']-.22
+        refs=dict(R=f['R'],q=f['q'],cbo=np.stack([f['epsilon1_GI']+.005*j for j in range(3)],axis=-1),
+                  pol_energy=np.stack([f['epsilon2_GI']+.002*j for j in range(3)],axis=-1))
+        original=f['epsilon2_GI'].copy()
+        with tempfile.TemporaryDirectory() as directory:
+            p=Path(directory)/'f.npz';np.savez(p,**f);d=prepare_display([p],refs)
+            d['reference_focus_limits']=_prepare_reference_focus([p],[0],d,refs)
+            fig=reference_focus_figure(f,d,refs);fig.canvas.draw()
+            line=fig.axes[0].lines[0];valid=np.isfinite(line.get_ydata())
+            np.testing.assert_array_equal(line.get_ydata()[valid],original[valid])
+            np.testing.assert_array_equal(f['epsilon2_GI'],original)
+            self.assertIn('electron + photon',fig.axes[0].get_title())
+            self.assertIn('Absolute',fig.axes[0].get_ylabel());plt.close(fig)
+
+    def test_external_references_and_output_directory_do_not_overwrite_old_report(self):
+        f=frame()
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);case=root/'case';(case/'fields').mkdir(parents=True)
+            np.savez(case/'fields/fields_0000000.npz',**f)
+            (case/'report').mkdir();sentinel=case/'report/keep.txt';sentinel.write_text('preserve')
+            external=root/'refined.npz';np.savez(external,R=f['R'],q=f['q'],cbo=f['epsilon1'][:,:,None])
+            out=root/'new_report'
+            with mock.patch('multi_component_exact_factorization_cavity.render._save'):
+                result=render_case(case,movies=False,output_dir=out,reference_path=external)
+            self.assertEqual(sentinel.read_text(),'preserve')
+            self.assertTrue((out/'render_manifest.json').exists())
+            self.assertTrue(result['reference_cache']['external'])
+            self.assertEqual(result['reference_cache']['path'],str(external.resolve()))
+            self.assertTrue(all(str(out) in p for p in result['outputs']))
+
+    def test_sparse_snapshot_camera_resets_instead_of_following_old_packet(self):
+        f=frame();R,q=f['R'],f['q']
+        with tempfile.TemporaryDirectory() as directory:
+            files=[]
+            for n,center in enumerate((-2.,2.)):
+                joint=np.exp(-(R[:,None]+1)**2-((q[None,:]-center)/.25)**2)
+                rho=joint.sum(axis=1)*(q[1]-q[0]);g=dict(f)
+                g.update(t_fs=40.*n,rho_qR=joint,rho_R=rho,lambda_density=joint/rho[:,None])
+                p=Path(directory)/f'f{n}.npz';np.savez(p,**g);files.append(p)
+            sequence=prepare_display(files);single=prepare_display([files[-1]])
+            np.testing.assert_allclose(sequence['windows'][-1],single['windows'][0])
+            self.assertGreater(sequence['windows'][-1][2],.5)
 
 
 if __name__=='__main__':

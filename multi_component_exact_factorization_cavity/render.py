@@ -9,6 +9,7 @@ not claims that the exact time-dependent scalar equals a static surface.
 from __future__ import annotations
 
 import json
+import hashlib
 import warnings
 from pathlib import Path
 
@@ -25,6 +26,8 @@ COLORS = dict(total='#161616', GI='#0072B2', GD='#D55E00', b='#0072B2',
               alpha='#D55E00', delta='#009E73', S_q='#0072B2',
               S_adv='#D55E00', S_rel='#009E73')
 REF_COLORS = ['#7B3294', '#E69F00', '#398439', '#CC79A7']
+CONTOUR_LEVELS = np.r_[np.geomspace(1e-5,.075,10),np.arange(.10,1.,.05)]
+CAMERA_RESET_GAP_FS = 1.0
 STYLE = {'font.size': 14, 'axes.titlesize': 18, 'axes.labelsize': 16,
          'xtick.labelsize': 13, 'ytick.labelsize': 13, 'legend.fontsize': 11,
          'figure.titlesize': 23, 'axes.spines.top': False,
@@ -56,6 +59,35 @@ def _get(f, key):
 
 def _time(f):
     return float(f.get('t_fs', f.get('time_fs', 0.)))
+
+
+def _is_mcef(f):
+    return str(np.asarray(f.get('system','cavity')).item()).lower()=='mcef'
+
+
+def _q_label(f):
+    return r'$q$ ($a_0$)' if _is_mcef(f) else r'$q_c$ (a.u.)'
+
+
+def _q_symbol(f):
+    return 'q' if _is_mcef(f) else 'q_c'
+
+
+def _reference_name(f):
+    return 'BO' if _is_mcef(f) else 'CBO'
+
+
+def _line_xlim(display,coordinate,f):
+    return display.get('line_xlim_'+coordinate,(float(f[coordinate][0]),float(f[coordinate][-1])))
+
+
+def _mcef_outer_bo_cut(f,references,q_index):
+    """A fixed-proton BO comparison cut, NOT an outer adiabatic eigenproblem."""
+    rr=np.asarray(references.get('R',f['R']));qq=np.asarray(references.get('q',f['q']))
+    points=np.column_stack((rr,np.full(len(rr),f['q'][q_index])))
+    energy=RegularGridInterpolator((rr,qq),_real(references['cbo'])[:,:,:4],
+                                   bounds_error=False,fill_value=np.nan)(points)
+    return rr,energy
 
 
 def _nice(ax, xlabel=None, ylabel=None, limits=None):
@@ -118,20 +150,27 @@ def _window(f, previous=None):
 def _map(ax, f, key, limits, window, r_slice, title):
     values = _get(f, key)
     R, q = f['R'], f['q']
-    artist = ax.pcolormesh(R, q, values.T, shading='auto', cmap='viridis' if key=='lambda_density' else 'RdBu_r',
+    mcef=_is_mcef(f)
+    horizontal,vertical=(q,R) if mcef else (R,q)
+    shown=values if mcef else values.T
+    artist = ax.pcolormesh(horizontal,vertical,shown, shading='auto', cmap='viridis' if key=='lambda_density' else 'RdBu_r',
                            vmin=limits[0], vmax=limits[1], rasterized=True)
     density = _real(f['rho_qR'])
     peak = np.nanmax(density)
     if peak > 0:
-        levels = peak*np.array([1e-5, 3e-5, 1e-4, 3e-4, 1e-3, 3e-3,
-                                .01, .03, .1, .25, .5, .75, .9])
+        levels = peak*CONTOUR_LEVELS
         if np.nanmin(density) < levels[-1]:
-            ax.contour(R, q, density.T, levels=levels, colors='black',
-                       linewidths=.65, alpha=.82)
-    ax.axvline(r_slice, color='#373737', ls='--', lw=1.6)
-    ax.set_xlim(window[:2]); ax.set_ylim(window[2:])
+            ax.contour(horizontal,vertical,density if mcef else density.T,
+                       levels=levels,colors='black',linewidths=.72,alpha=.88)
+    if mcef:
+        ax.axhline(r_slice,color='#373737',ls='--',lw=1.6)
+        ax.set_xlim(window[2:]);ax.set_ylim(window[:2])
+    else:
+        ax.axvline(r_slice,color='#373737',ls='--',lw=1.6)
+        ax.set_xlim(window[:2]);ax.set_ylim(window[2:])
     ax.set_title(title)
-    ax.set_xlabel(r'$R$ ($a_0$)'); ax.set_ylabel(r'$q_c$ (a.u.)')
+    ax.set_xlabel(_q_label(f) if mcef else r'$R$ ($a_0$)')
+    ax.set_ylabel(r'$R$ ($a_0$)' if mcef else _q_label(f))
     ax.xaxis.set_major_locator(MaxNLocator(nbins=6, integer=True))
     ax.yaxis.set_major_locator(MaxNLocator(nbins=5, integer=True))
     bar = ax.figure.colorbar(artist, ax=ax, fraction=.047, pad=.02)
@@ -172,7 +211,7 @@ def prepare_display(files, references=None):
     first = _load(files[0]); R, q = first['R'], first['q']
     i = int(np.nanargmax(first['rho_R']))
     j = int(np.nanargmax(np.sum(first['rho_qR'], axis=0)))
-    windows = []; previous = None; outer_windows = []
+    windows = []; previous = None; outer_windows = [];previous_time=None
     integrated = np.zeros_like(first['rho_qR'], dtype=float)
     for path in files:
         f = _load(path); joint = _real(f['rho_qR'])
@@ -209,7 +248,12 @@ def prepare_display(files, references=None):
                 key = f'epsilon{level}{suffix}'
                 if key in f:
                     collect(f'energy{level}',_real(f[key])[support if level==1 else outer])
-        previous = _window(f, previous); windows.append(previous)
+        now=_time(f)
+        # A sparse 0/40/80 fs snapshot set must not retain the old packet's
+        # camera bounds as if those frames were adjacent dense-movie frames.
+        if previous_time is not None and now-previous_time>CAMERA_RESET_GAP_FS:
+            previous=None
+        previous = _window(f, previous); windows.append(previous);previous_time=now
         outer_windows.append(_bounds(f['R'],outer))
     # Draw reference curves on their full x grid, but select energy ranges
     # ONLY from the union of occupied windows + margin. Empty photon-box
@@ -235,6 +279,12 @@ def prepare_display(files, references=None):
             values=_real(references['pol_energy'])[selected,:4]
             values=values[np.isfinite(values)]
             if len(values): reference_ranges['energy2']=(float(values.min()),float(values.max()))
+        elif _is_mcef(first) and 'cbo' in references:
+            rr,cut=_mcef_outer_bo_cut(first,references,j)
+            selected=np.zeros(len(rr),dtype=bool)
+            for rmin,rmax in outer_windows:selected|=(rr>=rmin)&(rr<=rmax)
+            values=cut[selected];values=values[np.isfinite(values)]
+            if len(values):reference_ranges['energy2']=(float(values.min()),float(values.max()))
     scales = {k: _range(v, symmetric=k in ('a','b','source','momentum','alpha_residual','e2_residual','force')) for k,v in samples.items()}
     for key,(reference_lo,reference_hi) in reference_ranges.items():
         lo=min(scales[key][0],reference_lo); hi=max(scales[key][1],reference_hi)
@@ -245,8 +295,11 @@ def prepare_display(files, references=None):
         return [int(np.searchsorted(c, v)) for v in (.25,.75)]
     slices_R = sorted(set([i]+quantiles(integrated.sum(axis=1))))[:2]
     slices_q = sorted(set([j]+quantiles(integrated.sum(axis=0))))[:2]
+    line_xlim_R=(float(min(w[0] for w in outer_windows)),float(max(w[1] for w in outer_windows)))
+    line_xlim_q=(float(min(w[2] for w in windows)),float(max(w[3] for w in windows)))
     return dict(scales=scales, windows=windows, i=i, j=j,
                 slices_R=slices_R, slices_q=slices_q,
+                line_xlim_R=line_xlim_R,line_xlim_q=line_xlim_q,
                 reference_ranges=reference_ranges,
                 reference_range_policy='Full curves drawn; y limits cover all shown reference states inside the union of occupied support+margin windows. Unoccupied reference tails may be outside the y viewport.')
 
@@ -258,16 +311,24 @@ def _references(ax, ref, f, *, level, direction='q', fixed_index=0):
                 ha='right',va='top',fontsize=10,color='0.4')
         return
     if level == 2:
+        if _is_mcef(f) and 'cbo' in ref:
+            rr,e=_mcef_outer_bo_cut(f,ref,fixed_index)
+            for k in range(e.shape[1]):
+                ax.plot(rr,e[:,k],ls='--',lw=1.5,color=REF_COLORS[k],label=fr'$BO_{k}(q_s,R)$')
+            ax.text(.99,.98,fr'BO cut at $q_s={f["q"][fixed_index]:.2f}$ (reference only)',
+                    transform=ax.transAxes,ha='right',va='top',fontsize=10,color='.4')
+            return
         if 'pol_energy' not in ref:
-            ax.text(.99,.98,'Fixed-R polaritonic references unavailable',
+            ax.text(.99,.98,'Outer references unavailable' if _is_mcef(f) else 'Fixed-R electron–photon references unavailable',
                     transform=ax.transAxes,ha='right',va='top',fontsize=10,color='0.4')
             return
         e = _real(ref['pol_energy']); rr = ref.get('R', f['R'])
         for k in range(min(4,e.shape[-1])):
-            ax.plot(rr,e[:,k],ls='--',lw=1.5,color=REF_COLORS[k],label=fr'$E^{{pol}}_{k}$')
+            label=fr'$E^{{ref}}_{k}$' if _is_mcef(f) else fr'$E^{{x+q_c}}_{k}$'
+            ax.plot(rr,e[:,k],ls='--',lw=1.5,color=REF_COLORS[k],label=label)
         return
     if 'cbo' not in ref:
-        ax.text(.99,.98,'CBO unavailable',transform=ax.transAxes,ha='right',va='top',fontsize=10,color='0.4')
+        ax.text(.99,.98,_reference_name(f)+' unavailable',transform=ax.transAxes,ha='right',va='top',fontsize=10,color='0.4')
         return
     rr, qq = ref.get('R', f['R']), ref.get('q',f['q'])
     energy = _real(ref['cbo'])
@@ -278,7 +339,7 @@ def _references(ax, ref, f, *, level, direction='q', fixed_index=0):
     for k in range(min(4,energy.shape[-1])):
         # Interpolation is solely a static-reference display operation.
         values = RegularGridInterpolator((rr,qq),energy[:,:,k],bounds_error=False,fill_value=np.nan)(points)
-        ax.plot(coordinate,values,ls='--',lw=1.5,color=REF_COLORS[k],label=fr'CBO {k}')
+        ax.plot(coordinate,values,ls='--',lw=1.5,color=REF_COLORS[k],label=f'{_reference_name(f)} {k}')
 
 
 def _line_support(f,level,selector=None):
@@ -316,7 +377,7 @@ def _scalar_lines(ax, coordinate, f, level, selector=None):
     _unsupported_note(ax,support)
 
 
-def _momentum(ax, f, i, limit):
+def _momentum(ax, f, i, limit, xlim=None):
     q=f['q']; b=_get(f,'b')[i]; alpha=float(_get(f,'alpha')[i])
     support=_line_support(f,1,i)
     _silhouette(ax,q,f['lambda_density'][i])
@@ -324,7 +385,7 @@ def _momentum(ax, f, i, limit):
     ax.axhline(alpha,color=COLORS['alpha'],ls='--',lw=2,label=r'$\alpha$')
     ax.plot(q,np.where(support,b-alpha,np.nan),color=COLORS['delta'],lw=2,label=r'$b-\alpha$')
     ax.axhline(0,color='0.45',ls=':',lw=1)
-    ax.set_xlim(q[0],q[-1]); _nice(ax,r'$q_c$ (a.u.)','Momentum (a.u.)',limit)
+    ax.set_xlim(xlim if xlim is not None else (q[0],q[-1])); _nice(ax,_q_label(f),'Momentum (a.u.)',limit)
     ax.set_title(fr'Momentum-field slice: $R={f["R"][i]:.2f}\,a_0$'); _legend(ax)
     _unsupported_note(ax,support)
 
@@ -334,18 +395,20 @@ def bridge_figure(f, display, index, references=None):
     fig, axes=plt.subplots(3,2,figsize=(23,18))
     fig.subplots_adjust(left=.065,right=.96,bottom=.075,top=.92,hspace=.70,wspace=.28)
     i=display['i']; scales=display['scales']; R=f['R']; q=f['q']
-    for row,(key,label) in enumerate((('epsilon1',r'$\epsilon^{(1)}$'),('a',r'$a$'),('b',r'$b$'))):
+    effective=_is_mcef(f) and 'effective' in str(f.get('scalar_kind','')).lower()
+    scalar_label=r'$\epsilon^{(1)}_{\rm eff}$' if effective else r'$\epsilon^{(1)}$'
+    for row,(key,label) in enumerate((('epsilon1',scalar_label),('a',r'$a$'),('b',r'$b$'))):
         _map(axes[row,0],f,key,scales[key],display['windows'][index],R[i],label)
     ax=axes[0,1]; _silhouette(ax,R,f['rho_R']); _scalar_lines(ax,R,f,2)
-    _references(ax,references,f,level=2); ax.axvline(R[i],ls='--',lw=1,color='0.4')
-    ax.set_xlim(R[0],R[-1]); _nice(ax,r'$R$ ($a_0$)','Energy (Ha)',scales['energy2'])
-    ax.set_title(r'$\epsilon^{(2)}$ analysis'); _legend(ax,4)
+    _references(ax,references,f,level=2,fixed_index=display['j']); ax.axvline(R[i],ls='--',lw=1,color='0.4')
+    ax.set_xlim(_line_xlim(display,'R',f)); _nice(ax,r'$R$ ($a_0$)','Energy (Ha)',scales['energy2'])
+    ax.set_title(r'$\epsilon^{(2)}$ analysis'+(' (effective)' if effective else '')); _legend(ax,4)
     ax=axes[1,1]; _silhouette(ax,q,f['lambda_density'][i]); _scalar_lines(ax,q,f,1,i)
     _references(ax,references,f,level=1,fixed_index=i)
     ax.axhline(_get(f,'epsilon2')[i],ls=':',color='#555555',lw=1.7,label=r'$\epsilon^{(2)}(R_s)$')
-    ax.set_xlim(q[0],q[-1]); _nice(ax,r'$q_c$ (a.u.)','Energy (Ha)',scales['energy1'])
-    ax.set_title(fr'$\epsilon^{{(1)}}$ slice analysis: $R={R[i]:.2f}\,a_0$'); _legend(ax,4)
-    _momentum(axes[2,1],f,i,scales['momentum'])
+    ax.set_xlim(_line_xlim(display,'q',f)); _nice(ax,_q_label(f),'Energy (Ha)',scales['energy1'])
+    ax.set_title(scalar_label+fr' slice analysis: $R={R[i]:.2f}\,a_0$'); _legend(ax,4)
+    _momentum(axes[2,1],f,i,scales['momentum'],_line_xlim(display,'q',f))
     _title(fig,f,'A | Exact-factorization perspectives')
     return fig
 
@@ -355,8 +418,10 @@ def source_figure(f, display, index, references=None):
     fig,axes=plt.subplots(3,2,figsize=(23,18))
     fig.subplots_adjust(left=.065,right=.96,bottom=.075,top=.90,hspace=.68,wspace=.28)
     i=display['i']; R=f['R']; q=f['q']; lim=display['scales']['source']
+    sq_title=(r'$S_q=-\partial_q[(a/m_q)|\Lambda_R|^2]$' if _is_mcef(f)
+              else r'$S_q=-\partial_{q_c}(a|\Lambda_R|^2)$')
     for ax,key,title in zip(axes[:2].flat,('density_dt','S_q','S_adv','S_rel'),
-                            (r'$\partial_t|\Lambda_R|^2$',r'$S_q=-\partial_{q_c}(a|\Lambda_R|^2)$',
+                            (r'$\partial_t|\Lambda_R|^2$',sq_title,
                              r'$S_{\rm adv}=-(\alpha/M)\partial_R|\Lambda_R|^2$',r'$S_{\rm rel}$: relative nuclear transport')):
         try:
             _map(ax,f,key,lim,display['windows'][index],R[i],title)
@@ -370,11 +435,11 @@ def source_figure(f, display, index, references=None):
             ax.plot(q,np.where(line_support,_get(f,key)[i],np.nan),lw=2,color=color,label=label)
         except KeyError:
             pass
-    ax.axhline(0,color='0.45',ls='--',lw=1); ax.set_xlim(q[0],q[-1])
-    _nice(ax,r'$q_c$ (a.u.)','Density / a.u. time',lim)
+    ax.axhline(0,color='0.45',ls='--',lw=1); ax.set_xlim(_line_xlim(display,'q',f))
+    _nice(ax,_q_label(f),'Density / a.u. time',lim)
     ax.set_title(fr'Source terms at fixed $R={R[i]:.2f}\,a_0$'); _legend(ax)
     _unsupported_note(ax,line_support)
-    _momentum(axes[2,1],f,i,display['scales']['momentum'])
+    _momentum(axes[2,1],f,i,display['scales']['momentum'],_line_xlim(display,'q',f))
     _title(fig,f,r'B | $\partial_t|\Lambda_R|^2=S_q+S_{\rm adv}+S_{\rm rel}$')
     return fig
 
@@ -387,18 +452,27 @@ def consistency_figure(f, display, index, references=None):
                                  (1,'epsilon2','epsilon2_reconstructed',r'$\epsilon^{(2)}$')):
         ax=axes[0,col]; _silhouette(ax,R,f['rho_R'])
         direct=_get(f,key)
+        available=True
         try: rec=_get(f,recon)
-        except KeyError: rec=np.full_like(direct,np.nan)
+        except KeyError: rec=np.full_like(direct,np.nan);available=False
         ax.plot(R,np.where(support,direct,np.nan),lw=2.4,color=COLORS['total'],label='direct')
-        ax.plot(R,np.where(support,rec,np.nan),lw=1.9,ls='--',color=COLORS['GI'],label='bridge reconstruction')
+        if available:
+            ax.plot(R,np.where(support,rec,np.nan),lw=1.9,ls='--',color=COLORS['GI'],label='bridge reconstruction')
+        else:
+            ax.text(.02,.95,'Independent reconstruction unavailable',transform=ax.transAxes,va='top',fontsize=11,color='.4')
         ax.set_title(label+' direct / reconstructed'); _nice(ax,r'$R$ ($a_0$)','Momentum (a.u.)' if col==0 else 'Energy (Ha)',display['scales']['alpha_direct' if col==0 else 'e2_direct'])
         _legend(ax,2)
-        axes[2,col].plot(R,np.where(support,direct-rec,np.nan),color=COLORS['GD'],lw=1.9,label='direct − reconstructed')
+        if available:
+            axes[2,col].plot(R,np.where(support,direct-rec,np.nan),color=COLORS['GD'],lw=1.9,label='direct − reconstructed')
+        else:
+            axes[2,col].text(.5,.5,'Residual unavailable (not set to zero)',transform=axes[2,col].transAxes,ha='center',fontsize=12,color='.4')
         axes[2,col].axhline(0,color='0.4',ls='--',lw=1)
         axes[2,col].set_title(label+' residual (occupied support)')
         _nice(axes[2,col],r'$R$ ($a_0$)','Momentum (a.u.)' if col==0 else 'Energy (Ha)',display['scales']['alpha_residual' if col==0 else 'e2_residual'])
         _legend(axes[2,col],1)
     ax=axes[1,0]; _silhouette(ax,R,f['rho_R'])
+    if not any(key in f for key in ('mean_e1','Kq','G_R_lambda','Ct')):
+        ax.text(.5,.5,'Bridge components unavailable',transform=ax.transAxes,ha='center',color='.4')
     for key,label,color in (('mean_e1',r'$\langle\epsilon^{(1)}\rangle_\Lambda$',COLORS['total']),
                             ('Kq',r'$K_q$',COLORS['GI']),('G_R_lambda',r'$G_R^\Lambda$',COLORS['GD']),
                             ('Ct',r'$\langle-i\partial_t\rangle_\Lambda$',COLORS['delta'])):
@@ -414,7 +488,10 @@ def consistency_figure(f, display, index, references=None):
     if 'continuity_residual' in f:
         ax.plot(q,np.where(line_support,_real(f['continuity_residual'][i]),np.nan),lw=1.6,color=COLORS['GD'],label='continuity residual')
     ax.set_title(fr'Continuity reconstruction: $R={R[i]:.2f}\,a_0$')
-    _nice(ax,r'$q_c$ (a.u.)','Density / a.u. time',display['scales']['source']); _legend(ax,2)
+    _nice(ax,_q_label(f),'Density / a.u. time',display['scales']['source']); _legend(ax,2)
+    for row in (0,2):
+        for column in range(2): axes[row,column].set_xlim(_line_xlim(display,'R',f))
+    axes[1,0].set_xlim(_line_xlim(display,'R',f));axes[1,1].set_xlim(_line_xlim(display,'q',f))
     _title(fig,f,'C | Bridge consistency diagnostics')
     return fig
 
@@ -428,12 +505,12 @@ def slice_figure(f, display, index, references=None):
         j=display['slices_q'][min(row,len(display['slices_q'])-1)]
         ax=axes[row,0]; _silhouette(ax,f['R'],f['rho_qR'][:,j]); _scalar_lines(ax,f['R'],f,1,(slice(None),j))
         _references(ax,references,f,level=1,direction='R',fixed_index=j)
-        ax.set_xlim(f['R'][0],f['R'][-1]); _nice(ax,r'$R$ ($a_0$)','Energy (Ha)',display['scales']['energy1'])
-        ax.set_title(fr'$R$-slice at $q_c={f["q"][j]:.2f}$'); _legend(ax,4)
+        ax.set_xlim(_line_xlim(display,'R',f)); _nice(ax,r'$R$ ($a_0$)','Energy (Ha)',display['scales']['energy1'])
+        ax.set_title(fr'$R$-slice at ${_q_symbol(f)}={f["q"][j]:.2f}$'); _legend(ax,4)
         ax=axes[row,1]; _silhouette(ax,f['q'],f['lambda_density'][i]); _scalar_lines(ax,f['q'],f,1,i)
         _references(ax,references,f,level=1,fixed_index=i)
-        ax.set_xlim(f['q'][0],f['q'][-1]); _nice(ax,r'$q_c$ (a.u.)','Energy (Ha)',display['scales']['energy1'])
-        ax.set_title(fr'$q_c$-slice at $R={f["R"][i]:.2f}\,a_0$'); _legend(ax,4)
+        ax.set_xlim(_line_xlim(display,'q',f)); _nice(ax,_q_label(f),'Energy (Ha)',display['scales']['energy1'])
+        ax.set_title(fr'${_q_symbol(f)}$-slice at $R={f["R"][i]:.2f}\,a_0$'); _legend(ax,4)
     _title(fig,f,r'D | $\epsilon^{(1)}$ slice guidance')
     return fig
 
@@ -449,7 +526,7 @@ def component_figure(f,display):
     fig.subplots_adjust(left=.07,right=.97,bottom=.10,top=.91,hspace=.65,wspace=.24)
     i,j=display['i'],display['j']
     groups=((('epsilon1',r'$\epsilon^{(1)}$'),('epsilon1_cond',r'$\langle h\rangle_x$'),
-             ('epsilon1_GD','GD')), (('epsilon1_qgeo',r'$G_{q_c}$'),('epsilon1_Rgeo',r'$G_R$')),
+             ('epsilon1_GD','GD')), (('epsilon1_qgeo',fr'$G_{{{_q_symbol(f)}}}$'),('epsilon1_Rgeo',r'$G_R$')),
             (('epsilon1_bare','bare molecular'),('epsilon1_LM','light–matter'),('epsilon1_DSE','DSE')))
     for col in range(2):
         coordinate=f['q'] if col==0 else f['R']
@@ -458,6 +535,8 @@ def component_figure(f,display):
         line_support=_line_support(f,1,selector)
         for row,group in enumerate(groups):
             ax=axes[row,col]; _silhouette(ax,coordinate,density)
+            if not any(key in f for key,_ in group):
+                ax.text(.5,.7,'Components unavailable in this cache',transform=ax.transAxes,ha='center',color='.4',fontsize=11)
             for k,(key,label) in enumerate(group):
                 if key in f:
                     ax.plot(coordinate,np.where(line_support,_real(f[key])[selector],np.nan),lw=2,color=([COLORS['total']]+REF_COLORS)[k],label=label)
@@ -465,8 +544,8 @@ def component_figure(f,display):
                 value=.5*float(f['omega'])**2*np.asarray(f['q'])**2
                 ax.plot(coordinate,value if col==0 else np.full(len(coordinate),value[j]),lw=1.6,ls='--',color=REF_COLORS[3],label='photon harmonic')
             ax.axhline(0,ls=':',color='.5',lw=.8)
-            ax.set_xlim(coordinate[0],coordinate[-1])
-            _nice(ax,r'$q_c$ (a.u.)' if col==0 else r'$R$ ($a_0$)','Energy (Ha)',
+            ax.set_xlim(_line_xlim(display,'q' if col==0 else 'R',f))
+            _nice(ax,_q_label(f) if col==0 else r'$R$ ($a_0$)','Energy (Ha)',
                   display['scales'][('energy1','geometry1','interaction1')[row]])
             title=('Scalar expectation / time term','Geometric contributions','Hamiltonian expectation budget')[row]
             ax.set_title(title+(' | fixed R' if col==0 else ' | fixed q'))
@@ -482,24 +561,24 @@ def bridge_wavefunction_figure(f,display,index,references=None):
     fig.subplots_adjust(left=.07,right=.97,bottom=.13,top=.89,hspace=.62,wspace=.26)
     i=display['i']; R=f['R']; q=f['q']; scales=display['scales']
     density_limit=(0,scales['lambda_density'][1])
-    _map(axes[0,0],f,'lambda_density',density_limit,display['windows'][index],R[i],r'$|\Lambda_R(q_c)|^2$')
+    _map(axes[0,0],f,'lambda_density',density_limit,display['windows'][index],R[i],fr'$|\Lambda_R({_q_symbol(f)})|^2$')
     _map(axes[0,1],f,'delta_b',scales['momentum'],display['windows'][index],R[i],r'$b-\alpha$: relative nuclear momentum')
     ax=axes[1,0]
     for k,ir in enumerate(display['slices_R']):
         ax.plot(q,f['lambda_density'][ir],lw=2.1,color=REF_COLORS[k],label=fr'$R={R[ir]:.2f}\,a_0$')
-    ax.set_xlim(q[0],q[-1]); ax.set_title('Conditional photon-coordinate probability')
-    _nice(ax,r'$q_c$ (a.u.)',r'$|\Lambda_R|^2$',density_limit); _legend(ax,2)
+    ax.set_xlim(_line_xlim(display,'q',f)); ax.set_title('Conditional proton probability' if _is_mcef(f) else 'Conditional photon-coordinate probability')
+    _nice(ax,_q_label(f),r'$|\Lambda_R|^2$',density_limit); _legend(ax,2)
     ax=axes[1,1]; dq=q[1]-q[0]; density=f['lambda_density']
     mean=np.sum(density*q[None,:],axis=1)*dq
     variance=np.maximum(0,np.sum(density*(q[None,:]-mean[:,None])**2,axis=1)*dq)
     support=f['rho_R']>np.max(f['rho_R'])*1e-5
     _silhouette(ax,R,f['rho_R'])
-    ax.plot(R,np.where(support,mean,np.nan),lw=2.1,color=COLORS['GI'],label=r'$\langle q_c\rangle_{\Lambda_R}$')
+    ax.plot(R,np.where(support,mean,np.nan),lw=2.1,color=COLORS['GI'],label=fr'$\langle {_q_symbol(f)}\rangle_{{\Lambda_R}}$')
     ax.fill_between(R,np.where(support,mean-np.sqrt(variance),np.nan),
                     np.where(support,mean+np.sqrt(variance),np.nan),color=COLORS['GI'],alpha=.16,label=r'$\pm$ conditional std')
-    ax.axhline(0,ls='--',color='.45',lw=1); ax.set_xlim(R[0],R[-1])
-    ax.set_title('Conditional quadrature center / width')
-    _nice(ax,r'$R$ ($a_0$)',r'$q_c$ (a.u.)',(q[0],q[-1])); _legend(ax,2)
+    ax.axhline(0,ls='--',color='.45',lw=1); ax.set_xlim(_line_xlim(display,'R',f))
+    ax.set_title('Conditional proton center / width' if _is_mcef(f) else 'Conditional quadrature center / width')
+    _nice(ax,r'$R$ ($a_0$)',_q_label(f),_line_xlim(display,'q',f)); _legend(ax,2)
     _title(fig,f,'Bridge wavefunction and relative flow')
     return fig
 
@@ -524,7 +603,7 @@ def outer_force_figure(f,display):
     axes[1].axhline(0,ls='--',lw=1.1,color='.4')
     axes[1].set_title(r'$F_R=-\partial_R\epsilon^{(2)}+\partial_t\alpha$')
     _nice(axes[1],r'$R$ ($a_0$)','EF field (Ha / $a_0$)',display['scales']['force']); _legend(axes[1],3)
-    for ax in axes: ax.set_xlim(R[0],R[-1])
+    for ax in axes: ax.set_xlim(_line_xlim(display,'R',f))
     _title(fig,f,'Outer nuclear effective field')
     fig.text(.5,.045,'This field excludes the marginal quantum-potential term; the PG scalar slope alone is not the nuclear EF field.',ha='center',fontsize=12)
     return fig
@@ -556,12 +635,13 @@ def cbo_comparison_figure(f,display,index,references=None):
     difference=gi-cbo
     support=f['rho_qR']>np.nanmax(f['rho_qR'])*1e-5
     difference_limits=display['scales'].get('cbo_difference',_range([difference[support]],symmetric=True))
-    character=np.full(shape,np.nan); character_title='CBO character unavailable'
+    ref_name=_reference_name(f)
+    character=np.full(shape,np.nan); character_title=ref_name+' character unavailable'
     character_note='No electronic character is inferred from energy proximity.'
     if 'cbo_character' in f:
         character=_real(f['cbo_character'])[:,:,0]
-        character_title='CBO 0 character (BO-projected analysis)'
-        character_note='CBO character: BO-projected electronic analysis basis; omitted population retained in the cache.'
+        character_title=ref_name+' 0 character (BO-projected analysis)'
+        character_note=ref_name+' character: BO-projected electronic analysis basis; omitted population retained in the cache.'
         if 'cbo_outside' in f:
             outside=np.asarray(f['cbo_outside']); weights=np.where(support,f['rho_qR'],0)
             if np.all(np.isfinite(outside[support])) and np.sum(weights)>0:
@@ -569,11 +649,11 @@ def cbo_comparison_figure(f,display,index,references=None):
                 character_note+=f' Support-weighted outside fraction: {omitted:.3g}.'
     elif 'BO_character' in f and np.asarray(f['BO_character']).ndim==3:
         character=_real(f['BO_character'])[:,:,0]
-        character_title='Bare BO S0 character (CBO unavailable)'
-        character_note='Fallback is explicitly bare BO character, NOT CBO character.'
+        character_title='Bare BO S0 character' if _is_mcef(f) else 'Bare BO S0 character (CBO unavailable)'
+        character_note='Bare electronic BO character.' if _is_mcef(f) else 'Fallback is explicitly bare BO character, NOT CBO character.'
     panels=((gi,r'$\epsilon^{(1)}_{\rm GI}$',display['scales']['energy1'],has_gi),
-            (cbo,r'$E^{\rm CBO}_0$ at the same $(q_c,R)$',display['scales']['energy1'],has_cbo),
-            (difference,r'$\epsilon^{(1)}_{\rm GI}-E^{\rm CBO}_0$',difference_limits,has_gi and has_cbo),
+            (cbo,fr'$E^{{\rm {ref_name}}}_0$ at the same $({_q_symbol(f)},R)$',display['scales']['energy1'],has_cbo),
+            (difference,fr'$\epsilon^{{(1)}}_{{\rm GI}}-E^{{\rm {ref_name}}}_0$',difference_limits,has_gi and has_cbo),
             (character,character_title,(0,1),np.any(np.isfinite(character))))
     for n,(ax,(values,title,limits,available)) in enumerate(zip(axes.flat,panels)):
         plotted=dict(f);plotted['epsilon1']=values
@@ -584,15 +664,120 @@ def cbo_comparison_figure(f,display,index,references=None):
         if not available:
             ax.text(.5,.5,'Unavailable in this cache',ha='center',va='center',
                     transform=ax.transAxes,fontsize=15,bbox=dict(facecolor='white',alpha=.85,edgecolor='none'))
-    _title(fig,f,'Same-geometry CBO / exact-field comparison')
-    fig.text(.5,.075,'GI/CBO maps share one energy scale; the difference has a separate zero-centered scale. Static CBO interpolation is display-only.',ha='center',fontsize=11.5)
+    _title(fig,f,'Same-geometry '+ref_name+' / exact-field comparison')
+    fig.text(.5,.075,'GI/'+ref_name+' maps share one energy scale; the difference has a separate zero-centered scale. Static reference interpolation is display-only.',ha='center',fontsize=11.5)
     fig.text(.5,.035,character_note,ha='center',fontsize=11)
+    return fig
+
+
+def _focus_profile(f,display,references,level):
+    """Absolute GI and two nearby references; selection is NOT state assignment."""
+    i=display['i']; grid=f['R'] if level==2 else f['q']
+    selector=None if level==2 else i
+    key=f'epsilon{level}_GI'
+    gi=_real(f[key]) if key in f else np.full((len(f['R']),len(f['q'])) if level==1 else len(grid),np.nan)
+    if level==1:gi=gi[i]
+    support=_line_support(f,level,selector)
+    bounds=_line_xlim(display,'R' if level==2 else 'q',f)
+    inside=(grid>=bounds[0])&(grid<=bounds[1])
+    curves=None; labels=[]
+    if level==2 and references and 'pol_energy' in references:
+        rr=references.get('R',f['R']); values=_real(references['pol_energy'])
+        curves=np.column_stack([np.interp(grid,rr,values[:,k]) for k in range(min(4,values.shape[1]))])
+        labels=[fr'$E^{{ref}}_{k}$' if _is_mcef(f) else fr'$E^{{x+q_c}}_{k}$' for k in range(curves.shape[1])]
+    elif level==2 and _is_mcef(f) and references and 'cbo' in references:
+        rr,values=_mcef_outer_bo_cut(f,references,display['j'])
+        curves=np.column_stack([np.interp(grid,rr,values[:,k]) for k in range(values.shape[1])])
+        labels=[fr'$BO_{k}(q_s,R)$' for k in range(curves.shape[1])]
+    if level==1 and references and 'cbo' in references:
+        points=np.column_stack((np.full(len(grid),f['R'][i]),grid))
+        curves=RegularGridInterpolator((references.get('R',f['R']),references.get('q',f['q'])),
+                _real(references['cbo'])[:,:,:4],bounds_error=False,fill_value=np.nan)(points)
+        labels=[f'{_reference_name(f)} {k}' for k in range(curves.shape[1])]
+    anchor=i if level==2 else int(np.nanargmax(f['lambda_density'][i]))
+    ids=[]; nearest=None
+    if curves is not None and curves.shape[1]:
+        target=gi[anchor]
+        distance=abs(curves[anchor]-target) if np.isfinite(target) else np.arange(curves.shape[1],dtype=float)
+        ordered=np.argsort(np.where(np.isfinite(distance),distance,np.inf))
+        nearest=int(ordered[0]);ids=sorted(int(k) for k in ordered[:2])
+    offset=np.full(len(grid),np.nan);gap=None
+    if nearest is not None:
+        offset=(gi-curves[:,nearest])*27211.386245988
+    if len(ids)==2:
+        gap=(curves[:,ids[1]]-curves[:,ids[0]])*27211.386245988
+    return dict(grid=grid,gi=gi,support=support,inside=inside,bounds=bounds,curves=curves,
+                labels=labels,anchor=anchor,ids=ids,nearest=nearest,offset=offset,gap=gap)
+
+
+def _prepare_reference_focus(files,selected,display,references):
+    """Keep focus y ranges fixed between the selected, unshifted snapshots."""
+    result={}
+    for level in (1,2):
+        raw=[]; differences=[]
+        for n in selected:
+            p=_focus_profile(_load(files[n]),display,references,level)
+            raw.append(p['gi'][p['support']&p['inside']])
+            if p['curves'] is not None:
+                raw.append(p['curves'][np.ix_(p['inside'],p['ids'])])
+            differences.append(p['offset'][p['support']&p['inside']])
+        result[f'energy{level}']=_range(raw)
+        result[f'difference{level}']=_range(differences,symmetric=True)
+    return result
+
+
+def reference_focus_figure(f,display,references=None):
+    """Separate GI/reference zoom, with explicitly labelled meV differences.
+
+    No frame-dependent energy subtraction or gauge alignment is applied to
+    the upper panels. The lower panels plot differences by definition, not
+    shifted versions of the original potentials. Fixed-R electron+photon
+    references are NOT global vibrational LP/UP levels.
+    """
+    fig,axes=plt.subplots(2,2,figsize=(23,13))
+    fig.subplots_adjust(left=.075,right=.97,bottom=.16,top=.86,hspace=.64,wspace=.24)
+    focus=display.get('reference_focus_limits',{})
+    for column,level in enumerate((2,1)):
+        p=_focus_profile(f,display,references,level);grid=p['grid'];ax=axes[0,column]
+        density=f['rho_R'] if level==2 else f['lambda_density'][display['i']]
+        _silhouette(ax,grid,density)
+        if np.any(np.isfinite(p['gi'])):
+            ax.plot(grid,np.where(p['support'],p['gi'],np.nan),lw=2.6,color=COLORS['GI'],label=fr'$\epsilon^{{({level})}}_{{\rm GI}}$')
+        else:
+            ax.text(.03,.82,'GI unavailable in this cache',transform=ax.transAxes,ha='left',va='top',color='.4')
+        for k in p['ids']:
+            ax.plot(grid,p['curves'][:,k],ls='--',lw=2.1,color=REF_COLORS[k],label=p['labels'][k])
+        if p['curves'] is None:
+            ax.text(.03,.92,'Reference not supplied; none inferred',transform=ax.transAxes,ha='left',va='top',color='.4')
+        title=(fr'Outer GI | BO cut $q_s={f["q"][display["j"]]:.2f}$ (reference only)' if _is_mcef(f) else 'Outer GI | fixed R: electron + photon') if level==2 else fr'First-level GI | {_reference_name(f)}, $R={f["R"][display["i"]]:.2f}\,a_0$'
+        ax.set_title(title);ax.set_xlim(p['bounds'])
+        _nice(ax,r'$R$ ($a_0$)' if level==2 else _q_label(f),'Absolute energy (Ha)',focus.get(f'energy{level}'))
+        _legend(ax,3)
+        lower=axes[1,column];_silhouette(lower,grid,density)
+        if p['nearest'] is not None:
+            lower.plot(grid,np.where(p['support'],p['offset'],np.nan),lw=2.3,color=COLORS['GI'],
+                       label=fr'GI − reference {p["nearest"]}')
+        if p['gap'] is not None:
+            lower.text(.98,.94,fr'reference {p["ids"][1]} − {p["ids"][0]} gap: {p["gap"][p["anchor"]]:.3g} meV at marker',
+                       transform=lower.transAxes,ha='right',va='top',fontsize=12,
+                       bbox=dict(facecolor='white',alpha=.85,edgecolor='none'))
+        lower.axhline(0,color='.4',ls=':',lw=1);lower.axvline(grid[p['anchor']],color='.4',ls='--',lw=1)
+        lower.set_xlim(p['bounds']);lower.set_title('Explicit energy differences (no gauge re-alignment)')
+        _nice(lower,r'$R$ ($a_0$)' if level==2 else _q_label(f),'Energy difference (meV)',focus.get(f'difference{level}'))
+        _legend(lower,2)
+    _title(fig,f,'GI / reference focus | absolute energies preserved')
+    fig.text(.5,.045,'Two references nearest the local GI are shown for visual comparison; this selection does not assign a populated state or a polariton branch.',ha='center',fontsize=11.5)
+    if not _is_mcef(f):
+        fig.text(.5,.015,'Fixed-R electron + photon levels are not global vibrational LP/UP levels. Original total, GI and GD remain unchanged in A diagnostics.',ha='center',fontsize=11)
+    else:
+        fig.text(.5,.015,'The outer BO cut fixes the proton coordinate; it is a comparison curve, not an outer heavy-coordinate adiabatic eigenproblem.',ha='center',fontsize=11)
     return fig
 
 
 def _title(fig,f,title):
     frequency=(fr', $\omega_c={float(f["omega"]):.4g}$ Ha' if 'omega' in f else '')
-    fig.suptitle(title+fr'    $t={_time(f):.3f}$ fs, $\lambda={float(f.get("g_cavity",0)):.3g}$'+frequency,y=.985)
+    coupling='' if _is_mcef(f) else fr', $\lambda={float(f.get("g_cavity",0)):.3g}$'+frequency
+    fig.suptitle(title+fr'    $t={_time(f):.3f}$ fs'+coupling,y=.985)
     for i,ax in enumerate([a for a in fig.axes if a.get_title()]):
         ax.text(-.08,1.06,chr(65+i),transform=ax.transAxes,fontweight='bold',fontsize=17)
 
@@ -780,7 +965,7 @@ def static_context_figure(references,first):
     return fig
 
 
-def render_case(case_dir,movies=True,fps=20,dpi=110):
+def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_path=None):
     """Generate reports automatically after propagation or from cached fields.
 
     Movies are encoded directly, so no full frame-PNG directory is created.
@@ -798,12 +983,14 @@ def render_case(case_dir,movies=True,fps=20,dpi=110):
                 files=[p for p in files if int(p.stem.split('_')[-1]) in valid_steps]
     if not files:
         raise ValueError('No compact field frames found in '+str(case/'fields'))
-    refs=None; notes=[]
-    if (case/'references.npz').exists():
-        try: refs=_load(case/'references.npz')
+    refs=None; notes=[];refs_path=Path(reference_path) if reference_path is not None else case/'references.npz'
+    if refs_path.exists():
+        try: refs=_load(refs_path)
         except (OSError,ValueError) as exc: notes.append('Reference cache unavailable: '+str(exc))
     else: notes.append('No references.npz: CBO/polaritonic overlays skipped, no fabricated curves.')
-    display=prepare_display(files,refs); first=_load(files[0]); out=case/'report'; out.mkdir(exist_ok=True)
+    if reference_path is not None:
+        notes.append('External static references: '+str(refs_path.resolve())+'. Cached fields/populations are unchanged; refined overlays do not certify production or population convergence.')
+    display=prepare_display(files,refs); first=_load(files[0]); out=Path(output_dir) if output_dir is not None else case/'report'; out.mkdir(parents=True,exist_ok=True)
     selected=sorted(set([0,len(files)//2,len(files)-1])); produced=[]
     has_video=bool(movies and writers.is_available('ffmpeg') and len(files)>1)
     if movies and not has_video: notes.append('Movies skipped: ffmpeg unavailable or fewer than two saved physical times.')
@@ -843,7 +1030,7 @@ def render_case(case_dir,movies=True,fps=20,dpi=110):
             fig=outer_force_figure(_load(files[n]),display)
             target=force_dir/f'snapshot_{n:06d}'; _save(fig,target,dpi); plt.close(fig)
             produced.extend([str(target.with_suffix('.png')),str(target.with_suffix('.pdf'))])
-        cbo_dir=out/'same_geometry_CBO';cbo_dir.mkdir(exist_ok=True)
+        cbo_dir=out/('same_geometry_BO' if _is_mcef(first) else 'same_geometry_CBO');cbo_dir.mkdir(exist_ok=True)
         differences=[]
         for n in selected:
             f=_load(files[n]);support=f['rho_qR']>np.nanmax(f['rho_qR'])*1e-5
@@ -853,6 +1040,12 @@ def render_case(case_dir,movies=True,fps=20,dpi=110):
         for n in selected:
             fig=cbo_comparison_figure(_load(files[n]),display,n,refs)
             target=cbo_dir/f'snapshot_{n:06d}';_save(fig,target,dpi);plt.close(fig)
+            produced.extend([str(target.with_suffix('.png')),str(target.with_suffix('.pdf'))])
+        focus_dir=out/'reference_focus';focus_dir.mkdir(exist_ok=True)
+        display['reference_focus_limits']=_prepare_reference_focus(files,selected,display,refs)
+        for n in selected:
+            fig=reference_focus_figure(_load(files[n]),display,refs)
+            target=focus_dir/f'snapshot_{n:06d}';_save(fig,target,dpi);plt.close(fig)
             produced.extend([str(target.with_suffix('.png')),str(target.with_suffix('.pdf'))])
         timeline=timeline_figure(files); target=out/'event_timeline'; _save(timeline,target,dpi); plt.close(timeline)
         produced.extend([str(target.with_suffix('.png')),str(target.with_suffix('.pdf'))])
@@ -886,6 +1079,9 @@ def render_case(case_dir,movies=True,fps=20,dpi=110):
                   slice_q_values=first['q'][display['slices_q']].tolist(),
                   slice_selection='initial marginal peak and occupied time-integrated quartiles',
                   density_contour_relative_min=1e-5,rendered_png_frames=selected,
+                  density_contour_relative_levels=CONTOUR_LEVELS.tolist(),
+                  fixed_1D_viewport=dict(R=display['line_xlim_R'],q=display['line_xlim_q']),
+                  camera_policy=f'2D density-following support+10% margin; smoothing resets when adjacent saved times differ by more than {CAMERA_RESET_GAP_FS:g} fs. 1D viewports stay fixed over the occupied union.',
                   dynamic_line_support='Outer rho_R/frame peak >1e-5; first-level joint-density slice/slice peak >1e-5, fixed-R slices also require occupied outer support. Static references remain full-range; 2D maps remain unmasked inside their window.',
                   timeline_RMS_support='rho_qR / frame_peak > 1e-5; renormalized joint-density weights',
                   source_target='partial_t |Lambda_R|^2; NOT i partial_t Lambda_R',
@@ -894,6 +1090,17 @@ def render_case(case_dir,movies=True,fps=20,dpi=110):
                   reference_policy='static comparison; GI/GD and exact time dependence need not follow a single BO/CBO curve')
     manifest['reference_range_policy']=display['reference_range_policy']
     manifest['reference_energy_ranges']=display['reference_ranges']
+    manifest['reference_focus_limits']=display['reference_focus_limits']
+    manifest['reference_focus_policy']='Absolute GI and references are unshifted. Two references nearest the local GI are selected descriptively, not as population/branch assignments; differences are explicitly in meV. '+('The outer BO cut fixes q_s and is not an outer adiabatic eigenproblem.' if _is_mcef(first) else 'Fixed-R electron+photon references are not vibrational LP/UP.')
+    if refs_path.is_file():
+        digest=hashlib.sha256()
+        with refs_path.open('rb') as stream:
+            for block in iter(lambda:stream.read(1024*1024),b''):digest.update(block)
+        manifest['reference_cache']=dict(path=str(refs_path.resolve()),sha256=digest.hexdigest(),external=reference_path is not None)
+    manifest['output_dir']=str(out.resolve())
+    manifest['system']='mcef' if _is_mcef(first) else 'cavity'
+    manifest['scalar_kind']=str(first.get('scalar_kind','exact scalar, positive marginal gauge'))
+    manifest['energy_convention']=str(first.get('energy_convention','cached absolute energies, unchanged'))
     (out/'render_manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     return manifest
 
@@ -927,5 +1134,7 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('case_dir'); parser.add_argument('--no-movies',action='store_true')
     parser.add_argument('--fps',type=int,default=20); parser.add_argument('--dpi',type=int,default=110)
+    parser.add_argument('--output-dir');parser.add_argument('--references')
     args=parser.parse_args()
-    print(json.dumps(render_case(args.case_dir,not args.no_movies,args.fps,args.dpi),indent=2))
+    print(json.dumps(render_case(args.case_dir,not args.no_movies,args.fps,args.dpi,
+                                 output_dir=args.output_dir,reference_path=args.references),indent=2))

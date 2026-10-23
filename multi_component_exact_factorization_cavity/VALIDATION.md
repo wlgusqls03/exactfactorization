@@ -144,3 +144,29 @@ GPU 및 native-grid 실행시간/peak memory는 서버에서 측정해야 한다
 - BO/Fock/vib 수, x/R/Q 격자와 box, dt, support 및 준비 경계 수렴은 서버에서 필요하다.
 - 모든 production 상태는 완료해도 `COMPLETE_NOT_CERTIFIED`다.
   작업 실행 완료와 물리적 결론의 검증을 구분한다.
+
+## 2026-10-23 표시 및 reference 재검토
+
+이번 후속 변경은 renderer/어댑터/정적 reference 검사에 한정했다. cavity의 core,
+calibration, propagation, projections, fields는 수정하지 않았다.
+
+- cavity 테스트 51개 통과 (`tests_final.log`, 12.139초).
+- 기존 density contour / proton-heavy movie / tdse report 회귀 40개 통과
+  (`legacy_visual_tests.log`, 96.759초). 이는 이번 변경에 대한 선택 회귀이며,
+  위 최초 구현의 전체 회귀 결과와 구분한다.
+- VSC zero/strong의 정적 reference를 전체 96 R에서 NFock 8→16으로 비교했다.
+  원본 입력 SHA 불변을 검사했다. 기존 동적 population은 NFock4 그대로이므로
+  정적 reference 정제가 동역학 분석 수렴까지 개선했다고 주장하지 않는다.
+- strong의 초기 밀도 peak에서 fixed-R gap은 약 0.00196335 Ha,
+  별도 global vibrational LP/UP splitting은 0.00019739122 Ha였다.
+  두 종류의 상태를 구분해 라벨링한다. 이 숫자는 짧은 CPU smoke 계통의 값이다.
+- PG의 밀도가중 평균 GD + 총에너지 차이를 저장된 모든 시점에서 검사했다.
+  최대 오차는 약 9.2e-16 Ha이며, pointwise GD가 상수라는 뜻은 아니다.
+- 일반 MCEF는 기존 소형 source cache와 후처리 scalar만 읽어
+  0/40.153/80.065 fs 그림을 생성했다. harmonic 포함 여부를 추적하여
+  effective scalar에 한 번만 복원하고 BO에는 중복 추가하지 않았다.
+  독립적인 bridge/force cache가 없는 패널은 unavailable로 명시한다.
+
+실제 결과와 로그: `results/20261023/cavity_visual_review_v1/`.
+`mcef_report/`, `vsc_strong_report/`에 PNG/PDF가 있으며, 이번 재검토는 정적 그림
+재출력이다. TDSE 재전파나 새 장시간 GPU 검증을 수행한 것이 아니다.
