@@ -1,0 +1,21 @@
+{
+  "nx": 95,
+  "nR": 128,
+  "nQ": 48,
+  "R_left": -8.9,
+  "R_right": 8.9,
+  "Q_max": 10.0,
+  "n_bo": 4,
+  "n_vib": 6,
+  "n_fock_analysis": 12,
+  "dt_au": 0.2,
+  "t_final_fs": 5.0,
+  "field_every_fs": 0.25,
+  "checkpoint_every_fs": 1.0,
+  "save_wave_every": 0,
+  "fps": 10,
+  "dpi": 80,
+  "validation_scope": "Coarse CPU PEN preview, original molecular parameters; not production convergence",
+  "legacy_regression_file": "results/20261025/local_double_well_preview_v1/regression/regression.json",
+  "validation_dir": "results/20261025/local_double_well_preview_v1/pen_validation"
+}
