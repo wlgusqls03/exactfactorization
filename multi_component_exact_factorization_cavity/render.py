@@ -324,7 +324,7 @@ def _references(ax, ref, f, *, level, direction='q', fixed_index=0):
             return
         e = _real(ref['pol_energy']); rr = ref.get('R', f['R'])
         for k in range(min(4,e.shape[-1])):
-            label=fr'$E^{{ref}}_{k}$' if _is_mcef(f) else fr'$E^{{x+q_c}}_{k}$'
+            label=fr'$E^{{ref}}_{k}$' if _is_mcef(f) else fr'$|\mathrm{{Pol}}_{k}\rangle$'
             ax.plot(rr,e[:,k],ls='--',lw=1.5,color=REF_COLORS[k],label=label)
         return
     if 'cbo' not in ref:
@@ -496,9 +496,48 @@ def consistency_figure(f, display, index, references=None):
     return fig
 
 
+def _slice_time_traces(axes, data, current):
+    """Global cached observables, not slice populations or renormalized weights.
+
+    CBO populations use the retained BO analysis basis, unlike the independent
+    full-x CBO reference energies. Keep omissions visible rather than normalizing
+    the displayed states to one. No TDSE or population reconstruction occurs here.
+    """
+    data = data or {}
+    t = np.asarray(data.get('t_fs', []))
+    for ax, key, title, ylabel in zip(axes,
+            ('photon_number', 'cbo_population'),
+            ('Photon number', 'CBO populations (global, projected basis)'),
+            (r'$\langle N_{\rm ph}\rangle$', 'Probability')):
+        values = np.asarray(data.get(key, []))
+        valid = t.size > 0 and values.ndim > 0 and values.shape[0] == t.size
+        if valid:
+            if key == 'photon_number':
+                ax.plot(t, values, color=COLORS['total'], lw=2.2,
+                        label=r'$\langle N_{\rm ph}\rangle$')
+            elif values.ndim == 2:
+                for k in range(values.shape[1]):
+                    ax.plot(t, values[:, k], lw=1.9,
+                            color=REF_COLORS[k] if k < len(REF_COLORS) else None,
+                            label=f'CBO {k}')
+                omitted = np.asarray(data.get('cbo_omitted', []))
+                if omitted.shape == t.shape:
+                    ax.plot(t, omitted, color='0.4', ls='--', label='Outside basis')
+            ax.set_xlim(float(t.min()), float(t.max()) if t.max()>t.min() else float(t.min())+1.)
+            ax.axvline(current, color='#777777', ls=':', lw=1.8)
+            _legend(ax, 3)
+        else:
+            ax.text(.5,.5,'Cached '+key+' unavailable',ha='center',va='center',transform=ax.transAxes)
+        ax.set_title(title)
+        _nice(ax, 't (fs)', ylabel)
+        if key == 'cbo_population': ax.set_ylim(0, 1.05)
+        ax.axhline(0, color='0.6', ls='--', lw=.8)
+
+
 def slice_figure(f, display, index, references=None):
     """Two R cuts and two q cuts; no electronic/vibrational branch conflation."""
-    fig,axes=plt.subplots(2,2,figsize=(23,13))
+    cavity = not _is_mcef(f)
+    fig,axes=plt.subplots(2,3 if cavity else 2,figsize=(30,14) if cavity else (23,13))
     fig.subplots_adjust(left=.07,right=.97,bottom=.12,top=.89,hspace=.65,wspace=.24)
     for row in range(2):
         i=display['slices_R'][min(row,len(display['slices_R'])-1)]
@@ -511,6 +550,8 @@ def slice_figure(f, display, index, references=None):
         _references(ax,references,f,level=1,fixed_index=i)
         ax.set_xlim(_line_xlim(display,'q',f)); _nice(ax,_q_label(f),'Energy (Ha)',display['scales']['energy1'])
         ax.set_title(fr'${_q_symbol(f)}$-slice at $R={f["R"][i]:.2f}\,a_0$'); _legend(ax,4)
+    if cavity:
+        _slice_time_traces(axes[:,2], display.get('slice_observables'), _time(f))
     _title(fig,f,r'D | $\epsilon^{(1)}$ slice guidance')
     return fig
 
@@ -684,7 +725,7 @@ def _focus_profile(f,display,references,level):
     if level==2 and references and 'pol_energy' in references:
         rr=references.get('R',f['R']); values=_real(references['pol_energy'])
         curves=np.column_stack([np.interp(grid,rr,values[:,k]) for k in range(min(4,values.shape[1]))])
-        labels=[fr'$E^{{ref}}_{k}$' if _is_mcef(f) else fr'$E^{{x+q_c}}_{k}$' for k in range(curves.shape[1])]
+        labels=[fr'$E^{{ref}}_{k}$' if _is_mcef(f) else fr'$|\mathrm{{Pol}}_{k}\rangle$' for k in range(curves.shape[1])]
     elif level==2 and _is_mcef(f) and references and 'cbo' in references:
         rr,values=_mcef_outer_bo_cut(f,references,display['j'])
         curves=np.column_stack([np.interp(grid,rr,values[:,k]) for k in range(values.shape[1])])
@@ -991,6 +1032,10 @@ def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_pa
     if reference_path is not None:
         notes.append('External static references: '+str(refs_path.resolve())+'. Cached fields/populations are unchanged; refined overlays do not certify production or population convergence.')
     display=prepare_display(files,refs); first=_load(files[0]); out=Path(output_dir) if output_dir is not None else case/'report'; out.mkdir(parents=True,exist_ok=True)
+    if (case/'observables.npz').exists():
+        with np.load(case/'observables.npz', allow_pickle=False) as obs:
+            display['slice_observables'] = {k: obs[k] for k in
+                ('t_fs', 'photon_number', 'cbo_population', 'cbo_omitted') if k in obs.files}
     selected=sorted(set([0,len(files)//2,len(files)-1])); produced=[]
     has_video=bool(movies and writers.is_available('ffmpeg') and len(files)>1)
     if movies and not has_video: notes.append('Movies skipped: ffmpeg unavailable or fewer than two saved physical times.')

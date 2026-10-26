@@ -38,6 +38,27 @@ def frame():
 
 
 class CavityRenderTests(unittest.TestCase):
+    def test_slice_time_traces_and_fixed_scales(self):
+        f=frame()
+        with tempfile.TemporaryDirectory() as directory:
+            p=Path(directory)/'f.npz'; np.savez(p,**f)
+            d=prepare_display([p])
+            d['slice_observables']=dict(t_fs=np.array([0.,1.,2.]),
+                photon_number=np.array([0.,.3,.2]),
+                cbo_population=np.array([[.8,.1],[.6,.3],[.5,.4]]),
+                cbo_omitted=np.full(3,.1))
+            fig=slice_figure(f,d,0); fig.canvas.draw()
+            self.assertEqual(len(fig.axes),6)
+            self.assertEqual(fig.axes[2].get_xlabel(),'t (fs)')
+            self.assertIn('CBO',fig.axes[5].get_title())
+            self.assertTrue(any(line.get_label()=='Outside basis' for line in fig.axes[5].lines))
+            limits=fig.axes[2].get_ylim(); plt.close(fig)
+            f['t_fs']=1.
+            fig=slice_figure(f,d,0)
+            self.assertEqual(fig.axes[2].get_ylim(),limits)
+            np.testing.assert_array_equal(fig.axes[5].lines[0].get_ydata(),[.8,.6,.5])
+            plt.close(fig)
+
     def test_missing_reference_and_gigd_are_graceful(self):
         f=frame()
         with tempfile.TemporaryDirectory() as directory:
@@ -74,6 +95,8 @@ class CavityRenderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             p=Path(directory)/'f.npz'; np.savez(p,**f); d=prepare_display([p],ref)
             fig=bridge_figure(f,d,0,ref); fig.canvas.draw()
+            self.assertTrue(any(line.get_label()==r'$|\mathrm{Pol}_0\rangle$'
+                                for ax in fig.axes for line in ax.lines))
             cbo=[line for ax in fig.axes for line in ax.lines if line.get_label()=='CBO 0']
             self.assertEqual(len(cbo),1)
             self.assertEqual(len(cbo[0].get_xdata()),len(f['q']))

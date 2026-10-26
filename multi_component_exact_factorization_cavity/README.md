@@ -1,5 +1,31 @@
 # 실공간 MCEF를 계승한 cavity 확장
 
+## PEN slice 보고서 갱신 (2026-10-26)
+
+`epsilon1_slice_analysis`는 cavity 데이터에서 2행×3열이다. 왼쪽 두 열은
+R 방향 2개 및 photon 방향 2개 단면, 오른쪽은 photon number와 global CBO
+population 시간 이력이다. 점선은 현재 프레임 시각이며 시간축/확률축은 고정된다.
+CBO population은 저장된 유한 bare-BO 분석 공간의 투영 확률이고, 단면별 확률이나
+독립 full-x CBO 기준면으로 다시 계산한 확률이 아니다. Outside basis도 표시하고
+재정규화하지 않는다. 관측량이 없는 이전 캐시는 unavailable로 표시한다.
+MCEF에는 photon 관측량을 추가하지 않으며 기존 4-panel slice를 유지한다.
+Pol ket 범례는 해당 고유상태의 **에너지 곡선**을 표시한다.
+
+TDSE가 완료된 뒤 새 보고서 폴더로 재렌더링(전파/검증 재실행 불필요):
+
+```bash
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+export MPLCONFIGDIR=/tmp/mcef-cavity-mpl XDG_CACHE_HOME=/tmp/mcef-cavity-cache
+for coupling in zero weak strong; do
+  python -m multi_component_exact_factorization_cavity.workflow render \
+    --out "results/20261026/pen10_native_v1/pen/$coupling" \
+    --report-out "results/20261026/pen10_native_v1/pen/$coupling/report_slices_v2" || break
+done
+```
+
+PNG/PDF만 먼저 확인하려면 `--no-movies`를 추가한다. 이 명령은 A/B를 포함한 전체
+보고서를 새 폴더에 생성하므로 추가 디스크 공간이 필요하다. 이전 보고서는 삭제하지 않는다.
+
 이 패키지만 새로 추가한다. 기존 MCEF·VSC·model-A의 코드를 수정하거나 결과를 덮어쓰지 않는다.
 전자 2-state TDSE가 아니다. `Psi[R,x,Q]` 전체를 complex128로 전파한다.
 `Q=sqrt(omega_c)*q_c`, 전자 `x`는 DST-I/Dirichlet, 양성자 `R`와 광자 `Q`는 FFT/periodic이다.
