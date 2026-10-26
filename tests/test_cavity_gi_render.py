@@ -6,7 +6,8 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
-from multi_component_exact_factorization_cavity.render import prepare_display, outer_force_figure
+from multi_component_exact_factorization_cavity.render import (prepare_display, outer_force_figure,
+    component_figure, _geometry_label, _conditional_energy_label)
 from multi_component_exact_factorization_cavity.gi_render import (
     prepare_gi_display, epsilon1_gi_figure, outer_gi_figure, gi_reference_zoom_figure,
     HA_TO_MEV)
@@ -44,11 +45,21 @@ class GIRenderTests(unittest.TestCase):
             fig=epsilon1_gi_figure(f,d,0,ref);fig.canvas.draw()
             self.assertEqual(fig.axes[0].get_ylim(),fig.axes[1].get_ylim())
             self.assertEqual(fig.axes[2].get_ylim(),fig.axes[3].get_ylim())
-            total=next(l for l in fig.axes[2].lines if l.get_label()=='Geometric sum')
+            total=next(l for l in fig.axes[2].lines if l.get_label()==_geometry_label(1))
             np.testing.assert_allclose(total.get_ydata(),.003)
+            labels=[l.get_label() for ax in fig.axes for l in ax.lines]
+            self.assertIn(_geometry_label(1,'q_c'),labels)
+            self.assertIn(_conditional_energy_label(f,1),labels)
+            self.assertNotIn('Geometric sum',labels)
+            self.assertFalse(any(r'\langle h\rangle' in s for s in labels))
             plt.close(fig)
             for fun in (outer_gi_figure,gi_reference_zoom_figure):
                 fig=fun(f,d,0,ref);fig.canvas.draw();plt.close(fig)
+            fig=component_figure(f,d);fig.canvas.draw()
+            labels=[l.get_label() for ax in fig.axes for l in ax.lines]
+            self.assertIn(_geometry_label(1,'R'),labels)
+            self.assertIn(_conditional_energy_label(f,1),labels)
+            plt.close(fig)
             np.testing.assert_array_equal(f['epsilon1'],original)
             fig=outer_force_figure(f,d,ref)
             labels=[l.get_label() for l in fig.axes[0].lines]

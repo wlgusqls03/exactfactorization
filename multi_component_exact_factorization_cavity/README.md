@@ -1,5 +1,31 @@
 # 실공간 MCEF를 계승한 cavity 확장
 
+## 표기 통일 및 기존 그림 덮어쓰기
+
+- `epsilon1_qgeo`, `epsilon1_Rgeo`는 그림에서 각각
+  `epsilon^(1)_(geo,q_c)`, `epsilon^(1)_(geo,R)`로 표시한다.
+  두 항의 합은 `epsilon^(1)_geo`이며 별도 추가 항이 아니다.
+- `epsilon2_geo`는 `epsilon^(2)_geo`로 표시한다.
+- 설명 없는 `<h>_x` 대신 `<T_x+V>_Phi`를 표시한다.
+  Outer 기댓값은 `<T_x+T_qc+V>_Gamma`이다. V는 분자·photon 조화·LM·DSE
+  퍼텐셜의 합이며 각 그림 아래에 정의한다. 전자 운동에너지가 포함되어 있다.
+- `bare molecular`도 `<T_x+V_mol>_Phi`로 명확히 표시한다.
+  저장 필드 이름과 수치, TDSE, gauge는 변경하지 않는다.
+
+기존 `report_GI_v3`의 같은 이름 PNG/PDF/MP4를 덮어쓰려면 다음을 실행한다.
+새 폴더를 추가하거나 이전 결과를 삭제할 필요는 없다. 계산 완료 후에만 실행한다.
+
+```bash
+for coupling in zero weak strong; do
+  python -m multi_component_exact_factorization_cavity.workflow render \
+    --out "results/20261026/pen10_native_v1/pen/$coupling" \
+    --report-out "results/20261026/pen10_native_v1/pen/$coupling/report_GI_v3" || break
+done
+```
+
+원래 자동 생성 `report/` 폴더를 덮어쓰려면 `--report-out`을 생략한다.
+`--no-movies`는 PNG/PDF만 갱신하므로 기존 MP4 표기까지 갱신하려면 붙이지 않는다.
+
 ## GI 전용 분해와 확대 (2026-10-26)
 
 기존 six-panel slice와 TDSE는 유지한다. `workflow render` 및 계산 완료 후 자동 보고서에

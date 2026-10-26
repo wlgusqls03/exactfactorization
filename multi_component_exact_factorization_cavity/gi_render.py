@@ -9,7 +9,8 @@ from matplotlib.ticker import MaxNLocator
 
 from .render import (_load, _real, _line_support, _line_xlim, _nice, _legend,
                      _silhouette, _title, _references, _focus_profile,
-                     _q_label, _q_symbol, COLORS, REF_COLORS)
+                     _q_label, _q_symbol, _conditional_energy_label,
+                     _geometry_label, _potential_definition, COLORS, REF_COLORS)
 
 HA_TO_MEV = 27211.386245988
 
@@ -95,13 +96,13 @@ def _plot_terms(ax, x, f, selector, support, terms, factor=1.):
 
 def epsilon1_gi_figure(f, display, index=0, references=None):
     fig, axes = plt.subplots(2,2,figsize=(24,14))
-    fig.subplots_adjust(left=.07,right=.97,bottom=.13,top=.88,hspace=.64,wspace=.24)
+    fig.subplots_adjust(left=.07,right=.97,bottom=.18,top=.88,hspace=.64,wspace=.24)
     scales = display['gi_scales']
     for col, direction in enumerate(('q','R')):
         x, sel, density, support = _cut(f,display,direction)
         ax = axes[0,col]; _silhouette(ax,x,density)
-        _plot_terms(ax,x,f,sel,support,[('epsilon1_GI','GI total',COLORS['GI']),
-                    ('epsilon1_cond',r'$\langle h\rangle_x$','#161616')])
+        _plot_terms(ax,x,f,sel,support,[('epsilon1_GI',r'$\epsilon^{(1)}_{\mathrm{GI}}$',COLORS['GI']),
+                    ('epsilon1_cond',_conditional_energy_label(f,1),'#161616')])
         _references(ax,references,f,level=1,direction=direction,
                     fixed_index=display['i'] if direction=='q' else display['j'])
         fixed = (fr'$R={f["R"][display["i"]]:.2f}\,a_0$' if direction=='q'
@@ -109,35 +110,39 @@ def epsilon1_gi_figure(f, display, index=0, references=None):
         ax.set_title('GI / static references | '+fixed); _legend(ax,3)
         _nice(ax,_q_label(f) if direction=='q' else r'$R$ ($a_0$)','Energy (Ha)',scales['energy1'])
         ax=axes[1,col];_silhouette(ax,x,density)
-        _plot_terms(ax,x,f,sel,support,[('epsilon1_qgeo',fr'$G_{{{_q_symbol(f)}}}^\Phi$','#7B3294'),
-                    ('epsilon1_Rgeo',r'$G_R^\Phi$','#009E73')])
+        _plot_terms(ax,x,f,sel,support,[('epsilon1_qgeo',_geometry_label(1,_q_symbol(f)),'#7B3294'),
+                    ('epsilon1_Rgeo',_geometry_label(1,'R'),'#009E73')])
         if all(k in f for k in ('epsilon1_qgeo','epsilon1_Rgeo')):
             total = _real(f['epsilon1_qgeo']+f['epsilon1_Rgeo'])[sel]
-            ax.plot(x,np.where(support,total,np.nan),color='0.15',ls='--',lw=2,label='Geometric sum')
+            ax.plot(x,np.where(support,total,np.nan),color='0.15',ls='--',lw=2,label=_geometry_label(1))
         ax.axhline(0,color='.5',ls=':',lw=1)
         ax.set_title('Geometric contributions | expanded scale');_legend(ax,3)
         _nice(ax,_q_label(f) if direction=='q' else r'$R$ ($a_0$)','Energy (Ha)',scales['geo1'])
         for ax in axes[:,col]: ax.set_xlim(_line_xlim(display,direction,f))
     _title(fig,f,r'$\epsilon^{(1)}$ GI decomposition')
-    fig.text(.5,.025,r'GI = $\langle h\rangle_x+G_{q_c}^{\Phi}+G_R^{\Phi}$ (cavity). Absolute energies unchanged; lower row uses a separate expanded scale.',ha='center',fontsize=12)
+    fig.text(.5,.055,r'$\epsilon^{(1)}_{\mathrm{GI}}=\langle\hat T_x+V\rangle_{\Phi}+\epsilon^{(1)}_{\mathrm{geo}}$; '
+             +fr'$\epsilon^{{(1)}}_{{\mathrm{{geo}}}}=\epsilon^{{(1)}}_{{\mathrm{{geo}},{_q_symbol(f)}}}+\epsilon^{{(1)}}_{{\mathrm{{geo}},R}}$',ha='center',fontsize=14)
+    fig.text(.5,.02,_potential_definition(f)+'  '+r'$\langle\cdot\rangle_{\Phi}$: electron integral at fixed nuclear / photon coordinates.',ha='center',fontsize=12)
     return fig
 
 
 def outer_gi_figure(f, display, index=0, references=None):
     fig, axes=plt.subplots(1,2,figsize=(24,8))
-    fig.subplots_adjust(left=.075,right=.97,bottom=.27,top=.81,wspace=.26)
+    fig.subplots_adjust(left=.075,right=.97,bottom=.33,top=.81,wspace=.26)
     R=f['R'];support=_line_support(f,2);scales=display['gi_scales']
     for ax in axes:_silhouette(ax,R,f['rho_R']);ax.set_xlim(_line_xlim(display,'R',f))
-    _plot_terms(axes[0],R,f,None,support,[('epsilon2_GI','GI total',COLORS['GI']),
-                ('epsilon2_cond',r'$\langle H-T_R\rangle_\Gamma$','#161616')])
+    _plot_terms(axes[0],R,f,None,support,[('epsilon2_GI',r'$\epsilon^{(2)}_{\mathrm{GI}}$',COLORS['GI']),
+                ('epsilon2_cond',_conditional_energy_label(f,2),'#161616')])
     _references(axes[0],references,f,level=2,fixed_index=display['j'])
     axes[0].set_title('Outer GI / static references');_legend(axes[0],3)
     _nice(axes[0],r'$R$ ($a_0$)','Energy (Ha)',scales['energy2'])
-    _plot_terms(axes[1],R,f,None,support,[('epsilon2_geo',r'$G_R^\Gamma$','#7B3294')])
+    _plot_terms(axes[1],R,f,None,support,[('epsilon2_geo',_geometry_label(2),'#7B3294')])
     axes[1].axhline(0,color='.5',ls=':',lw=1);axes[1].set_title('Geometric contribution | expanded scale')
     _nice(axes[1],r'$R$ ($a_0$)','Energy (Ha)',scales['geo2']);_legend(axes[1],1)
     _title(fig,f,r'$\epsilon^{(2)}$ GI decomposition')
-    fig.text(.5,.035,r'GI = $\langle H-T_R\rangle_\Gamma+G_R^\Gamma$. The geometric contribution alone is not the total nuclear force.',ha='center',fontsize=12)
+    fig.text(.5,.10,fr'$\epsilon^{{(2)}}_{{\mathrm{{GI}}}}=\langle\hat T_x+\hat T_{{{_q_symbol(f)}}}+V\rangle_{{\Gamma}}+\epsilon^{{(2)}}_{{\mathrm{{geo}}}}$',ha='center',fontsize=14)
+    fig.text(.5,.055,_potential_definition(f),ha='center',fontsize=12)
+    fig.text(.5,.015,fr'$\Gamma_R=\Phi\Lambda_R$; $\langle\cdot\rangle_{{\Gamma}}$: integral over $x,{_q_symbol(f)}$ at fixed $R$.',ha='center',fontsize=12)
     return fig
 
 

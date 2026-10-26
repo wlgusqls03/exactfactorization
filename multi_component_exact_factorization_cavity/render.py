@@ -73,6 +73,23 @@ def _q_symbol(f):
     return 'q' if _is_mcef(f) else 'q_c'
 
 
+def _conditional_energy_label(f, level):
+    """Explicit kinetic operators; V denotes all potential terms, not BO alone."""
+    if level == 1:
+        return r'$\langle\hat T_x+V\rangle_{\Phi}$'
+    return fr'$\langle\hat T_x+\hat T_{{{_q_symbol(f)}}}+V\rangle_{{\Gamma}}$'
+
+
+def _geometry_label(level, direction=None):
+    subscript = r'\mathrm{geo}' + (','+direction if direction else '')
+    return fr'$\epsilon^{{({level})}}_{{{subscript}}}$'
+
+
+def _potential_definition(f):
+    return ('V: all molecular potentials (including the heavy trap).' if _is_mcef(f)
+            else r'$V=V_{\mathrm{mol}}+\frac{1}{2}\omega_c^2q_c^2+V_{\mathrm{LM}}+V_{\mathrm{DSE}}$ (all potentials).')
+
+
 def _reference_name(f):
     return 'BO' if _is_mcef(f) else 'CBO'
 
@@ -560,15 +577,18 @@ def component_figure(f,display):
     """Separate component budget; static snapshots avoid another large movie.
 
     GI/GD and geometric terms are gauge-labelled PG quantities, not mutually
-    independent causal forces. The h expectation includes photon harmonic,
+    independent causal forces. The conditional energy includes photon harmonic,
     LM and DSE exactly once; this plot does not add it to epsilon1 again.
     """
     fig,axes=plt.subplots(3,2,figsize=(23,18))
-    fig.subplots_adjust(left=.07,right=.97,bottom=.10,top=.91,hspace=.65,wspace=.24)
+    fig.subplots_adjust(left=.07,right=.97,bottom=.14,top=.91,hspace=.65,wspace=.24)
     i,j=display['i'],display['j']
-    groups=((('epsilon1',r'$\epsilon^{(1)}$'),('epsilon1_cond',r'$\langle h\rangle_x$'),
-             ('epsilon1_GD','GD')), (('epsilon1_qgeo',fr'$G_{{{_q_symbol(f)}}}$'),('epsilon1_Rgeo',r'$G_R$')),
-            (('epsilon1_bare','bare molecular'),('epsilon1_LM','light–matter'),('epsilon1_DSE','DSE')))
+    groups=((('epsilon1',r'$\epsilon^{(1)}$'),('epsilon1_cond',_conditional_energy_label(f,1)),
+             ('epsilon1_GD',r'$\epsilon^{(1)}_{\mathrm{GD}}$')),
+            (('epsilon1_qgeo',_geometry_label(1,_q_symbol(f))),('epsilon1_Rgeo',_geometry_label(1,'R'))),
+            (('epsilon1_bare',r'$\langle\hat T_x+V_{\mathrm{mol}}\rangle_{\Phi}$'),
+             ('epsilon1_LM',r'$\langle V_{\mathrm{LM}}\rangle_{\Phi}$'),
+             ('epsilon1_DSE',r'$\langle V_{\mathrm{DSE}}\rangle_{\Phi}$')))
     for col in range(2):
         coordinate=f['q'] if col==0 else f['R']
         selector=i if col==0 else (slice(None),j)
@@ -583,16 +603,17 @@ def component_figure(f,display):
                     ax.plot(coordinate,np.where(line_support,_real(f[key])[selector],np.nan),lw=2,color=([COLORS['total']]+REF_COLORS)[k],label=label)
             if row==2 and 'omega' in f:
                 value=.5*float(f['omega'])**2*np.asarray(f['q'])**2
-                ax.plot(coordinate,value if col==0 else np.full(len(coordinate),value[j]),lw=1.6,ls='--',color=REF_COLORS[3],label='photon harmonic')
+                ax.plot(coordinate,value if col==0 else np.full(len(coordinate),value[j]),lw=1.6,ls='--',color=REF_COLORS[3],label=r'$\frac{1}{2}\omega_c^2q_c^2$')
             ax.axhline(0,ls=':',color='.5',lw=.8)
             ax.set_xlim(_line_xlim(display,'q' if col==0 else 'R',f))
             _nice(ax,_q_label(f) if col==0 else r'$R$ ($a_0$)','Energy (Ha)',
                   display['scales'][('energy1','geometry1','interaction1')[row]])
             title=('Scalar expectation / time term','Geometric contributions','Hamiltonian expectation budget')[row]
             ax.set_title(title+(' | fixed R' if col==0 else ' | fixed q'))
-            _legend(ax,3)
+            _legend(ax,2 if row==2 else 3)
             _unsupported_note(ax,line_support)
     _title(fig,f,fr'$\epsilon^{{(1)}}$ component slices | $R_s={f["R"][i]:.2f}$, $q_s={f["q"][j]:.2f}$')
+    fig.text(.5,.025,_potential_definition(f),ha='center',fontsize=12)
     return fig
 
 
