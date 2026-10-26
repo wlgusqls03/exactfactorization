@@ -839,7 +839,7 @@ def reference_focus_figure(f,display,references=None):
 
 def _title(fig,f,title):
     frequency=(fr', $\omega_c={float(f["omega"]):.4g}$ Ha' if 'omega' in f else '')
-    coupling='' if _is_mcef(f) else fr', $\lambda={float(f.get("g_cavity",0)):.3g}$'+frequency
+    coupling='' if _is_mcef(f) else fr', $g_{{\mathrm{{cavity}}}}={float(f.get("g_cavity",0)):.6g}$ a.u.'+frequency
     fig.suptitle(title+fr'    $t={_time(f):.3f}$ fs'+coupling,y=.985)
     for i,ax in enumerate([a for a in fig.axes if a.get_title()]):
         ax.text(-.08,1.06,chr(65+i),transform=ax.transAxes,fontweight='bold',fontsize=17)
@@ -1182,27 +1182,49 @@ def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_pa
 
 
 def render_comparison(root):
-    """Coupling comparisons from existing observables; never reruns dynamics."""
+    """Coupling comparisons and static PEN surfaces from existing caches only."""
     root=Path(root); cases=sorted(root.rglob('observables.npz'))
-    if not cases: return {'outputs':[],'notes':['No observables available']}
-    outputs=[]
+    outputs=[]; notes=[] if cases else ['No observables available']
     with plt.rc_context(STYLE):
         for campaign in ('pen','vsc'):
             selected=[p for p in cases if campaign in str(p.relative_to(root)).lower()]
             if not selected: continue
-            fig,axes=plt.subplots(2,2,figsize=(20,12)); fig.subplots_adjust(bottom=.14,hspace=.56,wspace=.25)
+            order={'zero':0,'weak':1,'strong':2}
+            selected.sort(key=lambda p:(order.get(p.parent.name,3),str(p)))
+            fig,axes=plt.subplots(2,2,figsize=(20,12)); fig.subplots_adjust(bottom=.14,hspace=.38,wspace=.25)
             for p in selected:
                 d=_load(p); t=d.get('t_fs',d.get('times_fs'))
                 if t is None: continue
                 label=p.parent.name
+                config=_json(p.parent/'config.json')
+                if 'g_cavity' in config:
+                    label+=fr' ($g_{{\mathrm{{cavity}}}}={float(config["g_cavity"]):.6g}$ a.u.)'
                 for ax,key,y in zip(axes.flat,('product','photon_number','kinetic_R','signed_flux'),('Product-side probability',r'$\langle N_{ph}\rangle$','Proton kinetic (Ha)','Signed flux (a.u.)')):
                     if key in d: ax.plot(t,d[key],lw=2,label=label)
                     _nice(ax,'t (fs)',y); ax.axhline(0,color='0.5',ls=':',lw=.7)
-            for ax in axes.flat: _legend(ax)
+            # One shared external legend keeps numerical coupling labels out
+            # of the data and avoids overlap between neighboring panels.
+            legend={}
+            for ax in axes.flat:
+                handles,labels=ax.get_legend_handles_labels()
+                legend.update(zip(labels,handles))
+            if legend:
+                fig.legend(legend.values(),legend.keys(),loc='lower center',
+                           bbox_to_anchor=(.5,.025),ncol=3,frameon=False,fontsize=12)
             fig.suptitle(campaign.upper()+' | cavity coupling comparison')
             path=root/(campaign+'_coupling_comparison'); _save(fig,path,130); plt.close(fig)
             outputs.extend([str(path.with_suffix('.png')),str(path.with_suffix('.pdf'))])
-    return {'outputs':outputs}
+    if (root/'pen').is_dir():
+        from .polaritonic_surfaces import render_surfaces
+        try:
+            surfaces=render_surfaces(root)
+            outputs.extend(surfaces['outputs']);notes.extend(surfaces.get('notes',[]))
+        except (OSError, ValueError, KeyError) as exc:
+            # Invalid/mismatched static caches must not invalidate completed
+            # dynamics reports; never silently compare incompatible models.
+            message='PEN static surfaces skipped: '+str(exc)
+            warnings.warn(message);notes.append(message)
+    return {'outputs':outputs,'notes':notes}
 
 
 if __name__=='__main__':

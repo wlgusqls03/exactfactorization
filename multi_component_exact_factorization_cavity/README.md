@@ -437,3 +437,50 @@ OPENBLAS_NUM_THREADS=1 python -m multi_component_exact_factorization_cavity.work
 `--preset smoke`는 초기상태 method를 single_well로 override하므로 이중 우물 smoke에서
 사용할 경우 `--set 'local_state_method="local_wall"'`을 명시해야 한다.
 이번 탐색에서는 장시간 전파를 하지 않았고 원래 model을 대체하지 않았다.
+
+## PEN polaritonic surface 전체 비교 (zero / weak / strong)
+
+기존 `references.npz`의 fixed-R 전자–광자 고유값을 사용한다. TDSE 재전파,
+새 대각화, gauge 변환은 하지 않는다. 완료된 캠페인의 비교 보고서 생성 시
+자동으로 추가되며, 이미 계산한 서버 결과에서는 다음 명령만 실행하면 된다.
+
+```bash
+python -m multi_component_exact_factorization_cavity.polaritonic_surfaces \
+  --root results/20261026/pen10_native_v1
+```
+
+입력: `<root>/pen/{zero,weak,strong}/config.json`, `references.npz`.
+`--root`에 `pen` 디렉터리 자체를 주어도 된다. `--out`으로 출력 위치를 바꿀 수 있고,
+`--zoom-half-width 1.5`로 초기 R0 주변의 확대 반폭(a0)을 지정할 수 있다.
+기본 출력은 `<root>/polaritonic_surfaces/`이며, 반복 실행은 같은 그림만 덮어쓴다.
+
+- `PEN_polaritonic_surfaces.png/.pdf`: 열은 zero/weak/strong. 위는 전체 R 범위,
+  아래는 초기 R0 주변 확대. 각 행의 세 패널은 동일한 x/y 범위를 사용한다.
+  실선은 저장된 낮은 네 고유값 `|Pol_0>`–`|Pol_3>`, 점선은 bare product
+  `|S0,0>`, `|S1,0>`, `|S0,1>`, `|S1,1>`의 에너지
+  `E_BO_j(R)+(n+1/2)*omega_c`다. 공통 photon zero-point energy를 포함한다.
+- `PEN_polaritonic_pair_zoom.png/.pdf`: 초기 영역에서 저장된 product-character
+  지표로 선택한 두 energy index를 R0 주변에서 확대한다. 세 경우 모두 **같은**
+  bare `|S1,0>`/`|S0,1>` 에너지 평균을 빼서 meV로 표시한다. 이는 시각화용
+  R-dependent 기준 제거이며, gauge 변환도 force를 읽는 potential도 아니다.
+  표시된 간격은 실제 표기된 격자 R에서의 값이지 fitted minimum Rabi splitting이
+  아니다. 격자가 공명 위치를 정확히 포함하지 않으면 zero에서도 간격이 남는다.
+- `surface_manifest.json`: 읽은 경로, 실제 coupling/주파수, basis 크기, 공통 축,
+  선택한 pair index와 측정 R/간격, missing-cache 안내를 저장한다.
+
+각 패널에는 `g_cavity` 수치(a.u.), `omega_c`(Ha), DSE on/off가 들어간다.
+이 저장소의 정의는 `H_LM=omega_c*g_cavity*mu*q_c`, `H_DSE=g_cavity^2*mu^2/2`다.
+`g_cavity` 자체는 Rabi splitting 에너지가 아니다. 값은 config에서 읽으며,
+weak/strong에 특정 숫자를 하드코딩하지 않는다. 기존 동역학 비교 범례와
+cavity diagnostics 제목에도 같은 `g_cavity` 표기를 사용한다.
+
+네 bare product는 비교선일 뿐, 네 개로 TDSE를 잘랐다는 뜻이 아니다.
+`Pol_k`는 에너지 순서이므로 Pol3가 반드시 `|S1,1>`은 아니며, Pol1/Pol2도
+전역에서 자동으로 LP/UP라고 부르지 않는다. 고유값은 기존 BO×Fock **분석용**
+투영 계산에서 가져오며, 이 plotting만으로 그 basis의 수렴이 인증되지는 않는다.
+누락 case/pair는 unavailable로 표시하고, 서로 다른 BO/grid/frequency를 섞은
+coupling 비교는 거부한다. 캠페인 자동 렌더에서는 이 실패를 경고로 남기고
+이미 완성한 동역학 보고서는 보존한다.
+
+로컬 출력 예시: `results/20261025/local_double_well_preview_v1/pen_5fs/polaritonic_surfaces/`.
+이는 기존 5 fs coarse PEN preview의 실제 캐시이며 서버 production 결과는 아니다.
