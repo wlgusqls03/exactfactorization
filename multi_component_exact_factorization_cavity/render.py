@@ -624,15 +624,16 @@ def bridge_wavefunction_figure(f,display,index,references=None):
     return fig
 
 
-def outer_force_figure(f,display):
+def outer_force_figure(f,display,references=None):
     """EF electric-like field, not the full Madelung trajectory acceleration."""
     fig,axes=plt.subplots(1,2,figsize=(22,7))
     fig.subplots_adjust(left=.07,right=.97,bottom=.27,top=.80,wspace=.25)
     R=f['R']; support=f['rho_R']>np.max(f['rho_R'])*1e-5
     for ax in axes: _silhouette(ax,R,f['rho_R'])
-    axes[0].plot(R,np.where(support,_get(f,'epsilon2'),np.nan),color=COLORS['total'],lw=2.2,label=r'$\epsilon^{(2)}$ (PG)')
+    _scalar_lines(axes[0],R,f,2)
+    _references(axes[0],references,f,level=2,fixed_index=display['j'])
     axes[0].set_title('Outer scalar in positive marginal gauge')
-    _nice(axes[0],r'$R$ ($a_0$)','Energy (Ha)',display['scales']['e2_direct']); _legend(axes[0],1)
+    _nice(axes[0],r'$R$ ($a_0$)','Energy (Ha)',display['scales']['energy2']); _legend(axes[0],4)
     if 'force' in f:
         axes[1].plot(R,np.where(support,_real(f['force']),np.nan),lw=2.2,color=COLORS['total'],label='total EF field')
         if 'alpha_t' in f:
@@ -1032,6 +1033,9 @@ def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_pa
     if reference_path is not None:
         notes.append('External static references: '+str(refs_path.resolve())+'. Cached fields/populations are unchanged; refined overlays do not certify production or population convergence.')
     display=prepare_display(files,refs); first=_load(files[0]); out=Path(output_dir) if output_dir is not None else case/'report'; out.mkdir(parents=True,exist_ok=True)
+    from .gi_render import (prepare_gi_display, epsilon1_gi_figure,
+                            outer_gi_figure, gi_reference_zoom_figure)
+    display['gi_scales']=prepare_gi_display(files,display,refs)
     if (case/'observables.npz').exists():
         with np.load(case/'observables.npz', allow_pickle=False) as obs:
             display['slice_observables'] = {k: obs[k] for k in
@@ -1041,7 +1045,10 @@ def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_pa
     if movies and not has_video: notes.append('Movies skipped: ffmpeg unavailable or fewer than two saved physical times.')
     families={'A_diagnostics_clean':bridge_figure,'B_diagnostics_clean':source_figure,
               'bridge_consistency':consistency_figure,'epsilon1_slice_analysis':slice_figure,
-              'bridge_wavefunction':bridge_wavefunction_figure}
+              'bridge_wavefunction':bridge_wavefunction_figure,
+              'epsilon1_GI_decomposition':epsilon1_gi_figure,
+              'outer_GI_decomposition':outer_gi_figure,
+              'GI_reference_zoom':gi_reference_zoom_figure}
     with plt.rc_context(STYLE):
         for family,function in families.items():
             directory=out/family; directory.mkdir(exist_ok=True)
@@ -1072,7 +1079,7 @@ def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_pa
             produced.extend([str(target.with_suffix('.png')),str(target.with_suffix('.pdf'))])
         force_dir=out/'outer_force'; force_dir.mkdir(exist_ok=True)
         for n in selected:
-            fig=outer_force_figure(_load(files[n]),display)
+            fig=outer_force_figure(_load(files[n]),display,refs)
             target=force_dir/f'snapshot_{n:06d}'; _save(fig,target,dpi); plt.close(fig)
             produced.extend([str(target.with_suffix('.png')),str(target.with_suffix('.pdf'))])
         cbo_dir=out/('same_geometry_BO' if _is_mcef(first) else 'same_geometry_CBO');cbo_dir.mkdir(exist_ok=True)
@@ -1134,6 +1141,9 @@ def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_pa
                   gauge='positive marginal gauge; scalar slope alone is not the full EF force',
                   reference_policy='static comparison; GI/GD and exact time dependence need not follow a single BO/CBO curve')
     manifest['reference_range_policy']=display['reference_range_policy']
+    manifest['gi_scales']=display['gi_scales']
+    manifest['gi_scale_policy']='All-frame finite extrema on occupied slices; GI/conditional/geometric only, no total/GD. Geometry uses independent expanded axes. References outside the occupied viewport may be off-scale.'
+    manifest['gi_zoom_policy']='Upper panels: (E-E_reference_0) in meV for every curve. Lower panels: a common baseline from the fixed two references nearest initial GI; vertical limits from these references only, with annotation if GI leaves the zoom. This spatially dependent subtraction is NOT a gauge transformation or force potential. No LP/UP assignment.'
     manifest['reference_energy_ranges']=display['reference_ranges']
     manifest['reference_focus_limits']=display['reference_focus_limits']
     manifest['reference_focus_policy']='Absolute GI and references are unshifted. Two references nearest the local GI are selected descriptively, not as population/branch assignments; differences are explicitly in meV. '+('The outer BO cut fixes q_s and is not an outer adiabatic eigenproblem.' if _is_mcef(first) else 'Fixed-R electron+photon references are not vibrational LP/UP.')

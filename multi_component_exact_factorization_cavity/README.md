@@ -1,5 +1,36 @@
 # 실공간 MCEF를 계승한 cavity 확장
 
+## GI 전용 분해와 확대 (2026-10-26)
+
+기존 six-panel slice와 TDSE는 유지한다. `workflow render` 및 계산 완료 후 자동 보고서에
+다음 PNG/PDF와 MP4가 추가된다. 원시 파동함수나 새로운 propagation은 필요 없다.
+
+- `outer_force/`: A에 epsilon2 total/GI/GD 및 Pol 0–3 기준면, B는 기존 EF force.
+- `outer_GI_decomposition/`: GI2 = conditional Hamiltonian expectation + nuclear geometry.
+  왼쪽은 GI/expectation/Pol, 오른쪽은 geometry만 별도 에너지 축으로 확대.
+- `epsilon1_GI_decomposition/`: 두 방향 slice. 위는 GI1/conditional expectation/CBO,
+  아래는 photon geometry/nuclear geometry/두 항의 합. 같은 행은 공통 y축.
+- `GI_reference_zoom/`: 위는 모든 곡선에서 같은 reference 0를 뺀 meV 차이.
+  아래는 초기 GI에 가장 가까운 두 기준선을 시간 전체에서 고정해서 확대.
+  아래 y범위는 선택한 기준선으로 정하고, GI가 벗어나면 그림에 명시한다.
+
+원래 absolute-energy 그림은 보존된다. 공간 의존 기준면의 차감은 **gauge 변환이 아니며**,
+차감한 그림의 기울기를 물리적 force로 읽으면 안 된다. 비교용 두 기준선 선택은
+population이나 LP/UP 판정이 아니다. 값이 실제로 거의 같으면 억지로 수직 이동시키지 않는다.
+GI 범위는 모든 저장 프레임의 occupied support에서 구하고 total/GD를 제외한다.
+원래 정의된 GI 구성항만 사용하며 누락 항은 unavailable로 표시한다.
+
+기존 결과를 새 폴더로 렌더링하는 예:
+
+```bash
+python -m multi_component_exact_factorization_cavity.workflow render \
+  --out results/20261026/pen10_native_v1/pen/strong \
+  --report-out results/20261026/pen10_native_v1/pen/strong/report_GI_v3
+```
+
+PNG/PDF만 확인할 때는 `--no-movies` 추가. 현재 report 전체를 생성하므로 디스크 여유를
+확인하며, 완료된 TDSE에 대해서만 실행한다. 구 보고서는 자동 삭제하지 않는다.
+
 ## PEN slice 보고서 갱신 (2026-10-26)
 
 `epsilon1_slice_analysis`는 cavity 데이터에서 2행×3열이다. 왼쪽 두 열은
