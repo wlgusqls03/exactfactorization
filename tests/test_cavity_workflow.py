@@ -14,7 +14,14 @@ class WorkflowTests(unittest.TestCase):
             main(['render','--out','input_case','--report-out','new_report',
                   '--references','refined/references.npz','--no-movies'])
         render.assert_called_once_with(Path('input_case'),movies=False,
-            output_dir=Path('new_report'),reference_path=Path('refined/references.npz'))
+            output_dir=Path('new_report'),reference_path=Path('refined/references.npz'),t_max_fs=None)
+
+    def test_render_time_limit_is_not_a_propagation_option(self):
+        with patch('multi_component_exact_factorization_cavity.render.render_case',return_value={}) as render:
+            main(['render','--out','input_case','--t-max-fs','40'])
+        self.assertEqual(render.call_args.kwargs['t_max_fs'],40.)
+        with self.assertRaises(SystemExit):
+            main(['run','--t-max-fs','40'])
 
     def config(self):
         return dict(nx=24,nR=48,nQ=24,Q_max=7.,R_left=-8.,R_right=8.,

@@ -392,8 +392,12 @@ def main(argv=None):
                    help='render only: separate new report directory; preserve original report')
     p.add_argument('--references',type=Path,
                    help='render only: optional separately refined static reference cache')
+    p.add_argument('--t-max-fs',type=float,
+                   help='render only: use saved times <= this limit; default output report_<limit>fs/')
     p.add_argument('--set',action='append',default=[],metavar='KEY=JSON')
     a=p.parse_args(argv)
+    if a.t_max_fs is not None and a.command!='render':
+        p.error('--t-max-fs is a render-only option; it does not change propagation time')
     c=configuration(json.loads(a.config.read_text()) if a.config else {})
     if a.preset=='smoke':
         c.update(nx=96,nR=96,nQ=24,Q_max=7.,n_bo=3,n_vib=4,n_fock_analysis=4,
@@ -413,7 +417,7 @@ def main(argv=None):
     if a.command=='render':
         from .render import render_case
         render_case(a.out,movies=not a.no_movies,output_dir=a.report_out,
-                    reference_path=a.references);return
+                    reference_path=a.references,t_max_fs=a.t_max_fs);return
     campaigns=['pen','vsc'] if a.campaign=='both' else [a.campaign]
     cases=['zero','weak','strong'] if a.case=='all' else [a.case]
     if a.command=='run':

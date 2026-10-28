@@ -1,5 +1,49 @@
 # 실공간 MCEF를 계승한 cavity 확장
 
+## 50 fs 계산에서 0–40 fs만 다시 그리기
+
+`--t-max-fs 40`은 **렌더링 전용 옵션**이다. 50 fs의 fields/observables,
+checkpoint, config는 수정하지 않으며 TDSE 재실행이 필요 없다.
+실제 저장 시간 `t <= 40 fs`인 자료만 사용한다. 정확히 40 fs 자료가 없으면
+그보다 앞선 마지막 저장 시각에서 끝나고, 보간 프레임은 만들지 않는다.
+
+```bash
+for coupling in zero weak strong; do
+  python -m multi_component_exact_factorization_cavity.workflow render \
+    --out "results/20261026/pen10_native_v1/pen/$coupling" \
+    --t-max-fs 40 || break
+done
+```
+
+기본 출력: 각 case의 `report_40fs/`. 기존 50 fs `report/`는 유지된다.
+`--report-out`을 지정하면 그 경로에 쓴다. 구간이 다른 보고서에 덮어쓰면
+옛 snapshot 파일이 남을 수 있으므로 구간별 별도 폴더를 권장한다.
+같은 `report_40fs/`에 동일한 옵션으로 다시 실행하면 같은 파일을 갱신한다.
+
+범위 제한은 A/B·GI·slice·consistency·timeline·outer force·density overview·
+BO/POL/CBO population·photon number·에너지·Pol 핵 파동묶음 모두에 적용된다.
+축/색상 범위와 대표 snapshot도 제한된 시간 구간에서 다시 결정한다.
+정적 BO/CBO/Pol 기준면·상태 구성 자체는 시간이 없으므로 변경하지 않는다.
+`render_manifest.json`과 `polaritonic_dynamics_manifest.json`에 요청한 제한과
+실제 사용한 시간 범위를 기록한다. 새 Pol 영상만 만들 때도 같은 옵션을 쓴다:
+
+```bash
+python -m multi_component_exact_factorization_cavity.polaritonic_dynamics \
+  --case results/20261026/pen10_native_v1/pen/strong --t-max-fs 40
+```
+
+`--no-movies` 추가 시 정적 그림만 생성한다. 시간 옵션을 생략하면 기존 전체 구간 동작이다.
+zero/weak/strong 통합 비교 그림도 40 fs로 제한하려면:
+
+```bash
+python - <<'PY'
+from multi_component_exact_factorization_cavity.render import render_comparison
+render_comparison('results/20261026/pen10_native_v1', t_max_fs=40)
+PY
+```
+
+이는 `pen_coupling_comparison_40fs.png/.pdf`를 저장한다.
+
 ## Population 분리·핵 파동묶음·Pol 구성 (2026-10-28)
 
 기존 `workflow render`와 계산 완료 후 자동 렌더링에 함께 적용된다.

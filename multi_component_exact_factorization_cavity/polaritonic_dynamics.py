@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FFMpegWriter, writers
 
 from .render import STYLE, REF_COLORS, _nice, _legend, _save, _bounds
+from .render_time import validate_t_max, select_observables, report_directory, time_range
 
 
 PRODUCTS = ((0, 0), (0, 1), (1, 0), (1, 1))
@@ -192,20 +193,24 @@ def composition_figure(composition, R, config=None):
     return fig
 
 
-def render_polaritonic_dynamics(case_dir, output_dir=None, *, data=None, movies=True, fps=20, dpi=110):
+def render_polaritonic_dynamics(case_dir, output_dir=None, *, data=None, movies=True, fps=20, dpi=110,
+                                t_max_fs=None):
     """Standalone or automatic cache-only driver, with explicit missing-data notes.
 
     Always use native analysis/reference caches, NOT an optional refined static
     reference from render_case: populations belong to the native eigenvectors.
     """
     from .workflow import load_tree
-    case=Path(case_dir); out=Path(output_dir) if output_dir is not None else case/'report'
-    out.mkdir(parents=True,exist_ok=True); outputs=[]; notes=[]
+    validate_t_max(t_max_fs)
+    case=Path(case_dir); out=report_directory(case,output_dir,t_max_fs)
+    outputs=[]; notes=[]
     config=json.loads((case/'config.json').read_text()) if (case/'config.json').exists() else {}
     def load_npz(path):
         with np.load(path,allow_pickle=False) as z:return {k:z[k] for k in z.files}
     if data is None:
         data=load_npz(case/'observables.npz') if (case/'observables.npz').exists() else {}
+    data=select_observables(data,t_max_fs)
+    out.mkdir(parents=True,exist_ok=True)
     try:
         native=load_npz(case/'references.npz') if (case/'references.npz').exists() else {}
     except (OSError,ValueError) as exc:
@@ -272,6 +277,7 @@ def render_polaritonic_dynamics(case_dir, output_dir=None, *, data=None, movies=
             finally:
                 if writer:writer.finish()
     manifest=dict(outputs=outputs,notes=notes,cache_policy='Native analysis eigenvectors/energies and absolute cached projections; no propagation or eigensolve.',
+                  requested_t_max_fs=t_max_fs,observables_time_range_fs=time_range(data),
                   frame_interpolation=False,physical_frames=0 if p is None else len(p['t_fs']),
                   density_ribbon_gain=None if p is None else p['gain'],
                   fixed_R_limits=None if p is None else list(p['xlim']),
@@ -287,9 +293,11 @@ def main():
     parser.add_argument('--case',type=Path,required=True)
     parser.add_argument('--out',type=Path)
     parser.add_argument('--no-movies',action='store_true')
+    parser.add_argument('--t-max-fs',type=float,help='Use only saved physical times at or below this limit')
     parser.add_argument('--fps',type=int,default=20);parser.add_argument('--dpi',type=int,default=110)
     args=parser.parse_args()
-    render_polaritonic_dynamics(args.case,args.out,movies=not args.no_movies,fps=args.fps,dpi=args.dpi)
+    render_polaritonic_dynamics(args.case,args.out,movies=not args.no_movies,fps=args.fps,dpi=args.dpi,
+                                t_max_fs=args.t_max_fs)
 
 
 if __name__=='__main__':main()

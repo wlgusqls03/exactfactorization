@@ -21,6 +21,9 @@ from matplotlib.animation import FFMpegWriter, writers
 from matplotlib.ticker import MaxNLocator, ScalarFormatter
 from scipy.interpolate import RegularGridInterpolator
 
+from .render_time import (validate_t_max, select_observables, select_field_files,
+                          report_directory, time_range, constrain_time_axes)
+
 
 COLORS = dict(total='#161616', GI='#0072B2', GD='#D55E00', b='#0072B2',
               alpha='#D55E00', delta='#009E73', S_q='#0072B2',
@@ -863,10 +866,10 @@ def _save(fig,path,dpi):
     fig.savefig(path.with_suffix('.pdf'))
 
 
-def _overview_data(case,first):
+def _overview_data(case,first,t_max_fs=None):
     if not (case/'observables.npz').exists():
         return None
-    data=_load(case/'observables.npz')
+    data=select_observables(_load(case/'observables.npz'),t_max_fs)
     data.setdefault('t_fs',data.get('times_fs',np.arange(len(data.get('norm',[])))))
     for key in ('R','x','Q'):
         data.setdefault(key,first[key])
@@ -1046,13 +1049,15 @@ def static_context_figure(references,first):
     return fig
 
 
-def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_path=None):
+def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_path=None,
+                t_max_fs=None):
     """Generate reports automatically after propagation or from cached fields.
 
     Movies are encoded directly, so no full frame-PNG directory is created.
     A failure of optional reference loading does not abort basic diagnostics;
     movie availability/failures are explicit in render_manifest.json.
     """
+    validate_t_max(t_max_fs)
     case=Path(case_dir); files=sorted((case/'fields').glob('fields_*.npz'))
     # A failed run may leave fields newer than its durable observable index.
     # Ignore such orphan frames rather than deleting user data or rendering
@@ -1064,6 +1069,8 @@ def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_pa
                 files=[p for p in files if int(p.stem.split('_')[-1]) in valid_steps]
     if not files:
         raise ValueError('No compact field frames found in '+str(case/'fields'))
+    available_frames=len(files)
+    files=select_field_files(files,t_max_fs)
     refs=None; notes=[];refs_path=Path(reference_path) if reference_path is not None else case/'references.npz'
     if refs_path.exists():
         try: refs=_load(refs_path)
@@ -1071,17 +1078,19 @@ def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_pa
     else: notes.append('No references.npz: CBO/polaritonic overlays skipped, no fabricated curves.')
     if reference_path is not None:
         notes.append('External static references: '+str(refs_path.resolve())+'. Cached fields/populations are unchanged; refined overlays do not certify production or population convergence.')
-    display=prepare_display(files,refs); first=_load(files[0]); out=Path(output_dir) if output_dir is not None else case/'report'; out.mkdir(parents=True,exist_ok=True)
-    data=_overview_data(case,first)
+    display=prepare_display(files,refs); first=_load(files[0])
+    data=_overview_data(case,first,t_max_fs=t_max_fs)
+    out=report_directory(case,output_dir,t_max_fs); out.mkdir(parents=True,exist_ok=True)
+    if t_max_fs is not None:
+        print(f'[render] t <= {t_max_fs:g} fs: {len(files)}/{available_frames} physical field frames -> {out}')
     if data is not None:
         display['population_observables']=data
     from .gi_render import (prepare_gi_display, epsilon1_gi_figure,
                             outer_gi_figure, gi_reference_zoom_figure)
     display['gi_scales']=prepare_gi_display(files,display,refs)
-    if (case/'observables.npz').exists():
-        with np.load(case/'observables.npz', allow_pickle=False) as obs:
-            display['slice_observables'] = {k: obs[k] for k in
-                ('t_fs', 'photon_number', 'cbo_population', 'cbo_omitted') if k in obs.files}
+    if data is not None:
+        display['slice_observables'] = {k: data[k] for k in
+            ('t_fs', 'photon_number', 'cbo_population', 'cbo_omitted') if k in data}
     selected=sorted(set([0,len(files)//2,len(files)-1])); produced=[]
     has_video=bool(movies and writers.is_available('ffmpeg') and len(files)>1)
     if movies and not has_video: notes.append('Movies skipped: ffmpeg unavailable or fewer than two saved physical times.')
@@ -1099,6 +1108,7 @@ def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_pa
                 for n,path in enumerate(files):
                     if not has_video and n not in selected: continue
                     f=_load(path); fig=function(f,display,n,refs)
+                    constrain_time_axes(fig,t_max_fs)
                     if n in selected:
                         target=directory/f'snapshot_{n:06d}'
                         _save(fig,target,dpi); produced.extend([str(target.with_suffix('.png')),str(target.with_suffix('.pdf'))])
@@ -1122,6 +1132,7 @@ def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_pa
         force_dir=out/'outer_force'; force_dir.mkdir(exist_ok=True)
         for n in selected:
             fig=outer_force_figure(_load(files[n]),display,refs)
+            constrain_time_axes(fig,t_max_fs)
             target=force_dir/f'snapshot_{n:06d}'; _save(fig,target,dpi); plt.close(fig)
             produced.extend([str(target.with_suffix('.png')),str(target.with_suffix('.pdf'))])
         cbo_dir=out/('same_geometry_BO' if _is_mcef(first) else 'same_geometry_CBO');cbo_dir.mkdir(exist_ok=True)
@@ -1141,26 +1152,27 @@ def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_pa
             fig=reference_focus_figure(_load(files[n]),display,refs)
             target=focus_dir/f'snapshot_{n:06d}';_save(fig,target,dpi);plt.close(fig)
             produced.extend([str(target.with_suffix('.png')),str(target.with_suffix('.pdf'))])
-        timeline=timeline_figure(files); target=out/'event_timeline'; _save(timeline,target,dpi); plt.close(timeline)
+        timeline=timeline_figure(files); constrain_time_axes(timeline,t_max_fs)
+        target=out/'event_timeline'; _save(timeline,target,dpi); plt.close(timeline)
         produced.extend([str(target.with_suffix('.png')),str(target.with_suffix('.pdf'))])
         context=static_context_figure(refs,first)
         if context is not None:
             target=out/'bare_BO_context'; _save(context,target,dpi); plt.close(context)
             produced.extend([str(target.with_suffix('.png')),str(target.with_suffix('.pdf'))])
         if data is not None:
-            fig=overview_figure(data); _save(fig,out/'dynamics_overview',dpi); plt.close(fig)
+            fig=constrain_time_axes(overview_figure(data),t_max_fs); _save(fig,out/'dynamics_overview',dpi); plt.close(fig)
             produced.extend([str(out/'dynamics_overview.png'),str(out/'dynamics_overview.pdf')])
-            fig=population_figure(data); _save(fig,out/'population_diagnostics',dpi); plt.close(fig)
+            fig=constrain_time_axes(population_figure(data),t_max_fs); _save(fig,out/'population_diagnostics',dpi); plt.close(fig)
             produced.extend([str(out/'population_diagnostics.png'),str(out/'population_diagnostics.pdf')])
-            fig=transfer_photon_figure(data); _save(fig,out/'transfer_photon_diagnostics',dpi);plt.close(fig)
+            fig=constrain_time_axes(transfer_photon_figure(data),t_max_fs); _save(fig,out/'transfer_photon_diagnostics',dpi);plt.close(fig)
             produced.extend([str(out/'transfer_photon_diagnostics.png'),str(out/'transfer_photon_diagnostics.pdf')])
-            fig=energy_figure(data); _save(fig,out/'energy_diagnostics',dpi);plt.close(fig)
+            fig=constrain_time_axes(energy_figure(data),t_max_fs); _save(fig,out/'energy_diagnostics',dpi);plt.close(fig)
             produced.extend([str(out/'energy_diagnostics.png'),str(out/'energy_diagnostics.pdf')])
             if has_video:
                 writer=None
                 try:
                     for path in files:
-                        f=_load(path); fig=overview_figure(data,_time(f))
+                        f=_load(path); fig=constrain_time_axes(overview_figure(data,_time(f)),t_max_fs)
                         if writer is None:
                             writer=FFMpegWriter(fps=fps,codec='libx264',extra_args=['-crf','23','-pix_fmt','yuv420p','-vf','pad=ceil(iw/2)*2:ceil(ih/2)*2','-threads','1'])
                             writer.setup(fig,str(out/'dynamics_overview.mp4'),dpi=dpi)
@@ -1170,9 +1182,13 @@ def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_pa
                     if writer: writer.finish()
         if data is not None and not _is_mcef(first):
             from .polaritonic_dynamics import render_polaritonic_dynamics
-            extra=render_polaritonic_dynamics(case,out,data=data,movies=has_video,fps=fps,dpi=dpi)
+            extra=render_polaritonic_dynamics(case,out,data=data,movies=has_video,fps=fps,dpi=dpi,
+                                             t_max_fs=t_max_fs)
             produced.extend(extra['outputs']); notes.extend(extra['notes'])
     manifest=dict(outputs=produced,notes=notes,physical_frames=len(files),fps=fps,
+                  requested_t_max_fs=t_max_fs,
+                  rendered_time_range_fs=[_time(first),_time(_load(files[-1]))],
+                  observables_time_range_fs=time_range(data),
                   frame_interpolation=False,scales=display['scales'],
                   slice_R_values=first['R'][display['slices_R']].tolist(),
                   slice_q_values=first['q'][display['slices_q']].tolist(),
@@ -1207,8 +1223,9 @@ def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_pa
     return manifest
 
 
-def render_comparison(root):
+def render_comparison(root,t_max_fs=None):
     """Coupling comparisons and static PEN surfaces from existing caches only."""
+    validate_t_max(t_max_fs)
     root=Path(root); cases=sorted(root.rglob('observables.npz'))
     outputs=[]; notes=[] if cases else ['No observables available']
     with plt.rc_context(STYLE):
@@ -1219,7 +1236,7 @@ def render_comparison(root):
             selected.sort(key=lambda p:(order.get(p.parent.name,3),str(p)))
             fig,axes=plt.subplots(2,2,figsize=(20,12)); fig.subplots_adjust(bottom=.14,hspace=.38,wspace=.25)
             for p in selected:
-                d=_load(p); t=d.get('t_fs',d.get('times_fs'))
+                d=select_observables(_load(p),t_max_fs); t=d.get('t_fs',d.get('times_fs'))
                 if t is None: continue
                 label=p.parent.name
                 config=_json(p.parent/'config.json')
@@ -1238,7 +1255,9 @@ def render_comparison(root):
                 fig.legend(legend.values(),legend.keys(),loc='lower center',
                            bbox_to_anchor=(.5,.025),ncol=3,frameon=False,fontsize=12)
             fig.suptitle(campaign.upper()+' | cavity coupling comparison')
-            path=root/(campaign+'_coupling_comparison'); _save(fig,path,130); plt.close(fig)
+            constrain_time_axes(fig,t_max_fs)
+            suffix='' if t_max_fs is None else f'_{float(t_max_fs):g}fs'
+            path=root/(campaign+'_coupling_comparison'+suffix); _save(fig,path,130); plt.close(fig)
             outputs.extend([str(path.with_suffix('.png')),str(path.with_suffix('.pdf'))])
     if (root/'pen').is_dir():
         from .polaritonic_surfaces import render_surfaces
@@ -1259,6 +1278,8 @@ if __name__=='__main__':
     parser.add_argument('case_dir'); parser.add_argument('--no-movies',action='store_true')
     parser.add_argument('--fps',type=int,default=20); parser.add_argument('--dpi',type=int,default=110)
     parser.add_argument('--output-dir');parser.add_argument('--references')
+    parser.add_argument('--t-max-fs',type=float,help='Render only saved times <= this value; no TDSE or cache changes')
     args=parser.parse_args()
     print(json.dumps(render_case(args.case_dir,not args.no_movies,args.fps,args.dpi,
-                                 output_dir=args.output_dir,reference_path=args.references),indent=2))
+                                 output_dir=args.output_dir,reference_path=args.references,
+                                 t_max_fs=args.t_max_fs),indent=2))
