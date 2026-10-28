@@ -138,9 +138,10 @@ def _silhouette(ax, coordinate, density):
     peak = np.nanmax(density) if len(density) else 0
     if peak > 0:
         # Axis-fraction height: visibly present, never mistaken for energy.
-        ax.fill_between(coordinate, 0, .24*density/peak,
-                        transform=ax.get_xaxis_transform(), color='0.65',
-                        alpha=.32, linewidth=0, zorder=0)
+        height = .30*density/peak
+        ax.fill_between(coordinate, 0, height,
+                        transform=ax.get_xaxis_transform(), color='0.50',
+                        alpha=.48, edgecolor='0.42', linewidth=.9, zorder=0)
 
 
 def _bounds(grid, occupied, margin=.10):
@@ -647,10 +648,17 @@ def bridge_wavefunction_figure(f,display,index,references=None):
 
 def outer_force_figure(f,display,references=None):
     """EF electric-like field, not the full Madelung trajectory acceleration."""
-    fig,axes=plt.subplots(1,2,figsize=(22,7))
-    fig.subplots_adjust(left=.07,right=.97,bottom=.27,top=.80,wspace=.25)
+    ncols=2 if _is_mcef(f) else 3
+    if ncols==3:
+        fig=plt.figure(figsize=(23,14))
+        grid=fig.add_gridspec(2,2,height_ratios=[1.15,1.])
+        axes=[fig.add_subplot(grid[0,0]),fig.add_subplot(grid[0,1]),fig.add_subplot(grid[1,:])]
+        fig.subplots_adjust(left=.07,right=.97,bottom=.18,top=.86,wspace=.25,hspace=.65)
+    else:
+        fig,axes=plt.subplots(1,2,figsize=(22,8))
+        fig.subplots_adjust(left=.07,right=.97,bottom=.29,top=.80,wspace=.25)
     R=f['R']; support=f['rho_R']>np.max(f['rho_R'])*1e-5
-    for ax in axes: _silhouette(ax,R,f['rho_R'])
+    for ax in axes[:2]: _silhouette(ax,R,f['rho_R'])
     _scalar_lines(axes[0],R,f,2)
     _references(axes[0],references,f,level=2,fixed_index=display['j'])
     axes[0].set_title('Outer scalar in positive marginal gauge')
@@ -666,7 +674,10 @@ def outer_force_figure(f,display,references=None):
     axes[1].axhline(0,ls='--',lw=1.1,color='.4')
     axes[1].set_title(r'$F_R=-\partial_R\epsilon^{(2)}+\partial_t\alpha$')
     _nice(axes[1],r'$R$ ($a_0$)','EF field (Ha / $a_0$)',display['scales']['force']); _legend(axes[1],3)
-    for ax in axes: ax.set_xlim(_line_xlim(display,'R',f))
+    for ax in axes[:2]: ax.set_xlim(_line_xlim(display,'R',f))
+    if ncols==3:
+        from .polaritonic_dynamics import population_panel
+        population_panel(axes[2],display.get('population_observables',{}),'pol',_time(f))
     _title(fig,f,'Outer nuclear effective field')
     fig.text(.5,.045,'This field excludes the marginal quantum-potential term; the PG scalar slope alone is not the nuclear EF field.',ha='center',fontsize=12)
     return fig
@@ -842,7 +853,9 @@ def _title(fig,f,title):
     coupling='' if _is_mcef(f) else fr', $g_{{\mathrm{{cavity}}}}={float(f.get("g_cavity",0)):.6g}$ a.u.'+frequency
     fig.suptitle(title+fr'    $t={_time(f):.3f}$ fs'+coupling,y=.985)
     for i,ax in enumerate([a for a in fig.axes if a.get_title()]):
-        ax.text(-.08,1.06,chr(65+i),transform=ax.transAxes,fontweight='bold',fontsize=17)
+        # A full-width third panel needs a smaller relative left offset.
+        box=ax.get_position(); label_x=max(-.08,(.015-box.x0)/box.width)
+        ax.text(label_x,1.06,chr(65+i),transform=ax.transAxes,fontweight='bold',fontsize=17)
 
 
 def _save(fig,path,dpi):
@@ -861,6 +874,7 @@ def _overview_data(case,first):
 
 
 def overview_figure(data,current=None):
+    from .polaritonic_dynamics import population_panel
     fig,axes=plt.subplots(2,3,figsize=(23,12))
     fig.subplots_adjust(left=.065,right=.97,bottom=.15,top=.91,hspace=.62,wspace=.27)
     t=data['t_fs']
@@ -880,24 +894,28 @@ def overview_figure(data,current=None):
     for key,label in (('photon_number',r'$\langle N_{ph}\rangle$'),('product','product side'),('reactant','reactant side')):
         if key in data: ax.plot(t,data[key],lw=2,label=label)
     ax.set_title('Photon / transfer observables'); _nice(ax,'t (fs)','Number / probability'); _legend(ax,2)
-    ax=axes[1,1]
-    for key,label in (('kinetic_R','proton kinetic'),('photon_energy','photon energy')):
-        if key in data: ax.plot(t,data[key],lw=2,label=label)
-    if 'energy' in data: ax.plot(t,np.asarray(data['energy'])-data['energy'][0],lw=1.8,ls='--',label='total energy drift')
-    ax.set_title('Energy exchange'); _nice(ax,'t (fs)','Energy (Ha)'); _legend(ax,2)
-    ax=axes[1,2]
-    keys=[k for k in data if ('pop' in k.lower() or k.lower().startswith('p_')) and np.asarray(data[k]).ndim in (1,2)]
-    for key in keys[:3]:
-        value=np.asarray(data[key])
-        if value.ndim==1: ax.plot(t,value,lw=1.6,label=key)
-        else:
-            for j in range(min(4,value.shape[1])): ax.plot(t,value[:,j],lw=1.6,label=f'{key} {j}')
-    if not keys and 'signed_flux' in data:
-        ax.plot(t,data['signed_flux'],lw=2,label='signed dividing-surface flux')
-    ax.set_title('Populations / flux'); _nice(ax,'t (fs)','Probability / flux (a.u.)'); _legend(ax,3)
+    population_panel(axes[1,1],data,'bo')
+    population_panel(axes[1,2],data,'pol')
     for ax in axes.flat:
         if current is not None: ax.axvline(current,color='#00A6D6',ls='--',lw=1.4)
     fig.suptitle('Real-space dynamics overview'+('' if current is None else f' | t = {current:.3f} fs'))
+    return fig
+
+
+def energy_figure(data):
+    """Preserve the overview's former energy budget in its own static figure."""
+    fig,axes=plt.subplots(1,2,figsize=(19,7))
+    fig.subplots_adjust(left=.075,right=.97,bottom=.27,top=.84,wspace=.30)
+    t=data['t_fs']
+    for key,label in (('kinetic_R','Proton kinetic energy'),('photon_energy','Photon energy')):
+        if key in data: axes[0].plot(t,data[key],lw=2,label=label)
+    if 'energy' in data:
+        axes[1].plot(t,np.asarray(data['energy'])-data['energy'][0],lw=2,label=r'$E(t)-E(0)$')
+    axes[0].set_title('Energy exchange'); axes[1].set_title('Total energy drift')
+    for ax in axes:
+        ax.axhline(0,color='.5',ls=':',lw=1)
+        _nice(ax,'t (fs)','Energy (Ha)'); _legend(ax,2)
+    fig.suptitle('Energy diagnostics')
     return fig
 
 
@@ -1054,6 +1072,9 @@ def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_pa
     if reference_path is not None:
         notes.append('External static references: '+str(refs_path.resolve())+'. Cached fields/populations are unchanged; refined overlays do not certify production or population convergence.')
     display=prepare_display(files,refs); first=_load(files[0]); out=Path(output_dir) if output_dir is not None else case/'report'; out.mkdir(parents=True,exist_ok=True)
+    data=_overview_data(case,first)
+    if data is not None:
+        display['population_observables']=data
     from .gi_render import (prepare_gi_display, epsilon1_gi_figure,
                             outer_gi_figure, gi_reference_zoom_figure)
     display['gi_scales']=prepare_gi_display(files,display,refs)
@@ -1126,7 +1147,6 @@ def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_pa
         if context is not None:
             target=out/'bare_BO_context'; _save(context,target,dpi); plt.close(context)
             produced.extend([str(target.with_suffix('.png')),str(target.with_suffix('.pdf'))])
-        data=_overview_data(case,first)
         if data is not None:
             fig=overview_figure(data); _save(fig,out/'dynamics_overview',dpi); plt.close(fig)
             produced.extend([str(out/'dynamics_overview.png'),str(out/'dynamics_overview.pdf')])
@@ -1134,6 +1154,8 @@ def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_pa
             produced.extend([str(out/'population_diagnostics.png'),str(out/'population_diagnostics.pdf')])
             fig=transfer_photon_figure(data); _save(fig,out/'transfer_photon_diagnostics',dpi);plt.close(fig)
             produced.extend([str(out/'transfer_photon_diagnostics.png'),str(out/'transfer_photon_diagnostics.pdf')])
+            fig=energy_figure(data); _save(fig,out/'energy_diagnostics',dpi);plt.close(fig)
+            produced.extend([str(out/'energy_diagnostics.png'),str(out/'energy_diagnostics.pdf')])
             if has_video:
                 writer=None
                 try:
@@ -1146,6 +1168,10 @@ def render_case(case_dir,movies=True,fps=20,dpi=110,output_dir=None,reference_pa
                     writer.finish(); writer=None; produced.append(str(out/'dynamics_overview.mp4'))
                 finally:
                     if writer: writer.finish()
+        if data is not None and not _is_mcef(first):
+            from .polaritonic_dynamics import render_polaritonic_dynamics
+            extra=render_polaritonic_dynamics(case,out,data=data,movies=has_video,fps=fps,dpi=dpi)
+            produced.extend(extra['outputs']); notes.extend(extra['notes'])
     manifest=dict(outputs=produced,notes=notes,physical_frames=len(files),fps=fps,
                   frame_interpolation=False,scales=display['scales'],
                   slice_R_values=first['R'][display['slices_R']].tolist(),

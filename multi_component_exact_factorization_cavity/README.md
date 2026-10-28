@@ -1,5 +1,57 @@
 # 실공간 MCEF를 계승한 cavity 확장
 
+## Population 분리·핵 파동묶음·Pol 구성 (2026-10-28)
+
+기존 `workflow render`와 계산 완료 후 자동 렌더링에 함께 적용된다.
+TDSE / Hamiltonian / gauge / projection 계산은 변경하지 않는다.
+
+- 밀도 실루엣은 더 진한 회색과 경계선으로 표시한다. 축 높이의 30%를 쓰는
+  **형태 비교용 배경**이며, 에너지 축 단위로 읽지 않는다.
+- `dynamics_overview.png/.pdf/.mp4`: BO와 POL population을 별도 패널로 분리.
+  기존 에너지 교환·보존 진단은 `energy_diagnostics.png/.pdf`로 옮긴다.
+- `outer_force/snapshot_*.png/.pdf`: A는 TDPES2/Pol 기준면, B는 EF force,
+  C는 Pol0–3 population 시간 이력. 세로 점선은 해당 snapshot의 시간이다.
+  일반 MCEF에서는 존재하지 않는 Pol population을 추가하지 않고 기존 2개 패널을 유지한다.
+- `polaritonic_wavepacket/snapshot_*.png/.pdf`, `polaritonic_wavepacket.mp4`:
+  위 4개 패널은 각 Pol 곡선과 그 상태로 **투영한 핵 밀도**다. 리본 높이는
+  모든 상태·프레임에 같은 배율을 쓰며 추가 에너지가 아니다. 아래 패널은
+  실제 핵 밀도와 상태별 밀도, 전체 population을 표시한다.
+  이는 표면 위의 고전 궤적이나 단일 상태의 force 해석을 뜻하지 않는다.
+- `polaritonic_composition/product_weights.png/.pdf`:
+  Pol0–3 각각에 대해 `|S0,0>`, `|S0,1>`, `|S1,0>`, `|S1,1>`의 제곱 계수를
+  R의 함수로 표시한다. 나머지 product 성분을 회색으로 포함하며 네 상태로 재정규화하지 않는다.
+  `initial_composition.json`에는 초기 R0에 가장 가까운 격자점에서의 가중치와
+  복소 계수(실수·허수 분리)를 저장한다. 위상은 고유벡터 선택에 의존하고,
+  축퇴 상태 내부에서는 고유벡터 회전의 자유가 있다. Pol 번호만으로 LP/UP를 지정하지 않는다.
+
+사용 입력: `observables.npz`의 `pol_local_density`, `pol_population`, `rho_R`와
+`analysis_cache.npz`의 `pol_vectors`, `pol_energy`, `fock`.
+고정 R에서 **전자+photon**을 대각화한 분석 상태이며 VSC 진동 polariton으로 바꿔 부르지 않는다.
+상태별 핵 밀도를 R로 적분한 값이 저장된 population과 일치하는지 확인한다.
+별도 refined reference로 재렌더링하더라도 새 상태별 영상은 **원래 투영 basis의 고유값**을 쓴다.
+캐시가 없거나 불일치하면 새 산출물을 건너뛰고 `polaritonic_dynamics_manifest.json`에
+이유를 기록한다. 다른 그림은 계속 생성한다. 새 TDSE나 대각화를 몰래 실행하지 않는다.
+
+계산 완료 후 전체 그림·동영상을 기존 `report/`에 덮어쓰기:
+
+```bash
+for coupling in zero weak strong; do
+  python -m multi_component_exact_factorization_cavity.workflow render \
+    --out "results/20261026/pen10_native_v1/pen/$coupling" || break
+done
+```
+
+새 Pol 구성·파동묶음 그림/영상만 빠르게 만들기:
+
+```bash
+python -m multi_component_exact_factorization_cavity.polaritonic_dynamics \
+  --case results/20261026/pen10_native_v1/pen/strong
+```
+
+두 명령 모두 `--no-movies`를 추가하면 정적 그림만 만든다.
+새 전용 CLI는 `--out`, `--dpi`, `--fps`도 지원한다.
+영상은 실제 저장 시간별로 스트리밍 인코딩하며, 중간 PNG 전체나 원시 wave 복사본을 만들지 않는다.
+
 ## 표기 통일 및 기존 그림 덮어쓰기
 
 - `epsilon1_qgeo`, `epsilon1_Rgeo`는 그림에서 각각
@@ -31,7 +83,8 @@ done
 기존 six-panel slice와 TDSE는 유지한다. `workflow render` 및 계산 완료 후 자동 보고서에
 다음 PNG/PDF와 MP4가 추가된다. 원시 파동함수나 새로운 propagation은 필요 없다.
 
-- `outer_force/`: A에 epsilon2 total/GI/GD 및 Pol 0–3 기준면, B는 기존 EF force.
+- `outer_force/`: A에 epsilon2 total/GI/GD 및 Pol 0–3 기준면, B는 기존 EF force,
+  C는 Pol 0–3 population 시간 이력.
 - `outer_GI_decomposition/`: GI2 = conditional Hamiltonian expectation + nuclear geometry.
   왼쪽은 GI/expectation/Pol, 오른쪽은 geometry만 별도 에너지 축으로 확대.
 - `epsilon1_GI_decomposition/`: 두 방향 slice. 위는 GI1/conditional expectation/CBO,
