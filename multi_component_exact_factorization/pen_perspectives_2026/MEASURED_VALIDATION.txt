@@ -1,0 +1,83 @@
+2026-10-28 검증 및 비용 기록
+===========================
+
+최종 코드/실행 설명: README.txt. 기존 model_a / 실공간 cavity 파일 수정 없음.
+
+실제로 수행한 것
+----------------
+1. Native 500 nuclear points, dt=0.1 au, nf=2, 40 fs, save every 0.5 fs.
+   zero=0, weak=0.001, strong=0.01 각각 DSE off/on: 여섯 TDSE 완료.
+   최종 원자료:
+     results/20261028/pen_perspectives_2026_verified/
+   실행 중 다른 검증 작업도 있었으며 순차 합계 10.894초, 원자료 15.620 MiB.
+   초기 독립 측정은 8.775초. 따라서 여기서의 전파 비용은 약 9–11초였다.
+   real-grid electron PEN 40 fs 계산을 수행한 것이 아니다.
+
+2. 짧은 preview 영상: 각 경우 9 frames (81개 중 stride10), 5 movie families.
+   여섯 조건 모두 출력 성공, jobs3 wall time 155.79초, 총 약95.14 MiB.
+   이 결과는 최종 일부 표시/확률적분 수정 이전의 개발 benchmark이고,
+   최종 물리 결과 경로와 혼동하지 않는다:
+     results/20261028/pen_perspectives_2026_benchmark/
+
+3. 최종 전체 영상: DSE off 3개, 각 81 frames × 5 movies 완료.
+   jobs3 동시 실행에서 case당 469.01, 473.00, 471.72초 (공유 CPU 경합 포함).
+   각 case 전체 출력(원자료+PNG+MP4): zero17.34, weak19.19, strong21.78 MiB.
+   parent Python peak RSS 약478–482 MiB/case (ffmpeg 자식 메모리는 별도).
+   실제 MP4를 ffprobe로 확인: 81 frames, 4.05초/20fps, 짝수 해상도.
+   PNG의 초기/중간/끝 및 실제 B MP4 중간 프레임을 직접 열어 확인했다.
+   DSE on의 최종 전체 영상은 사용자의 서버 실행 요청 확인 후 중단했다.
+   on/plots의 일부 파일은 미완성이므로 최종 영상으로 사용하지 말 것.
+
+총 6개를 서버에서 실행할 때의 예상치 (실측과 추정 구분)
+----------------------------------------------------
+40fs, 0.5fs 저장, nq-display160, DPI85, snapshot140, jobs3 기준:
+  TDSE + 원시 계수: 로컬 실측 약11초, 15.6 MiB.
+  PNG + 30개 MP4 포함: 로컬 관측 속도로 약16분, 총120–150 MiB 예상.
+  서버 CPU/파일시스템 성능은 측정하지 않았다. 실무적으로 20–40분과 여유500 MiB
+  정도를 잡으면 된다. 16 GiB의 여유 디스크라면 이 소형 모델은 충분히 들어간다.
+  50fs는 위 비용의 약1.25배가 첫 추정이며, 실제로 실행 완료했다고 주장하지 않는다.
+  --nq-display500, DPI 상향, --every-fs0.25는 렌더링 시간/용량을 늘린다.
+  jobs1은 메모리를 절약하지만 렌더링 총 벽시계 시간이 길어진다.
+  GPU를 사용하지 않는다. jobs3는 CPU/RAM을 사용하고 GPU11GB 제한과 무관하다.
+
+정확도 검증
+-----------
+전파 관측치:
+  여섯 조건 최대 norm error 약3.1e-12.
+  최대 energy drift 약7.9e-10 Ha.
+  |N|는 n=0,1 공간에서 계산, 0<=N<=1; zero DSE on/off 동일.
+  최고 Fock population: strong 최대 약0.187. truncation boundary 진단 저장.
+검증 JSON:
+  results/20261028/pen_perspectives_2026_verified_audit.json
+  dt0.1 vs0.05, R500 vs1000를 같은 물리 시점에서 비교.
+  최대 BO excited population 차이(dt) 약3.04e-8.
+  photon-number 차이(dt) 약1.33e-9.
+  R500 vs1000: 주요 관측치 차이 약6e-13 이하.
+  R>=4 확률은 FFT interpolant 구간 적분; 단순 mask 한 셀 오차 제거.
+
+field checks at 40fs:
+  q 복원 box[-10,10], 500점: epsilon2 bridge RMS 최대 약1.95e-7 Ha,
+  alpha bridge RMS 약4.3e-7; 작은 HO tail quadrature 누락 포함.
+  box[-16,16] 적분: epsilon2 bridge RMS 약7e-17, alpha 약4e-14.
+  epsilon2 direct/inversion 약4e-17; corrected continuity 약6e-18.
+  이 대수 검사가 photon-basis convergence를 보장하지는 않는다.
+
+중요한 제한:
+  strong nf2 vsnf4: max photon-number 차이 약0.0179,
+  bare S1 population 차이 약0.0067, R>=4 확률 차이 약0.00693.
+  nf4 vsnf8 photon-number 차이 약7.8e-6.
+  즉 요청한 nf2 모델은 수치적으로 안정하지만 full-photon 결과와 동일하지 않다.
+  논문 reference grid TDSE와 완전 일치했다고 표시하지 않는다.
+
+회귀/단위 테스트
+---------------
+  신규: tests/test_pen_perspectives_2026.py (13개: 기존 12개 통과 후 제목 중복
+        방지 1개 추가 검증). odd-DPI MP4, 6-case smoke, restart, operator projection,
+        DSE cross term, bridge와 nonlocal source, static PNG 검사를 포함한다.
+  기존 cavity tests 77개 통과.
+  기존 model_a.test_model_a 14개 통과.
+  기존 spectral TDSE tests 4개 통과.
+  전체 서버 production이나 논문 곡선 digitization 재현 검증은 수행하지 않았다.
+
+미완성 renderer 산출물과 완성 TDSE를 구분할 것. 서버에서 README의 새 output
+root로 실행하면 six-case 전파 및 전체 그림/영상이 자동 생성된다.
