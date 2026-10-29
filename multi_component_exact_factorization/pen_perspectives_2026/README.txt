@@ -1,6 +1,10 @@
 PEN perspectives 2026 — two-diabatic-state / finite-Fock benchmark
 ================================================================
 
+2026-10-29 추가: 논문 Table 2의 on/off 및 Rabi 실행은 PAPER_CAMPAIGNS.txt 참고.
+새 run_paper_server.sh는 기본 on=0.17을 명시적으로 사용한다. 아래 legacy
+run_server.sh의 기본 bare-gap 동작은 기존 계산/재시작 호환성을 위해 유지한다.
+
 1. 무엇을 구현했는가
 -------------------
 기존 2024 model_a, 실공간 PEN, MCEF 코드는 수정하지 않았다. 2024 model A와
@@ -15,13 +19,14 @@ https://arxiv.org/html/2604.20538v2
 6쪽 Table 2 및 Eq.21–27; 7쪽 양자 계산 격자 설명; 9쪽 POL 초기화 설명.
 
 반드시 구분:
-* 논문의 quantum reference: q와 R 각각 500-point grid, dt=0.1 a.u.
-* 논문의 POL trajectory 표현: 전자 2 × photon n=0,1 -> 4 states.
+* 논문의 quantum reference 설명: q와 R 각각 500-point grid, dt=0.1 a.u.
+* 논문의 POL 표현 설명: 전자 2 × photon n=0,1 -> 4 states.
+  격자 점수만으로 저자 QD 코드 내부의 추가 photon projection 여부를 단정하지 않는다.
 * 이번 요청: TDSE 자체를 전자 2 × photon n=0,1에 제한한 양자 계산.
   따라서 "2026 Hamiltonian의 2-Fock TDSE"이지, photon real-grid benchmark를
   수치적으로 완전히 재현했다고 주장하지 않는다. CTMQC/TSH/MTE도 재구현하지 않았다.
 * --resonance paper-on + DSE off + strong가 논문 표의 파라미터에 해당한다.
-  새 CLI 기본값은 --resonance bare-gap: 초기 Gaussian 중심에서 직접 구한 bare gap.
+  legacy workflow CLI 기본값은 --resonance bare-gap: 초기 Gaussian 중심의 bare gap.
   논문 표/본문의 불일치가 해소되었다거나 저자 입력을 완전히 재현했다는 뜻이 아니다.
   DSE on, weak, zero는 추가 대조군.
 * 실제 전자 좌표 x도 Shin–Metiu proton 질량도 없는 diabatic model이다.

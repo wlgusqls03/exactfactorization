@@ -77,6 +77,7 @@ def prepare(paths, p, nq):
     windows, checks, cbop, peak_indices = [], [], [], []
     focus_weights = {k: [] for k in ('budget1', 'budget2', 'small1', 'small2')}
     packet_peak = 0.
+    moments = []
     previous = None
     first = None
     for path in paths:
@@ -87,6 +88,9 @@ def prepare(paths, p, nq):
         support = f['rho_qR'] > 1e-5*f['rho_qR'].max()
         outer = f['rho_R'] > 1e-5*f['rho_R'].max()
         peak_indices.append(int(np.argmax(f['rho_R'])))
+        density = f['rho_R']/f['rho_R'].sum()
+        mean = float(np.sum(density*p.R))
+        moments.append((mean, float(np.sqrt(np.sum(density*(p.R-mean)**2)))))
         coeff = np.einsum('rik,ri->rk', p.pol_vectors, z['u'].reshape(p.c.nr, -1))
         packet_peak = max(packet_peak, float(np.max(abs(coeff)**2)))
         def collect(name, values):
@@ -151,7 +155,7 @@ def prepare(paths, p, nq):
                    slices_R=[int(np.argmin(abs(p.R-r))) for r in (p.c.r2, 4.)],
                    slices_q=[int(np.argmin(abs(q-v))) for v in (0., 1.5)],
                    peak_indices=peak_indices, packet_peak=max(packet_peak, 1e-30),
-                   force_limits=scales['force'])
+                   force_limits=scales['force'], nuclear_moments=moments)
     # Static references are drawn across the full x extent. Their values on
     # the occupied time-union inform fixed GI-only limits (never total/GD).
     i, j = display['i'], display['j']
@@ -166,9 +170,11 @@ def stamp(fig, f, title=None):
         while title.startswith('PEN perspectives 2026 | '):
             title = title[len('PEN perspectives 2026 | '):]
     frequency = fr'$\omega_c={f["omega"]:.6g}$ a.u.; ' if 'omega' in f else ''
+    scenario = f.get('scenario_label', '')
     fig.suptitle(f'PEN perspectives 2026 | {title}\n'
+                 +(scenario+'; ' if scenario else '')
                  +fr'$t={f["t_fs"]:.2f}$ fs; $g={f["g_cavity"]:g}$; DSE {"on" if f["dse"] else "off"}; '
-                 +frequency+'2 electronic states × finite Fock basis; positive marginal gauge', fontsize=21, y=.992)
+                 +frequency+('positive marginal gauge' if scenario else '2 electronic states × finite Fock basis; positive marginal gauge'), fontsize=21, y=.992)
 
 
 def source_slice(ax, f, display, i, title):
@@ -378,6 +384,7 @@ def outer(f, p, data, u, display):
 
 def state_composition(p):
     """Actual fixed-R eigenvector weights in the bare adiabatic x Fock basis."""
+    from .resonance import scenario_report
     c = p.c
     vectors = p.pol_vectors.reshape(c.nr, 2, c.nf, 2*c.nf)
     coeff = np.einsum('rej,renk->rjnk', p.bo_vectors, vectors)
@@ -393,15 +400,18 @@ def state_composition(p):
         ax.set(xlim=(0, 8), ylim=(-.02, 1.02), title=fr'Composition of $|Pol_{k}\rangle$')
         style._nice(ax, r'$R$ ($a_0$)', r'$|C_{S_j,n}^{(k)}|^2$')
         ax.legend(fontsize=12)
-    fig.suptitle(f'PEN perspectives 2026 | g={c.g:g}, DSE {"on" if c.dse else "off"}\n'
+    fig.suptitle(scenario_report(c)['label']+f' | omega={c.omega:g} au, g={c.g:g}, DSE {"on" if c.dse else "off"}\n'
                  +'Energy-ordered Pol labels; crossings/degeneracies can change individual eigenvectors')
     return fig
 
 
 def render_case(case, movies=True, movie_stride=1, nq=160, dpi=85, t_max_fs=None, packet_scale='sqrt'):
+    from .resonance import scenario_report
+    from .paper_plots import exchange_summary
     started = time.perf_counter()
     case = Path(case)
     c = Config(**json.loads((case/'config.json').read_text()))
+    scenario = scenario_report(c)
     p = Propagator(c)
     paths = frame_paths(case, t_max_fs)
     print(f'RENDER {case}: {len(paths)} coefficient frames; reconstructing fields, no TDSE', flush=True)
@@ -416,6 +426,7 @@ def render_case(case, movies=True, movie_stride=1, nq=160, dpi=85, t_max_fs=None
                                        photon_number=[r['photon_number'] for r in rows], cbo_population=cbop)
     out = case/('plots' if t_max_fs is None else f'plots_to_{t_max_fs:g}fs')
     out.mkdir(exist_ok=True)
+    exchange_summary(out, c, data, checks, cbop, display['nuclear_moments'])
     selected = sorted(set([0, len(paths)//2, len(paths)-1]))
     indices = sorted(set(range(0, len(paths), movie_stride)) | {len(paths)-1}) if movies else selected
     # Force, GI and packet scales already collected in the first streaming pass.
@@ -427,6 +438,7 @@ def render_case(case, movies=True, movie_stride=1, nq=160, dpi=85, t_max_fs=None
                      GI_components=lambda f, i, u: gi_components(f, display, refs),
                      dynamics_overview=lambda f, i, u: overview(f, p, data, u),
                      outer_nuclear_effective=lambda f, i, u: outer(f, p, data, u, display))
+    quadrature_checks = []
     with plt.rc_context(style.STYLE), ExitStack() as stack:
         fig = state_composition(p)
         fig.savefig(out/'polaritonic_composition.png', dpi=max(140, dpi))
@@ -435,6 +447,7 @@ def render_case(case, movies=True, movie_stride=1, nq=160, dpi=85, t_max_fs=None
         for index in sorted(set(indices)|set(selected)):
             z = load_npz(paths[index])
             f = analyze(z['u'], p, float(z['t_fs']), nq)
+            f['scenario_label'] = scenario['label']
             for name, factory in factories.items():
                 fig = factory(f, index, z['u'])
                 stamp(fig, f)
@@ -455,13 +468,21 @@ def render_case(case, movies=True, movie_stride=1, nq=160, dpi=85, t_max_fs=None
                     writers[name].grab_frame()
                 plt.close(fig)
             if index in selected:
+                # Independent enlarged quadrature, NOT an altered TDSE box.
+                # Off-resonance HO functions have larger tails at |q|=10.
+                wide = analyze(z['u'], p, float(z['t_fs']), max(320, 2*nq), qmax=16.)
+                quadrature_checks.append(dict(t_fs=float(z['t_fs']),
+                    qmax10=diagnostics(f), qmax16=diagnostics(wide)))
+                del wide
                 for name, fig in (('bridge_consistency', consistency(f, display, index, refs)),):
                     folder = out/name
                     folder.mkdir(exist_ok=True)
                     fig.savefig(folder/f'frame_{index:05d}.png', dpi=max(140, dpi))
                     plt.close(fig)
     atomic_json(out/'consistency.json', checks)
+    atomic_json(out/'quadrature_checks.json', quadrature_checks)
     report = dict(wall_seconds=time.perf_counter()-started, cache_frames=len(paths),
+                  scenario=scenario,
                   movie_frames=len(indices) if movies else 0, movie_stride=movie_stride,
                   nq_display=nq, r_points=c.nr, t_fs=[checks[0]['t_fs'], checks[-1]['t_fs']],
                   CBO_population=cbop, scales=display['scales'],

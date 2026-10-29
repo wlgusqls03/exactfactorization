@@ -87,8 +87,8 @@ def simulate(c, out, end_fs=40., every_fs=.5, resume=False):
         atomic_json(out/'provenance.json', dict(source=source_record(),
                     paper='https://doi.org/10.1039/D6CP02020H',
                     preparation='Eq27: bare adiabatic S1 * nuclear Gaussian * |0>',
-                    photon_representation='finite Fock; NOT paper 500-point q-grid quantum reference',
-                    nuclear_boundary='periodic FFT, endpoint excluded (spacing 12/500)',
+                    photon_representation='finite Fock TDSE; q-grid reconstruction is display/quadrature only; author QD photon truncation not certified',
+                    nuclear_boundary=f'periodic FFT, endpoint excluded (spacing {(c.rmax-c.rmin)/c.nr:g})',
                     width_amplitude=c.sigma_r, width_density_sd=c.sigma_r/np.sqrt(2),
                     resonance=frequency_report(c),
                     coupling_definition='omega*g*q*D; DSE=0.5*g^2*(D@D)',
@@ -148,6 +148,8 @@ def run_case(task):
     print(f'RUN {out}: g={c.g:g}, DSE={c.dse}, nf={c.nf}', flush=True)
     status = simulate(c, out, options['end_fs'], options['every_fs'], options['resume'])
     atomic_json(Path(out)/'resonance.json', frequency_report(c, options.get('resonance', 'configured')))
+    if 'scenario' in options:
+        atomic_json(Path(out)/'scenario.json', options['scenario'])
     if options['render']:
         from .render import render_case
         render_case(out, movies=options['movies'], movie_stride=options['movie_stride'],
@@ -186,7 +188,7 @@ def main():
     parser.add_argument('--case', choices=['all', 'zero', 'weak', 'strong'], default='all')
     parser.add_argument('--dse', choices=['both', 'on', 'off'], default='both')
     parser.add_argument('--preset', choices=['nonadiabatic', 'rabi'], default='nonadiabatic')
-    parser.add_argument('--resonance', choices=['bare-gap', 'paper-on', 'on', 'off'],
+    parser.add_argument('--resonance', choices=['bare-gap', 'paper-on', 'paper-off', 'on', 'off'],
                         help='Default: exact bare gap at R0; --config preserves omega unless explicitly overridden. on is the legacy paper-on alias.')
     parser.add_argument('--weak-g', type=float, default=.001)
     parser.add_argument('--strong-g', type=float, default=.01)
