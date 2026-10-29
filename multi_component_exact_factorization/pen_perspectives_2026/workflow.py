@@ -17,6 +17,7 @@ import subprocess
 import time
 import numpy as np
 from .model import AU_FS, Config, Propagator, initial, observables
+from .resonance import frequency_report, select_frequency
 
 
 def atomic_json(path, value):
@@ -89,6 +90,7 @@ def simulate(c, out, end_fs=40., every_fs=.5, resume=False):
                     photon_representation='finite Fock; NOT paper 500-point q-grid quantum reference',
                     nuclear_boundary='periodic FFT, endpoint excluded (spacing 12/500)',
                     width_amplitude=c.sigma_r, width_density_sd=c.sigma_r/np.sqrt(2),
+                    resonance=frequency_report(c),
                     coupling_definition='omega*g*q*D; DSE=0.5*g^2*(D@D)',
                     photon_number='bare Pauli-Fierz oscillator number; NOT a gauge-transformed detector count'))
         atomic_npz(out/'references.npz', R=p.R, bo_energy=p.bo_energy,
@@ -145,10 +147,11 @@ def run_case(task):
     c, out, options = task
     print(f'RUN {out}: g={c.g:g}, DSE={c.dse}, nf={c.nf}', flush=True)
     status = simulate(c, out, options['end_fs'], options['every_fs'], options['resume'])
+    atomic_json(Path(out)/'resonance.json', frequency_report(c, options.get('resonance', 'configured')))
     if options['render']:
         from .render import render_case
         render_case(out, movies=options['movies'], movie_stride=options['movie_stride'],
-                    nq=options['nq'], dpi=options['dpi'])
+                    nq=options['nq'], dpi=options['dpi'], packet_scale=options.get('packet_scale', 'sqrt'))
     print(f'DONE {out}: TDSE {status["latest_wall_seconds"]:.2f} s', flush=True)
     return status
 
@@ -183,7 +186,8 @@ def main():
     parser.add_argument('--case', choices=['all', 'zero', 'weak', 'strong'], default='all')
     parser.add_argument('--dse', choices=['both', 'on', 'off'], default='both')
     parser.add_argument('--preset', choices=['nonadiabatic', 'rabi'], default='nonadiabatic')
-    parser.add_argument('--resonance', choices=['on', 'off'], default='on')
+    parser.add_argument('--resonance', choices=['bare-gap', 'paper-on', 'on', 'off'],
+                        help='Default: exact bare gap at R0; --config preserves omega unless explicitly overridden. on is the legacy paper-on alias.')
     parser.add_argument('--weak-g', type=float, default=.001)
     parser.add_argument('--strong-g', type=float, default=.01)
     parser.add_argument('--end-fs', type=float, default=40.)
@@ -196,6 +200,8 @@ def main():
     parser.add_argument('--nq-display', type=int, default=160, help='Reconstruction only; use 500 for paper q sampling')
     parser.add_argument('--dpi', type=int, default=85, help='Movie DPI; snapshots use at least 140')
     parser.add_argument('--t-max-fs', type=float, help='Render only; cut existing trajectory without TDSE')
+    parser.add_argument('--packet-scale', choices=['sqrt', 'linear'], default='sqrt',
+                        help='Shared state-density display scale; sqrt reveals small branches, not a probability-area plot')
     args = parser.parse_args()
     if args.command == 'run' and args.t_max_fs is not None:
         parser.error('--t-max-fs is render-only; use --end-fs for propagation')
@@ -209,7 +215,7 @@ def main():
     if args.command == 'render':
         from .render import render_case, comparison
         tasks = [(args.out/f'dse_{dse}'/case, not args.no_movies, args.movie_stride,
-                  args.nq_display, args.dpi, args.t_max_fs) for dse in dses for case in cases]
+                  args.nq_display, args.dpi, args.t_max_fs, args.packet_scale) for dse in dses for case in cases]
         if args.jobs == 1:
             for task in tasks:
                 render_task(task)
@@ -222,13 +228,14 @@ def main():
             c = Config(**json.loads(args.config.read_text()))
         else:
             c = Config(r1=2., delta=.17) if args.preset == 'rabi' else Config()
-            if args.resonance == 'off':
-                c = replace(c, omega=.12 if args.preset == 'rabi' else .097)
-        c.grid()
+        selection = args.resonance or ('configured' if args.config else 'bare-gap')
+        c, resonance = select_frequency(c, selection, args.preset)
+        print('RESONANCE '+json.dumps(resonance), flush=True)
         args.out.mkdir(parents=True, exist_ok=True)
         options = dict(end_fs=args.end_fs, every_fs=args.every_fs, resume=args.resume,
                        render=not args.no_render, movies=not args.no_movies,
-                       movie_stride=args.movie_stride, nq=args.nq_display, dpi=args.dpi)
+                       movie_stride=args.movie_stride, nq=args.nq_display, dpi=args.dpi,
+                       packet_scale=args.packet_scale, resonance=selection)
         gs = dict(zero=0., weak=args.weak_g, strong=args.strong_g)
         tasks = [(replace(c, g=gs[case], dse=dse == 'on'), args.out/f'dse_{dse}'/case, options)
                  for dse in dses for case in cases]

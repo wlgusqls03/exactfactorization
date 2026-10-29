@@ -16,6 +16,37 @@ from multi_component_exact_factorization.pen_perspectives_2026.workflow import s
 
 
 class Perspectives2026Tests(unittest.TestCase):
+    def test_exact_resonance_and_legacy_selection(self):
+        from multi_component_exact_factorization.pen_perspectives_2026.resonance import select_frequency
+        c, report = select_frequency(Config(), 'bare-gap')
+        self.assertAlmostEqual(c.omega, .160000000000863, places=14)
+        self.assertTrue(report['matches_bare_gap'])
+        self.assertEqual(report['detuning_Ha'], 0)
+        # Calibration must evaluate R0 exactly, not the closest grid point 2.008.
+        self.assertNotEqual(c.grid()[np.argmin(abs(c.grid()-c.r2))], c.r2)
+        self.assertEqual(select_frequency(c, 'paper-on')[0].omega, .17)
+        custom = replace(c, omega=.123)
+        self.assertEqual(select_frequency(custom, 'configured')[0], custom)
+        self.assertEqual(select_frequency(c, 'off')[0].omega, .097)
+        # Bare resonance stays common to DSE-on/off and g controls.
+        for g in (0., .001, .01):
+            for dse in (False, True):
+                chosen, _ = select_frequency(replace(c, g=g, dse=dse), 'bare-gap')
+                self.assertEqual(chosen.omega, c.omega)
+
+    def test_cli_default_bare_gap_and_explicit_legacy(self):
+        import sys
+        with tempfile.TemporaryDirectory() as temp:
+            for extra, value in (([], .160000000000863), (['--resonance', 'paper-on'], .17)):
+                root = Path(temp)/str(value)
+                subprocess.run([sys.executable, '-m', 'multi_component_exact_factorization.pen_perspectives_2026.workflow',
+                    'run', '--out', str(root), '--end-fs', '0', '--case', 'strong', '--dse', 'off',
+                    '--no-render']+extra, check=True, capture_output=True, text=True)
+                saved = json.loads((root/'dse_off/strong/config.json').read_text())
+                self.assertAlmostEqual(saved['omega'], value, places=14)
+                provenance = json.loads((root/'dse_off/strong/resonance.json').read_text())
+                self.assertEqual(provenance['R0'], 2.)
+
     def test_paper_parameters_and_width(self):
         c = Config()
         self.assertEqual((c.nr, c.rmin, c.rmax, c.dt, c.nf), (500, -2., 10., .1, 2))
@@ -104,10 +135,61 @@ class Perspectives2026Tests(unittest.TestCase):
         d = diagnostics(f)
         for key in ['alpha_bridge_rms', 'epsilon2_bridge_rms', 'epsilon2_inversion_rms', 'continuity_rms']:
             self.assertLess(d[key], 1e-9, key)
+        for key in ('epsilon1_GI_rms', 'epsilon2_GI_rms', 'weighted_pol_budget_rms'):
+            self.assertLess(d[key], 1e-13, key)
         self.assertGreater(d['projection_source_rms'], 1e-7)
         mask = f['rho_qR'] > 1e-5*f['rho_qR'].max()
         old_residual = f['density_dt']-f['S_q']-f['S_adv']-f['S_rel']
         np.testing.assert_allclose(old_residual[mask], f['S_projection'][mask], atol=1e-12)
+
+    def test_resolved_gi_budgets_dse_controls(self):
+        rng = np.random.default_rng(14)
+        for dse in (False, True):
+            c = Config(nr=64, dse=dse)
+            p = Propagator(c)
+            # Nontrivial arbitrary complex state tests independent projections.
+            u = rng.normal(size=(64, 2, 2))+1j*rng.normal(size=(64, 2, 2))
+            u /= np.sqrt(np.sum(abs(u)**2)*p.dr)
+            f = analyze(u, p, nq=64)
+            np.testing.assert_allclose(f['epsilon1_wCBO'], f['epsilon1_cond'], atol=1e-13)
+            np.testing.assert_allclose(f['epsilon2_wPol'], f['epsilon2_cond'], atol=1e-13)
+            np.testing.assert_allclose(sum(f[k] for k in ('epsilon2_wBO', 'epsilon2_pkin',
+                'epsilon2_ppot', 'epsilon2_LM', 'epsilon2_DSE')), f['epsilon2_wPol'], atol=1e-13)
+            if not dse:
+                np.testing.assert_array_equal(f['epsilon2_DSE'], 0.)
+
+    def test_peak_slice_and_gi_layout(self):
+        import matplotlib.pyplot as plt
+        from multi_component_exact_factorization.pen_perspectives_2026.render import (
+            prepare, sources, gi_components, packet_height)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)/'case'
+            c = Config(nr=128)
+            simulate(c, root, 0, .5)
+            p = Propagator(c)
+            paths = sorted((root/'coefficients').glob('*.npz'))
+            display, refs, _, _ = prepare(paths, p, 64)
+            f = analyze(initial(c), p, nq=64)
+            # Force a different tracked coordinate; fixed cut must stay fixed.
+            peak = display['i']+5
+            f['rho_R'] = np.roll(f['rho_R'], 5)
+            fig = sources(f, display, 0, refs)
+            axes = [ax for ax in fig.axes if ax.get_title()]
+            self.assertEqual(len(axes), 8)
+            self.assertIn('partial_R', axes[3].get_title())
+            self.assertIn(f'{f["R"][peak]:.3f}', axes[6].get_title())
+            np.testing.assert_allclose(axes[4].get_ylim(), axes[6].get_ylim())
+            np.testing.assert_allclose(axes[5].get_ylim(), axes[7].get_ylim())
+            plt.close(fig)
+            fig = gi_components(f, display, refs)
+            panels = [ax for ax in fig.axes if ax.get_title().startswith('(')]
+            self.assertEqual(len(panels), 6)
+            self.assertTrue(any('R$-slice' in ax.get_title() for ax in panels))
+            plt.close(fig)
+        linear = packet_height(np.array([1., .01]), 1., 'linear')
+        enhanced = packet_height(np.array([1., .01]), 1., 'sqrt')
+        self.assertEqual(linear[0], enhanced[0])
+        self.assertAlmostEqual(enhanced[1]/linear[1], 10.)
 
     def test_zero_a_and_projection(self):
         c = Config(nr=256, g=0)
@@ -168,7 +250,7 @@ class Perspectives2026Tests(unittest.TestCase):
             simulate(Config(nr=64), root, .003, .01)
             render_case(root, movies=True, nq=64, dpi=41)
             movies = list((root/'plots').rglob('*.mp4'))
-            self.assertEqual(len(movies), 5)
+            self.assertEqual(len(movies), 6)
             for movie in movies:
                 info = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-show_entries',
                     'stream=width,height,nb_frames', '-of', 'json', str(movie)], text=True))['streams'][0]

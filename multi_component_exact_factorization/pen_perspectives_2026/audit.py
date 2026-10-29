@@ -7,6 +7,7 @@ import numpy as np
 from .model import AU_FS, Config, Propagator, initial, observables
 from .fields import analyze, diagnostics
 from .workflow import atomic_json, source_record
+from .resonance import select_frequency
 
 
 def trajectory(c, end_fs, sample_times=None):
@@ -37,13 +38,14 @@ def differences(base, other):
     return out
 
 
-def audit(out, end_fs=40.):
+def audit(out, end_fs=40., resonance='bare-gap'):
     started = time.perf_counter()
-    report = dict(source=source_record(), end_fs=end_fs, cases={},
+    base, frequency = select_frequency(Config(), resonance)
+    report = dict(source=source_record(), end_fs=end_fs, resonance=frequency, cases={},
                   interpretation='dt/R checks concern the specified finite-Fock model; nf variation tests truncation, not solver errors.')
     for dse in (False, True):
         for name, g in (('zero', 0.), ('weak', .001), ('strong', .01)):
-            c = Config(dse=dse, g=g)
+            c = replace(base, dse=dse, g=g)
             p, u, baseline = trajectory(c, end_fs)
             same_times = [r['t_fs'] for r in baseline]
             _, _, tfine = trajectory(replace(c, dt=c.dt/2), end_fs, same_times)
@@ -69,7 +71,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--end-fs', type=float, default=40.)
+    parser.add_argument('--resonance', choices=['bare-gap', 'paper-on', 'on', 'off'], default='bare-gap')
     args = parser.parse_args()
     if not np.isfinite(args.end_fs) or args.end_fs <= 0:
         parser.error('end-fs must be positive and finite')
-    audit(args.out, args.end_fs)
+    audit(args.out, args.end_fs, args.resonance)

@@ -20,7 +20,10 @@ https://arxiv.org/html/2604.20538v2
 * 이번 요청: TDSE 자체를 전자 2 × photon n=0,1에 제한한 양자 계산.
   따라서 "2026 Hamiltonian의 2-Fock TDSE"이지, photon real-grid benchmark를
   수치적으로 완전히 재현했다고 주장하지 않는다. CTMQC/TSH/MTE도 재구현하지 않았다.
-* DSE off + strong가 논문 파라미터에 해당한다. DSE on, weak, zero는 추가 대조군.
+* --resonance paper-on + DSE off + strong가 논문 표의 파라미터에 해당한다.
+  새 CLI 기본값은 --resonance bare-gap: 초기 Gaussian 중심에서 직접 구한 bare gap.
+  논문 표/본문의 불일치가 해소되었다거나 저자 입력을 완전히 재현했다는 뜻이 아니다.
+  DSE on, weak, zero는 추가 대조군.
 * 실제 전자 좌표 x도 Shin–Metiu proton 질량도 없는 diabatic model이다.
   질량 20000은 이 모델의 일반화된 핵 좌표 R에 대한 값이다.
 
@@ -30,7 +33,15 @@ nonadiabatic preset (Table 2):
   M=20000, k=0.02, a=3, b=0.01, R1=6, R2=2, R3=3.875,
   Delta=0, Z=1, mu12=-1, omega(on)=0.17, omega(off)=0.097.
 rabi preset: R1=R2=2, Delta=0.17; omega(on)=0.17, omega(off)=0.12.
-모든 값 atomic units. omega=0.17을 bare gap≈0.16으로 임의 재조정하지 않는다.
+모든 값 atomic units. Config 클래스의 omega=0.17은 기존 호환성을 위해 유지한다.
+CLI 기본 실행은 Gaussian 중심 R0=R2에서 H_BO를 직접 대각화해 주파수를 결정한다.
+nonadiabatic: bare gap=0.160000000000863 Ha (0.17로 반올림되는 값이 아님).
+--resonance paper-on 또는 기존 별칭 --resonance on: 표의 0.17 유지.
+--resonance off: 표의 off 주파수. --config만 주면 JSON omega를 그대로 사용한다.
+--config와 --resonance를 함께 주면 명시적으로 주파수를 재설정한다.
+모든 zero/weak/strong 및 DSE off/on에 동일한 bare 주파수를 사용한다.
+이것은 bare 공명이지, finite-coupling의 최대 혼합점이나 Pol population 50:50을
+강제로 맞추는 조작이 아니다. 로그 및 각 case의 resonance.json에 실제 gap/차이를 기록한다.
 
 핵 격자: [-2,10), 500점, dR=0.024. periodic FFT, 끝점 제외.
 논문은 범위/점수는 명시하나 끝점 포함 여부는 명시하지 않으므로 이 FFT convention은
@@ -117,14 +128,17 @@ fixed scales는 영상 전체에서 유지; GI zoom은 별도 정적 그림이�
 5. 실행: 저장소 루트, conda MCEF
 -----------------------------
 새 계산과 기존 real-grid PEN checkpoint는 호환되지 않는다. 새 폴더를 사용한다.
+기존 omega=0.17 checkpoint를 bare-gap 계산에 이어 쓰면 안 된다. 0.17 계산을
+그대로 연장하려면 --resonance paper-on을 명시해야 한다. 바뀐 주파수는 t=0부터 실행.
 
 가벼운 전체 경로 smoke (6개, 0.1 fs, 그림/영상까지):
   bash multi_component_exact_factorization/pen_perspectives_2026/run_server.sh smoke \
-    results/20261028/pen2026_smoke_v1 --jobs 3
+    results/20261029/pen2026_baregap_smoke_v1 --resonance bare-gap --jobs 3
 
 기본 40 fs, 총 6개, 자동 PNG/MP4, CPU 3개 작업 동시 실행:
   bash multi_component_exact_factorization/pen_perspectives_2026/run_server.sh run \
-    results/20261028/pen2026_40fs_v1 --end-fs 40 --every-fs 0.5 --jobs 3
+    results/20261029/pen2026_baregap_40fs_v1 --resonance bare-gap \
+    --end-fs 40 --every-fs 0.5 --jobs 3
 
 50 fs로 계산하려면 --end-fs 50. 모든 작업을 순차 실행하려면 --jobs 1.
 하나만 계산하려면 --case strong --dse off (새 output root 권장).
@@ -134,11 +148,12 @@ case별 g와 dse는 위 CLI case 옵션이 config의 g/dse를 override한다.
 
 40 -> 50 fs 연장 (같은 model/config/save cadence만 허용):
   bash multi_component_exact_factorization/pen_perspectives_2026/run_server.sh run \
-    results/20261028/pen2026_40fs_v1 --end-fs 50 --every-fs 0.5 --jobs 3 --resume
+    results/20261029/pen2026_baregap_40fs_v1 --resonance bare-gap \
+    --end-fs 50 --every-fs 0.5 --jobs 3 --resume
 
 그림만 다시 생성, 40 fs까지 자르기 (재전파 없음):
   bash multi_component_exact_factorization/pen_perspectives_2026/run_server.sh render \
-    results/20261028/pen2026_40fs_v1 --t-max-fs 40 --jobs 3
+    results/20261029/pen2026_baregap_40fs_v1 --t-max-fs 40 --jobs 3
 
 빠른 영상 preview: --movie-stride 10 (중간 프레임 생략임을 render_report에 기록).
 모든 실제 저장 프레임: 기본 --movie-stride 1. 시간 보간으로 가짜 프레임을 만들지 않는다.
@@ -154,18 +169,18 @@ PNG만: --no-movies; 전파만: --no-render. 렌더링 시 DPI 기본85, snapsho
 6. 출력
 -------
 ROOT/dse_{off,on}/{zero,weak,strong}/
-  config.json, provenance.json, status.json, observables.json
+  config.json, provenance.json, resonance.json, status.json, observables.json
   restart.npz (원자적 갱신, Hamiltonian/config/source hash 검사)
   references.npz (BO/Pol eigenpairs)
   coefficients/wave_XXXXXXXX.npz (작은 원시 Fock 계수만 저장)
   plots/                         (time cut시 plots_to_40fs/)
     A_diagnostics_clean/         epsilon1,a,b / epsilon2 / slice / b,alpha
-    B_diagnostics_clean/         source decomposition + projection source
+    B_diagnostics_clean/         4x2: maps + fixed R pair + density-peak R pair
     epsilon1_slice_analysis/     R,q cuts + photon number + CBO populations
     dynamics_overview/           핵/photon density, BO/Pol populations 분리
     outer_nuclear_effective/     epsilon2, force, Pol wavepacket, Pol populations
     bridge_consistency/          direct/reconstructed/residual PNG
-    GI_components/               GI components 및 reference zoom PNG
+    GI_components/               2x3: two epsilon1 cuts + epsilon2, PNG + MP4
     polaritonic_composition.png
     consistency.json, render_report.json
 ROOT/comparison/six_case_dynamics.png, polaritonic_surfaces.png
@@ -191,3 +206,42 @@ checkpoint는 하나만 유지, history도 작은 coefficient snapshots만 저�
 COMPLETE_NOT_CERTIFIED는 해당 finite-Fock TDSE 실행 완료라는 뜻이다.
 수치 norm/energy conservation 통과 != photon basis 수렴 != 논문 곡선 완전 재현.
 strong nf2 vs nf4 차이는 따로 보고하며, 두 Fock 상태 제한을 몰래 완화하지 않는다.
+
+8. 2026-10-29 그림 개선과 해석
+----------------------------
+GI_components: 위쪽은 epsilon1(q_c | fixed R), epsilon1(R | fixed q_c),
+epsilon2(R)의 GI와 정적 CBO/Pol 기준. 아래쪽은 대응되는 세부 GI 항.
+
+  epsilon1_GI = epsilon1_wCBO + epsilon1_qc,geo + epsilon1_R,geo + epsilon1_proj
+  epsilon2_GI = epsilon2_wPol + epsilon2_R,geo
+  epsilon2_wPol = epsilon2_wBO + epsilon2_p,kin + epsilon2_p,pot
+                 + epsilon2_LM + epsilon2_DSE
+
+wCBO=sum_j P_j(q_c,R) E_j^CBO, wPol=sum_k P_k(R) E_k^Pol이며 각각 조건부
+정규화된 population으로 직접 계산한다. 단순히 기대값의 이름만 바꾼 것이 아니다.
+별도의 native-operator 기대값과 비교한 잔차는 consistency.json에 저장한다.
+weighted-Pol 안에는 photon kinetic energy가 이미 포함되므로 다시 더하지 않는다.
+p,kin은 photon 운동에너지, p,pot은 photon harmonic potential이며 p,geo와 다르다.
+모델의 전자는 추상 2-state이므로 전자 운동에너지를 H_BO에서 따로 복원하지 않는다.
+독립 외부장 항은 없으며, DSE off에서는 해당 선을 생략한다. Fock projection은 유지.
+GI main: total/GD 없이 독립 축 사용. component/inset: 밀도 가중 0.5–99.5% 범위로
+초점을 잡고 시간 전체에서 고정한다. 범위 밖 값은 색깔 삼각형으로 표시한다.
+기하항의 큰 피크를 수치 오류로 단정하거나 데이터에서 제거하지 않는다.
+
+outer_nuclear_effective: --packet-scale sqrt (기본값)는 모든 상태/시간에서 같은
+밀도 최대값을 기준으로 제곱근 높이를 표시해 작은 분기를 강조한다.
+색칠 면적은 population이 아니다! 정확한 population은 오른쪽 패널의 선을 읽는다.
+--packet-scale linear로 같은 공통 척도의 선형 밀도 표현으로 되돌릴 수 있다.
+
+B_diagnostics_clean: A–D maps의 수식 표시. E/F는 고정 R, G/H는 매 프레임
+R_peak=argmax_R |chi(R,t)|^2에서 source/momentum slice를 평가한다.
+G/H도 Eulerian partial_t |Lambda|^2와 S항을 그리는 것이며,
+움직이는 관측점의 전미분 d/dt를 그리는 것이 아니다. 밀도 peak가 바뀌면 R도
+불연속적으로 바뀔 수 있다. 이를 smoothing해서 '최대점'이라고 속이지 않는다.
+검은 점선=고정 slice, 자홍 점선=peak slice, E/G 및 F/H의 y축은 각각 동일하다.
+실제 peak 경로는 render_report.json의 tracked_R_peak와 t_fs를 참고한다.
+
+Source 값 1e-3의 단위는 '조건부 q_c 확률밀도 / atomic time'이다.
+1 fs = 41.3414 atomic time이므로 1e-3은 약0.04134 density/fs에 해당한다.
+그 자체를 전체 반응확률의 0.1%/fs로 읽으면 안 된다. 공간/시간 적분, 다른 S항의
+상쇄, 해당 지점의 |Lambda|^2와 비교해야 한다. 그림은 atomic-time 단위를 유지한다.

@@ -1,4 +1,4 @@
-2026-10-28 검증 및 비용 기록
+2026-10-28 검증 및 비용 기록 (이전 omega=0.17 설정)
 ===========================
 
 최종 코드/실행 설명: README.txt. 기존 model_a / 실공간 cavity 파일 수정 없음.
@@ -81,3 +81,44 @@ field checks at 40fs:
 
 미완성 renderer 산출물과 완성 TDSE를 구분할 것. 서버에서 README의 새 output
 root로 실행하면 six-case 전파 및 전체 그림/영상이 자동 생성된다.
+
+2026-10-29: bare-gap 및 새 렌더러 검증 (장시간 재전파 없음)
+-------------------------------------------------------
+새 CLI 기본값은 bare-gap=0.16000000000086298 au. 이전 40fs 실행은 이 새
+주파수의 결과가 아니므로, 아래 smoke와 기존 long-run을 혼동하지 말 것.
+
+실행:
+  results/20261029/pen2026_baregap_smoke_local_v1/
+  native nr500, nf2, dt0.1, 6 cases 각 0.05fs 요청 (실제0.05079657fs).
+  six-case propagation wall 0.104초, 원자료 합계0.822 MiB.
+  최대 norm error 1.34e-14, energy drift 5.11e-14 Ha.
+  strong/DSE off 초기 Pol1=0.5104176690, Pol2=0.4883277497.
+  주파수만 bare gap에 맞춘 것이며 population을 인위적으로 재분배하지 않았다.
+
+렌더링:
+  위 strong/DSE off만, 실제 2 frames, 6 movie families, DPI85.
+  campaign render + comparison wall 15.48초 (동시에 unit tests 수행).
+  모든 MP4 ffprobe 검사: 2 frames, 짝수 해상도.
+  B: 1956x2040 (4x2 패널), GI: 2550x1446 (2x3 패널).
+  여섯 원자료+strong 그림/영상 총9.76 MiB (두 프레임만인 smoke 용량).
+  독립 weighted-CBO/Pol/GI budget RMS <=1.37e-16 Ha.
+  continuity including S_projection RMS <=6.32e-18.
+
+기존 omega0.17의 20/40fs 원자료를 읽어 새 PNG를 육안 검토한 위치:
+  results/20261029/pen2026_visual_review_old_frequency/
+  이는 레이아웃 검토용이며 새 bare-gap 장시간 결과가 아니다.
+  범례/하단 문구 충돌 수정, 작은 분기 sqrt 표시, 고정/peak R slice의 공통축,
+  GI budget focus 및 off-scale triangles를 확인했다.
+
+tests/test_pen_perspectives_2026.py 17개 통과 (unit/short propagation/PNG/MP4).
+기존 cavity regression 77개 및 model_a regression 14개 통과.
+기존 real-space MCEF/cavity/model_a 코드 변경 없음.
+
+새 40fs 서버 6-case 예상 (재측정 아님):
+  TDSE: 이전 동일 크기 계산에서 9–11초. 서버에서는 대략 수십 초~수분 여유.
+  81frames, 6 families/case=36 MP4; 확대된 B/GI 패널로 렌더링이 주 비용.
+  jobs3, DPI85, nq160이면 약20–45분을 첫 예상으로 잡되 서버 성능에 따라 변동.
+  결과 총 약150–250 MiB 예상; 안전 여유1 GiB 권장.
+  PNG는 시작/중간/끝만 저장; field cache/모든 PNG를 추가 저장하지 않는다.
+  50fs/0.5fs는 프레임 약1.25배, 40fs/0.25fs는 약2배.
+  이번 수정에서 새 주파수의 40/50fs propagation이나 전체 영상은 로컬에서 수행하지 않았다.
