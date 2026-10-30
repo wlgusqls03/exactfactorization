@@ -99,6 +99,23 @@ Rabi 두 조건 그림만 다시 생성 (TDSE 재전파 없음):
 전체 선택에 저장 자료가 있는지 먼저 검사하므로 --case all / --dse both를
 무조건 붙이지 말고 실제 돌린 조건을 선택한다. 렌더는 저장 config를 사용한다.
 
+PNG를 5 fs 간격으로 더 촘촘하게 생성 (2026-10-30 추가):
+  bash multi_component_exact_factorization/pen_perspectives_2026/run_paper_server.sh render \
+    results/20261030/pen2026_paper_v1 --model rabi --resonance both \
+    --case strong --dse off --png-every-fs 5 --no-movies --jobs 2
+3 fs 간격은 --png-every-fs 3. fs는 물리적 계산 시간이며 영상 재생의 초가 아니다.
+옵션이 없으면 기존 처음/중간/끝 3시점 방식을 유지한다. run 명령에도 적용 가능.
+0,5,10,...에 가장 가까운 실제 저장 프레임을 선택하며 처음/마지막도 포함한다.
+시간 보간이나 재전파는 없다. 그림에는 실제 저장 시각을 표시한다.
+40fs 계산이면 5fs 간격은 대략9시점, 3fs 간격은 대략15시점이다.
+--no-movies이면 기존 MP4를 수정하지 않고 7개 diagnostics family의 PNG를 생성한다.
+PNG 이름은 기존 frame_<저장프레임번호>.png를 유지하고, 각 plots/png_selection.json에
+파일명/실제시간/원시 coefficient 파일 경로를 기록한다. 겹치는 PNG는 갱신하지만
+이전 설정으로 만든 나머지 PNG는 자동 삭제하지 않는다. 자동 요약 PNG/JSON도 갱신한다.
+계산 저장 간격 --every-fs와 렌더 PNG 간격 --png-every-fs는 서로 다른 옵션이다.
+--no-movies로도 전 시간의 field를 먼저 읽어 공통 색/축 범위를 정하므로 즉시 끝나지는
+않지만, 전체 영상 프레임을 그리거나 TDSE를 재전파하는 것은 아니다.
+
 출력 ROOT/<model>/<on|off>/dse_<off|on>/<zero|weak|strong>/
   config.json, scenario.json, resonance.json, provenance.json
   status.json, observables.json, restart.npz, references.npz

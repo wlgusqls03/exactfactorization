@@ -69,6 +69,31 @@ def frame_paths(case, t_max_fs=None):
     return paths
 
 
+def png_indices(times_fs, every_fs=None):
+    """Nearest saved frames to 0, interval, 2*interval, ...; include endpoints.
+
+    No interpolation/repropagation. Ties choose the earlier saved frame.
+    Without an interval preserve the legacy first/middle/last selection.
+    """
+    times = np.asarray(times_fs, dtype=float)
+    if times.ndim != 1 or not len(times) or not np.all(np.isfinite(times)) or np.any(np.diff(times) <= 0):
+        raise ValueError('PNG selection needs finite, strictly increasing frame times')
+    if every_fs is None:
+        return sorted({0, len(times)//2, len(times)-1})
+    if not np.isfinite(every_fs) or every_fs <= 0:
+        raise ValueError('png-every-fs must be finite and positive')
+    if len(times) == 1 or every_fs <= np.min(np.diff(times)):
+        return list(range(len(times)))
+    # Work in frame space, so a tiny requested interval cannot allocate a huge
+    # target array. A frame is selected iff its nearest-neighbour cell contains
+    # an integer multiple of every_fs. Midpoint ties belong to the earlier frame.
+    midpoints = (times[:-1]+times[1:])/2
+    lower = np.floor(midpoints[:-1]/every_fs)+1
+    upper = np.floor(midpoints[1:]/every_fs)
+    selected = np.flatnonzero(lower <= upper)+1
+    return sorted({0, len(times)-1, *selected.tolist()})
+
+
 def prepare(paths, p, nq):
     """Two-pass rendering: retain only scales, cameras and small time traces."""
     samples = {k: [] for k in ('epsilon1', 'a', 'b', 'energy1', 'energy2', 'momentum', 'source',
@@ -405,7 +430,7 @@ def state_composition(p):
     return fig
 
 
-def render_case(case, movies=True, movie_stride=1, nq=160, dpi=85, t_max_fs=None, packet_scale='sqrt'):
+def render_case(case, movies=True, movie_stride=1, nq=160, dpi=85, t_max_fs=None, packet_scale='sqrt', png_every_fs=None):
     from .resonance import scenario_report
     from .paper_plots import exchange_summary
     started = time.perf_counter()
@@ -427,7 +452,9 @@ def render_case(case, movies=True, movie_stride=1, nq=160, dpi=85, t_max_fs=None
     out = case/('plots' if t_max_fs is None else f'plots_to_{t_max_fs:g}fs')
     out.mkdir(exist_ok=True)
     exchange_summary(out, c, data, checks, cbop, display['nuclear_moments'])
-    selected = sorted(set([0, len(paths)//2, len(paths)-1]))
+    selected = png_indices([v['t_fs'] for v in checks], png_every_fs)
+    print(f'PNG: {len(selected)} saved frames; interval={png_every_fs} fs '
+          '(None = first/middle/last); endpoints included, no interpolation', flush=True)
     indices = sorted(set(range(0, len(paths), movie_stride)) | {len(paths)-1}) if movies else selected
     # Force, GI and packet scales already collected in the first streaming pass.
     rmask = (p.R >= display['line_xlim_R'][0]) & (p.R <= display['line_xlim_R'][1])
@@ -481,8 +508,16 @@ def render_case(case, movies=True, movie_stride=1, nq=160, dpi=85, t_max_fs=None
                     plt.close(fig)
     atomic_json(out/'consistency.json', checks)
     atomic_json(out/'quadrature_checks.json', quadrature_checks)
+    png_selection = dict(png_every_fs=png_every_fs,
+        policy='Nearest saved frame to integer multiples of interval; endpoints included; no interpolation. None: first/middle/last.',
+        frames=[dict(index=i, t_fs=float(checks[i]['t_fs']), source=str(paths[i]),
+                     filename=f'frame_{i:05d}.png') for i in selected],
+        existing_outputs='Matching PNGs overwritten; other existing PNGs and, with movies=False, all MP4s retained.')
+    atomic_json(out/'png_selection.json', png_selection)
     report = dict(wall_seconds=time.perf_counter()-started, cache_frames=len(paths),
                   scenario=scenario,
+                  png_every_fs=png_every_fs, png_frame_indices=selected,
+                  png_times_fs=[float(checks[i]['t_fs']) for i in selected],
                   movie_frames=len(indices) if movies else 0, movie_stride=movie_stride,
                   nq_display=nq, r_points=c.nr, t_fs=[checks[0]['t_fs'], checks[-1]['t_fs']],
                   CBO_population=cbop, scales=display['scales'],

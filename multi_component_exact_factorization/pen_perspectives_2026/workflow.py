@@ -153,7 +153,8 @@ def run_case(task):
     if options['render']:
         from .render import render_case
         render_case(out, movies=options['movies'], movie_stride=options['movie_stride'],
-                    nq=options['nq'], dpi=options['dpi'], packet_scale=options.get('packet_scale', 'sqrt'))
+                    nq=options['nq'], dpi=options['dpi'], packet_scale=options.get('packet_scale', 'sqrt'),
+                    png_every_fs=options.get('png_every_fs'))
     print(f'DONE {out}: TDSE {status["latest_wall_seconds"]:.2f} s', flush=True)
     return status
 
@@ -199,6 +200,7 @@ def main():
     parser.add_argument('--no-render', action='store_true')
     parser.add_argument('--no-movies', action='store_true')
     parser.add_argument('--movie-stride', type=int, default=1)
+    parser.add_argument('--png-every-fs', type=float, help='PNG interval in physical fs; nearest saved frames plus endpoints. Default: first/middle/last')
     parser.add_argument('--nq-display', type=int, default=160, help='Reconstruction only; use 500 for paper q sampling')
     parser.add_argument('--dpi', type=int, default=85, help='Movie DPI; snapshots use at least 140')
     parser.add_argument('--t-max-fs', type=float, help='Render only; cut existing trajectory without TDSE')
@@ -209,6 +211,8 @@ def main():
         parser.error('--t-max-fs is render-only; use --end-fs for propagation')
     if args.movie_stride < 1 or args.nq_display < 32 or args.dpi < 40:
         parser.error('movie-stride>=1, nq-display>=32, dpi>=40 required')
+    if args.png_every_fs is not None and (not np.isfinite(args.png_every_fs) or args.png_every_fs <= 0):
+        parser.error('--png-every-fs must be finite and positive')
     if not args.no_render and not args.no_movies and shutil.which('ffmpeg') is None:
         parser.error('ffmpeg required for automatic movies; use --no-movies for PNG only')
     cases = ['zero', 'weak', 'strong'] if args.case == 'all' else [args.case]
@@ -217,7 +221,7 @@ def main():
     if args.command == 'render':
         from .render import render_case, comparison
         tasks = [(args.out/f'dse_{dse}'/case, not args.no_movies, args.movie_stride,
-                  args.nq_display, args.dpi, args.t_max_fs, args.packet_scale) for dse in dses for case in cases]
+                  args.nq_display, args.dpi, args.t_max_fs, args.packet_scale, args.png_every_fs) for dse in dses for case in cases]
         if args.jobs == 1:
             for task in tasks:
                 render_task(task)
@@ -237,7 +241,7 @@ def main():
         options = dict(end_fs=args.end_fs, every_fs=args.every_fs, resume=args.resume,
                        render=not args.no_render, movies=not args.no_movies,
                        movie_stride=args.movie_stride, nq=args.nq_display, dpi=args.dpi,
-                       packet_scale=args.packet_scale, resonance=selection)
+                       packet_scale=args.packet_scale, resonance=selection, png_every_fs=args.png_every_fs)
         gs = dict(zero=0., weak=args.weak_g, strong=args.strong_g)
         tasks = [(replace(c, g=gs[case], dse=dse == 'on'), args.out/f'dse_{dse}'/case, options)
                  for dse in dses for case in cases]

@@ -34,6 +34,7 @@ def build_tasks(args):
                                    render=not args.no_render, movies=not args.no_movies,
                                    movie_stride=args.movie_stride, nq=args.nq_display, dpi=args.dpi,
                                    packet_scale=args.packet_scale, resonance='paper-'+resonance,
+                                   png_every_fs=args.png_every_fs,
                                    scenario=scenario_report(c, model, resonance))
                     tasks.append((c, args.out/model/resonance/f'dse_{dse}'/case, options))
     return tasks
@@ -76,6 +77,7 @@ def parser():
     p.add_argument('--no-render', action='store_true')
     p.add_argument('--no-movies', action='store_true')
     p.add_argument('--movie-stride', type=int, default=1, help='Actual saved frames only; no interpolation')
+    p.add_argument('--png-every-fs', type=float, help='PNG interval in physical fs; nearest saved frames plus endpoints. Default: first/middle/last')
     p.add_argument('--nq-display', type=int, default=160)
     p.add_argument('--dpi', type=int, default=85)
     p.add_argument('--t-max-fs', type=float)
@@ -91,6 +93,8 @@ def main(argv=None):
         p.error('Need finite end>=0, cadence>0, nonnegative g')
     if args.movie_stride < 1 or args.nq_display < 32 or args.dpi < 40:
         p.error('movie-stride>=1, nq-display>=32, dpi>=40 required')
+    if args.png_every_fs is not None and (not np.isfinite(args.png_every_fs) or args.png_every_fs <= 0):
+        p.error('--png-every-fs must be finite and positive')
     if args.t_max_fs is not None and (args.command != 'render' or not np.isfinite(args.t_max_fs) or args.t_max_fs < 0):
         p.error('--t-max-fs must be finite, nonnegative and render-only')
     if args.command != 'plan' and not args.no_render and not args.no_movies and shutil.which('ffmpeg') is None:
@@ -121,7 +125,7 @@ def main(argv=None):
     start = time.perf_counter()
     worker = run_case if args.command == 'run' else render_task
     work = tasks if args.command == 'run' else [(out, not args.no_movies, args.movie_stride,
-        args.nq_display, args.dpi, args.t_max_fs, args.packet_scale) for _, out, _ in tasks]
+        args.nq_display, args.dpi, args.t_max_fs, args.packet_scale, args.png_every_fs) for _, out, _ in tasks]
     if args.jobs == 1:
         for task in work:
             worker(task)
