@@ -1,0 +1,99 @@
+CTMQC 구현 검증 기록 — 2026-11-02, 개발 로컬 CPU
+================================================
+
+범위
+----
+논문 저자의 실행 프로그램을 그대로 재현한 것이 아니라 공개 CTMQC 수식에
+근거한 독립 EL/POL 구현이다. 특히 pair quantum-momentum의 먼 intercept 처리,
+Gaussian 폭, RK4 적분기는 README.txt에 명시한 수치 선택이다.
+아래 결과는 장시간 수렴이나 논문 곡선과의 일치를 인증하지 않는다.
+서버에서 30/40 fs production은 실행하지 않았다.
+
+회귀검사
+--------
+다음 명령으로 63 tests 모두 통과 (50.116 s):
+
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MPLCONFIGDIR=/tmp/pen2026-mpl \
+XDG_CACHE_HOME=/tmp/pen2026-cache PYTHONWARNINGS=ignore python -m unittest \
+  tests.test_pen_ctmqc_2026 tests.test_pen_perspectives_2026 \
+  tests.test_pen_paper_campaign tests.test_pen_png_interval \
+  tests.test_discrete_mcef tests.test_cavity_model -q
+
+사용 Python: /home/hbji/miniconda3/envs/MCEF/bin/python
+신규 12개: analytic gradient/DSE, Wigner sampling, CT pair constraint,
+singular/distant intercept, eigenprojector tracking, g=0 decoupling,
+fixed-R exact unitary reference, 8-case routing, bitwise resume,
+mixed density semantics, time-step convergence.
+기존 51개: 2026 TDSE, paper campaign, PNG cadence, discrete MCEF, cavity model.
+기존 tracked 소스는 이번 변경에서 수정하지 않았다.
+
+짧은 8-case 실행 + 자동 렌더링
+------------------------------
+ROOT: results/20261102/ctmqc_validation_v1
+128 trajectories, seed=2026, dt=0.1 a.u., 약 1.001418 fs,
+every-fs=0.25, initial=paper, g=0.01, DSE off.
+실행 예 (새 ROOT 필요):
+
+python -m multi_component_exact_factorization.pen_ctmqc_2026.workflow run \
+  --out results/20261102/ctmqc_validation_repeat_v1 --ntraj 128 --end-fs 1 \
+  --every-fs .25 --png-every-fs .5 --jobs 2
+
+                           max raw step      max energy      Q guard
+                           norm error        drift (Ha)      disabled/attempted
+nonadiabatic/off/EL         6.069e-10          2.804e-8        143/2660
+nonadiabatic/off/POL        4.250e-12          2.711e-7          0/4965
+nonadiabatic/on/EL          2.631e-9           9.396e-7        292/3052
+nonadiabatic/on/POL         9.394e-12          8.230e-7          0/4965
+rabi/off/EL                 2.258e-10          3.838e-9        448/2796
+rabi/off/POL                2.270e-12          3.198e-11         0/4965
+rabi/on/EL                  2.547e-9           5.280e-9        515/3024
+rabi/on/POL                 4.191e-12          1.110e-11         0/4965
+
+CT-only ensemble population derivative: 最大 약 2.7e-20 / a.u. time.
+이 값은 전체 population의 물리적 변화가 아니라 corrected-Q가 만족해야 할
+CT correction만의 ensemble 제약 오차이다. 전체 population은 변할 수 있다.
+guard 비율은 궤적 비율이 아니라 RK stage의 상태쌍/좌표 보정 평가 횟수 비율이다.
+EL의 5~17% guard 작동은 작다고 단정하지 않으며, 관심 시간 범위의 민감도
+검사가 필요하다. POL의 이 초기 구간 guard=0도 장시간 안정성을 보장하지 않는다.
+
+산출물: PNG 108개, MP4 32개, 전체 약 37.2 MiB.
+ffprobe로 32개 영상의 6개 실제 frame 및 짝수 pixel 크기 확인.
+원본 해상도 PNG를 열어 제목/축/범례/밀도/확대 inset 배치 확인.
+기본 4종: dynamics_overview, CTMQC_fields, slice_diagnostics,
+force_decomposition. numerical_checks.png, EL_POL_comparison.png 별도.
+이 MP4는 렌더링 smoke 결과이며 1 fs 이후의 사건을 보여주는 연구 결과가 아니다.
+
+발견한 불안정성과 민감도
+-----------------------
+초기 구현에서 nonadiabatic/on/EL, 128 trajectories가 step 53에 실패했다.
+signed denominator cancellation으로 intercept가 cloud [-5,5]에 비해
+2000 이상 멀어졌기 때문이다. 해당 pair/direction 전체를 비활성화하는
+명시적 guard를 넣었고 실패 재현 케이스를 회귀검사로 추가했다.
+개별 Q clipping으로 norm/ensemble constraint를 깨거나 실패를 숨기지 않았다.
+
+local_sensitivity.json: EL on-resonance 두 모델, 128 trajectories,
+40 a.u.=0.967554 fs, intercept-limit-sigma=5/10/20 및 dt=.1/.05 비교.
+동일 시각에서 photon number의 guard 간 차이 <=3.2e-6,
+BO excited population 차이 <=7.1e-6. dt 절반의 photon number 차이 <=3.1e-8.
+이 매우 짧은 검사에서의 안정성일 뿐, 독립 seed/ensemble 수/장시간 수렴을
+대체하지 않는다. 기본 CTMQC에는 정확한 에너지 보존 보정이 없다.
+
+자원 추정 (서버 측정 아님)
+-------------------------
+results/20261102/ctmqc_smoke_v1/local_timing.json:
+10,000 trajectories, 10-step (0.0242fs) CPU timing, 저장/렌더 제외:
+  EL 약 0.061 s/step, POL 약 0.163 s/step.
+기본 8-case paper 시간 창의 단순 외삽 전파 합은 약 2.7 worker-hours.
+jobs=2라고 실제 wall time이 정확히 절반임을 보장하지 않는다.
+렌더/저장/CPU/장시간 stiffness에 따라 달라지므로 서버 pilot에서 재측정한다.
+기본 .1fs 저장 간격의 uncompressed frame 추정은 총 약 2.7 GiB이며,
+PNG/MP4/restart까지 고려하여 4~6 GiB 여유를 권장한다.
+
+발표에 쓸 때
+----------
+"독립 CTMQC 구현의 EL/POL 비교"라고 명시한다. 아직 "논문 곡선 재현 완료",
+"TDSE와 exact한 MCEF 장이 동일", "수렴 완료"라고 쓰면 안 된다.
+paper 초기조건은 EL upper CBO, POL bare S1|0>로 서로 다르다. 기존 bare TDSE와
+준비를 맞춘 control은 별도 ROOT에서 --initial bare를 사용한다.
+exact a,b,alpha,epsilon1,epsilon2와 Lambda/Sq/Sadv/Srel은 출력하지 않는다.
+현재 local mean CBO/Pol energy는 full TDPES가 아니다.
