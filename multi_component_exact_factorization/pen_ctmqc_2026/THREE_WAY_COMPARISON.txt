@@ -1,0 +1,206 @@
+QD / CTMQC EL / CTMQC POL — 비교 분석 및 서버 후처리
+=====================================================
+
+0. 먼저 구분할 것
+----------------
+QD = 이 저장소의 finite-Fock TDSE이다. 논문의 photon real-grid QD를 새로
+돌리거나 논문 그림의 수치를 digitize한 결과가 아니다. NF=2 QD/POL과
+classical photon EL의 차이는 알고리즘뿐 아니라 표현 공간의 차이도 포함한다.
+
+이번 비교는 현재 계산에 영향을 주지 않는 별도 후처리다. 기존 CTMQC/TDSE
+전파, checkpoint, dynamics source hash는 바꾸지 않는다. 입력 archive에는
+쓰지 않는다. 큰 field NPZ를 새로 저장하지 않고 snapshot별로 읽어 처리한다.
+
+근거 논문:
+  Different perspectives on the exact factorization for
+  photon-electron-nuclear systems, PCCP 2026, DOI 10.1039/D6CP02020H
+  https://arxiv.org/html/2604.20538v2
+  paper/molecular vibration polariton/Different perspectives on the exact
+  factorization for photon–electron–nuclear systems.pdf
+
+Fig5/8: 비단열 on/off의 photon number와 bare S1 population.
+Fig9/10: Rabi on/off의 같은 물리량. Fig6/7: 상태별 핵 분포, 에너지-위치 분기.
+이 구조를 참고하되 저자의 그림/데이터를 복사하지 않았다. 다음은 자체 코드와
+자체 데이터의 비교이며, 논문에서 어느 방법이 잘 맞았다는 결론을 미리 넣지 않는다.
+
+1. 랩미팅 권장 그림 순서
+-----------------------
+(1) paper_observables_<model>_<dse>_<case>.png
+    2x2: 열은 on/off, 행은 <N>와 P_S1. QD 검정, EL 파랑, POL 주황.
+    세 방법의 공통 관측량을 먼저 비교한다. 진폭, 시점, plateau, Rabi 위상/주기,
+    on/off 차이가 질문이다. 출력 종료 시각이 다르면 공통 시간만 사용한다.
+    on/off는 서로 다른 물리적 시간 창일 수 있으므로 x축까지 강제로 같게 하지 않는다.
+
+(2) common_observables.png
+    <N>, P_S1, 핵 운동에너지, P(R>=4), signed flux, Delta<N>+Delta P_S1.
+    P_S1 감소와 <N> 증가가 동반되면 photon excitation과 연결된 경로를 의심할
+    수 있고, <N> 변화 없이 P_S1만 변하는 사건은 비복사 경로 분석의 후보이다.
+    그러나 이를 엄밀한 radiative/nonradiative branching ratio라고 부르면 안 된다.
+    이 Hamiltonian은 RWA가 아니고 diagonal dipole/counter-rotating terms가 있으므로
+    <N>+P_S1 보존을 가정하지 않는다. cavity bare number는 광검출 신호와도 다르다.
+    R>=4는 지정한 공간 영역의 확률이다. Rabi 모델에서 반응 수율로 해석하지 않는다.
+    flux는 +R 방향이 양수. CT 값은 Gaussian KDE로 추정한 flux이다.
+
+(3) photon_budget.png
+    <N>, omega<q_c^2>/2, <p_c^2>/(2omega), number identity residual.
+    QD: integral dR sum_en n |u_en(R)|^2 / norm.
+    POL: (1/Ntraj) sum_I sum_en n |c_en^I|^2.
+    EL: (1/Ntraj) sum_I [omega(q_c^I)^2/2 + (p_c^I)^2/(2omega) - 1/2].
+    모두 원자단위이며 동일한 bare harmonic oscillator number에 대응한다.
+    EL은 Wigner estimator이며 n=0/1의 양자 확률을 갖지 않는다.
+    EL 초기 N의 유한 표본 오차(작은 음수 포함)는 숨기거나 0으로 자르지 않는다.
+    POL/QD에서는 q^2와 p^2를 full operator에서 투영한다. (PqP)^2를 Pq^2P로
+    착각하지 않는다. 따라서 photon-number 식과 native n expectation의 일치도 검사한다.
+    선택 시각의 QD/POL Fock probabilities도 comparison.json에 저장한다.
+
+(4) density_comparison/ 및 polaritonic_guidance/
+    동일 시각의 핵 밀도, photon-coordinate 분포, bare S0/S1별 핵 밀도.
+    QD/POL은 Pol0~3 reference 위에 state-resolved density를 올려서 분기를 보여준다.
+    packet 높이는 같은 배율을 곱한 확률밀도이지 에너지/운동에너지가 아니다.
+    작은 branch를 각각 1로 정규화하여 큰 branch처럼 보이게 하지 않는다.
+    EL에는 Pol quantum coefficient가 없으므로 Pol population을 만들지 않는다.
+    polaritonic_populations.png는 QD/POL의 각 Pol population만 비교한다.
+    BO S1 population은 세 방법 모두 동일한 bare electronic projector로 정의한다.
+
+(5) potential_context/
+    A: QD epsilon2, GI, GD (positive marginal gauge).
+    B: QD/POL/EL의 조건부 평균 electron-photon subsystem energy + Pol references.
+    C: QD epsilon1(q_c,R_slice), GI, GD.
+    D: 세 방법의 조건부 평균 CBO energy + CBO references.
+    기본 R_slice는 QD 핵 밀도 peak를 따른다. --slice-R 2로 고정할 수도 있다.
+    A/C는 native QD fields. B/D는 동일 표시 해상도에서의 static-operator 기대값.
+    B에서 EL은 classical photon kinetic energy p_c^2/2를 더한다. 저장된 EL의
+    mean_energy에는 이것이 없기 때문에 그대로 쓰면 QD/POL과 비교가 잘못된다.
+    D의 CBO에는 photon kinetic term을 넣지 않는다.
+
+    중요한 해석: B/D가 static branch를 따라간다고 full TDPES가 같다고 할 수 없다.
+    QD에는 geometric, GD, finite-Fock projection 기여가 있다. CTMQC 궤적 자료만으로
+    전체 복소 Psi의 transverse/time phase를 고유하게 복원할 수 없으므로, CTMQC의
+    exact epsilon1/epsilon2/a/b/alpha는 그리지 않는다. 평균 에너지를 GI total이라고도
+    부르지 않는다. 스칼라의 절대 높이 차이로 force 방향을 판단하지 않는다.
+
+(6) force_and_current/
+    A: QD F_EF=-d_R epsilon2 + d_t alpha,
+       -d_R Q_R, 그리고 둘의 합. Q_R=-chi''/(2M chi).
+       합은 QD marginal hydrodynamic acceleration의 force이며 EF field만과 다르다.
+    B: QD conditional interaction force <-d_R(H-T_R)>_Gamma 와
+       EL/POL 실제 trajectory force의 R-bin 평균(MF+CT).
+    C/D: 세 방법의 probability current와 핵 밀도.
+    A와 B는 같은 quantity가 아니다. Wigner ensemble은 Bohmian trajectory가 아니므로
+    CT bin force를 QD hydrodynamic force와 점별 동일해야 한다고 검사하지 않는다.
+    density/current, 전역 운동량 변화, population 분기가 함께 맞는지 읽는다.
+
+(7) differences_and_checks.png + comparison.json
+    QD 기준 <N>/P_S1 차이, 각 방법의 energy drift, boundary warning.
+    JSON은 공통 구간 sample RMS/max observable error, 같은 해상도의 density L1,
+    photon-number identity, source status/guard 횟수/초기 설정을 저장한다.
+    이는 sampling 또는 basis convergence 인증이 아니다. 특히 EL paper 초기조건은
+    upper CBO이고 QD/POL은 bare S1 x vacuum이므로 초기 준비 차이가 포함된다.
+
+2. 밀도, 시간, gauge의 공정한 비교
+---------------------------------
+- QD native R grid에 CT trajectory를 deposit한다. 좁은 QD packet을 다른 grid로
+  재보간하여 질량 오차가 생기는 것을 피한다.
+- 기본 공통 표시 kernel 폭: h_R=sigma_R/sqrt(2), h_q=1/sqrt(2 omega).
+  QD에는 R/q convolution, POL에는 R trajectory KDE/q convolution,
+  EL에는 R/q trajectory KDE를 적용한다. density-width-scale은 표시 전용이다.
+  native QD TDPES/미분은 smoothing하지 않는다.
+- conditional energy는 numerator와 density를 각각 smoothing한 후 나눈다.
+  ratio를 그냥 smoothing하지 않는다. domain 밖 확률은 재정규화로 숨기지 않는다.
+- 에너지/힘 곡선은 해당 marginal density > 최대값*1e-4인 곳만 표시한다.
+  density/surface reference 자체를 그 support 안으로 자르지는 않는다.
+- snapshot은 가장 가까운 실제 saved frame을 선택하며 각 방법의 실제 시각을
+  그림에 쓴다. 복소 wave나 trajectory를 보간하지 않는다.
+  기본 허용 오차는 각 archive 최대 저장 간격의 0.51배이고,
+  --time-tolerance-fs .05처럼 더 엄격하게 지정할 수 있다.
+- scalar time trace의 공통 구간 끝점과 error 계산에만 선형 보간을 사용한다.
+  저장 간격이 큰 CT trace도 짧은 비교 구간에서 선이 사라지지 않게 한다.
+  외삽하거나 wavefunction을 보간하지 않는다.
+- QD nr/dt는 달라도 비교 가능하나 Hamiltonian 파라미터가 다르면 해당 archive를
+  제외한다. QD/POL NF도 일치해야 한다. EL의 NF는 classical photon에 적용되지 않는다.
+- COMPLETE_NOT_CERTIFIED/guard 정보는 matching.json 및 comparison.json에서 확인한다.
+  전파 완료 상태와 과학적 수렴/저자 재현을 혼동하지 않는다.
+
+3. 서버 명령 (계산 종료 후; 재전파 없음)
+--------------------------------------
+cd /home/hbji/exactfactorization
+git pull
+conda activate MCEF
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+export MPLCONFIGDIR=/tmp/pen2026-compare-mpl
+
+# 아래 qd-root는 실제 QD paper campaign ROOT로 바꾼다.
+# 두 ROOT 바로 아래에 nonadiabatic/ 와 rabi/ 가 있어야 한다.
+python -m multi_component_exact_factorization.pen_ctmqc_2026.compare \
+  --ctmqc-root results/20261102/ctmqc_paper_server_v1 \
+  --qd-root results/20261030/pen2026_paper_v1 \
+  --out results/20261102/ctmqc_qd_comparison_v1 \
+  --every-fs 5 --t-max-fs 40
+
+# 위 명령에 추가하면 4개 snapshot family의 MP4도 생성한다.
+# 실제 QD saved frame보다 촘촘한 dynamics를 새로 만드는 옵션은 아니다.
+# --movies --movie-every-fs .25
+
+# 비단열/on 한 경우만, 사건 시각을 직접 지정:
+# --model nonadiabatic --resonance on --case strong --dse off \
+# --snapshot-times 0 5 10 20 25 30 --time-tolerance-fs .1
+
+# 단면을 fixed R로 지정: --slice-R 2
+# 표시 kernel 민감도: 새 out에 --density-width-scale .5
+# 같은 out으로 재실행하면 해당 derived PNG/MP4/JSON만 덮어쓴다.
+# 이전에 만들어진 추가 시각의 파일은 삭제하지 않으므로 새 out 사용을 권장한다.
+
+ROOT/comparison_report.json
+ROOT/paper_observables_<model>_<dse>_<case>.png
+ROOT/<model>/<on|off>/dse_<off|on>/<case>/
+  matching.json, comparison.json
+  common_observables.png, photon_budget.png
+  polaritonic_populations.png, differences_and_checks.png
+  density_comparison/        PNG (+ optional MP4)
+  polaritonic_guidance/      PNG (+ optional MP4)
+  potential_context/        PNG (+ optional MP4)
+  force_and_current/        PNG (+ optional MP4)
+
+자료가 없으면:
+- config/observable missing: 기록하고 나머지 방법만 그림. 세 방법이 다 있는지 확인.
+- Hamiltonian/NF mismatch: 제외하고 경고. 잘못된 resonance를 겹쳐 그리지 않는다.
+- coefficients/trajectory frame missing: time trace는 유지, 해당 snapshot/EF는 unavailable.
+- GI/GD는 기존 native QD analyze에서 계산. 추측하거나 CT 값으로 대체하지 않는다.
+- EL Pol/Fock population은 unavailable로 유지. EL에 quantum photon density matrix를 만들지 않는다.
+- 잘못된/부분 생성 입력은 report에 남긴다. 입력 재시작이나 자동 재전파는 하지 않는다.
+
+4. 구현 위치
+------------
+compare_data.py: archive/physics match, time alignment, matched-resolution adapters,
+                 native QD EF extraction, density/Fock/force metrics.
+compare_plot.py: common observables, photon budget, Pol populations, density,
+                 branch guidance, potential/force context, on/off overview.
+compare.py: CLI, streaming two-pass scale scan, snapshot/MP4 drivers, JSON report.
+tests/test_pen_ctmqc_compare.py: physics mismatch, no extrapolation, photon identity,
+                                density/energy semantics, shared scales, read-only rendering.
+
+5. 개발 시 확인한 범위 (2026-11-02)
+----------------------------------
+기존 저장된 짧은 QD/CTMQC를 읽어 nonadiabatic/rabi x on/off 4그룹의 3-way
+후처리를 수행했다. 입력 dynamics는 다시 전파하지 않았다.
+QD smoke archive와 CTMQC validation archive의 공통 구간은 0~0.101593 fs뿐이다.
+따라서 이 preview로 장시간 정확도나 논문 Rabi 주기의 일치를 주장하지 않는다.
+
+preview: results/20261102/ctmqc_qd_comparison_preview_v2
+PNG 66개 + MP4 16개, 약 14.5 MiB. 각 MP4 3개 실제 saved-frame target,
+짝수 pixel 크기/인코딩을 ffprobe로 확인했다. native PNG에서 축/범례/주석을
+확인하고 하단 범례와 footer 공간을 분리했다. 시간 간격이 다른 CT 자료는
+실제 시각을 표시하므로 영화의 frame 수를 dynamics 시간해상도로 오해하지 않는다.
+photon-number identity residual은 이 자료에서 최대 약 3.4e-16이었다.
+
+신규 tests/test_pen_ctmqc_compare.py의 9개 검사는 synthetic fixture를 사용하며,
+실제 전파 함수를 호출하면 실패하도록 mock하여 read-only 후처리를 검사한다.
+입력 config/observables/coefficient/trajectory 파일의 해시도 전후 일치를 확인한다.
+기존 TDSE/CTMQC/MCEF/cavity 회귀검사를 포함한 총 72 tests가 통과했다
+(53.107 s; python -m unittest tests.test_pen_ctmqc_compare
+tests.test_pen_ctmqc_2026 tests.test_pen_perspectives_2026
+tests.test_pen_paper_campaign tests.test_pen_png_interval
+tests.test_discrete_mcef tests.test_cavity_model -q).
+검증 중 QD의 좁은 초기 packet을 공통 grid로 선형 재보간할 때 작은 mass 오차를
+발견하여, QD가 있으면 native R grid에 CT를 deposit하도록 수정했다.
+전체 자료를 1로 재정규화해서 이 오차를 숨기지 않는다.
