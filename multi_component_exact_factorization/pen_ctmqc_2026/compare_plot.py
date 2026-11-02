@@ -14,11 +14,18 @@ from .compare_data import LABELS
 from .render import STYLE, silhouette, limits
 
 COLOR = {'qd': '#151515', 'el': '#0072B2', 'pol': '#D55E00'}
+LINESTYLE = {'qd': '-', 'el': '--', 'pol': '-.'}
 BRANCH = ['#0072B2', '#D55E00', '#009E73', '#8E44AD']
 
 
 def label(a):
     return LABELS[a.method] if a.method == 'qd' else a.settings.algorithm.upper()+' '+a.method.upper()
+
+
+def method_heading(archives):
+    """Never advertise absent methods, including intentional partial figures."""
+    names = ' / '.join(label(a) for a in archives.values())
+    return names if set(archives) == set(COLOR) else 'PARTIAL: '+names
 
 
 def layout(title, rows=2, cols=2, subtitle=''):
@@ -40,6 +47,7 @@ def finish(ax, title, x, y, xlim=None, ylim=None, zero=False):
         ax.set_ylim(ylim)
     ax.xaxis.set_major_locator(MaxNLocator(5, integer=x.startswith(('$R$', '$q_c$'))))
     ax.yaxis.set_major_locator(MaxNLocator(5))
+    ax.ticklabel_format(axis='y', style='sci', scilimits=(-3, 4), useOffset=False)
     ax.grid(alpha=.15)
     if zero:
         ax.axhline(0, color='.45', ls=':', lw=1, zorder=0)
@@ -69,6 +77,7 @@ def time_line(ax, a, value, interval, name=None):
     display = np.unique(np.r_[interval[0], t[(t > interval[0]) & (t < interval[1])], interval[1]])
     y = np.interp(display, t, value)
     ax.plot(display, y, color=COLOR[a.method], lw=2.4, label=name or label(a),
+            ls=LINESTYLE[a.method],
             marker='.' if len(display) == 1 else None)
 
 
@@ -87,7 +96,7 @@ def trace(ax, archives, key, interval, column=None, transform=None):
 
 
 def observations(archives, interval, title, warning):
-    fig, axs = layout(title+' | Common observables', 3, subtitle='QD vs CTMQC EL vs CTMQC POL; native saved observables')
+    fig, axs = layout(title+' | Common observables', 3, subtitle=method_heading(archives)+'; native saved observables')
     items = [('photon_number', None, r'$\langle N\rangle$', 'Photon number'),
              ('bo_population', 1, r'$P_{S_1}$', 'Bare excited-state population'),
              ('kinetic_R', None, 'Energy (Ha)', 'Nuclear kinetic energy'),
@@ -112,6 +121,14 @@ def photon_budget(archives, interval, title, warning):
     trace(axs[0, 0], archives, 'photon_number', interval)
     trace(axs[0, 1], archives, 'q2', interval, transform=lambda v, a: .5*a.config.omega*v)
     trace(axs[1, 0], archives, 'p2', interval, transform=lambda v, a: v/(2*a.config.omega))
+    if 'el' in archives and 'photon_number_se' in archives['el'].rows[0]:
+        first = archives['el'].rows[0]
+        # Only t=0 draws are independent Wigner samples. Later CTMQC
+        # trajectories interact, so do NOT present their naive SE as a CI.
+        axs[0, 0].text(.03, .95, fr'EL initial $\langle N\rangle={first["photon_number"]:.4f}$'
+                       +fr' $\pm {first["photon_number_se"]:.4f}$ (sampling SE)',
+                       transform=axs[0, 0].transAxes, va='top', fontsize=11,
+                       bbox=dict(facecolor='white', alpha=.85, edgecolor='none'))
     for method, a in archives.items():
         n, q2, p2 = (a.values(k) for k in ('photon_number', 'q2', 'p2'))
         if any(v is None for v in (n, q2, p2)):
@@ -170,7 +187,7 @@ def density(frames, reader, scales, title):
     for method, f in frames.items():
         for ax, x, y in ((axs[0, 0], f['R'], f['rho_R']), (axs[0, 1], f['q'], f['rho_q']),
                          (axs[1, 0], f['R'], f['bo_density'][:, 0]), (axs[1, 1], f['R'], f['bo_density'][:, 1])):
-            ax.plot(x, y, color=COLOR[method], lw=2.4, label=LABELS[method])
+            ax.plot(x, y, color=COLOR[method], ls=LINESTYLE[method], lw=2.4, label=LABELS[method])
     for ax, name, x, xr, yr in zip(axs.flat,
             ('Nuclear density', 'Photon-coordinate probability', 'Nuclear density on bare S0', 'Nuclear density on bare S1'),
             ('$R$ ($a_0$)', '$q_c$ (a.u.)', '$R$ ($a_0$)', '$R$ ($a_0$)'),
@@ -226,9 +243,9 @@ def potential(frames, reader, scales, title, slice_R=None):
         note(axs[1, 0], 'CTMQC TDPES is not reconstructed')
     for method, f in frames.items():
         support = f['rho_R'] > f['rho_R'].max()*1e-4
-        axs[0, 1].plot(reader.R, np.where(support, f['outer_mean_energy'], np.nan), color=COLOR[method], lw=2.4, label=LABELS[method])
+        axs[0, 1].plot(reader.R, np.where(support, f['outer_mean_energy'], np.nan), color=COLOR[method], ls=LINESTYLE[method], lw=2.4, label=LABELS[method])
         support_q = (f['joint'][i] > f['joint'][i].max()*1e-4) & support[i]
-        axs[1, 1].plot(reader.q, np.where(support_q, f['mean_CBO_energy'][i], np.nan), color=COLOR[method], lw=2.4, label=LABELS[method])
+        axs[1, 1].plot(reader.q, np.where(support_q, f['mean_CBO_energy'][i], np.nan), color=COLOR[method], ls=LINESTYLE[method], lw=2.4, label=LABELS[method])
     energies = np.linalg.eigvalsh(local_hamiltonian(reader.c, reader.R))
     for k in range(min(4, energies.shape[1])):
         axs[0, 1].plot(reader.R, energies[:, k], '--', lw=1.3, color=BRANCH[k], alpha=.7)
@@ -263,9 +280,9 @@ def forces(frames, reader, scales, title):
     for method, f in frames.items():
         support = f['rho_R'] > f['rho_R'].max()*1e-4
         name = 'QD conditional interaction force' if method == 'qd' else LABELS[method]+' MF+CT'
-        axs[0, 1].plot(reader.R, np.where(support, f['mf_force']+f['ct_force'], np.nan), color=COLOR[method], lw=2.3, label=name)
-        axs[1, 0].plot(reader.R, f['current_R'], color=COLOR[method], lw=2.3, label=LABELS[method])
-        axs[1, 1].plot(reader.R, f['rho_R'], color=COLOR[method], lw=2.3, label=LABELS[method])
+        axs[0, 1].plot(reader.R, np.where(support, f['mf_force']+f['ct_force'], np.nan), color=COLOR[method], ls=LINESTYLE[method], lw=2.3, label=name)
+        axs[1, 0].plot(reader.R, f['current_R'], color=COLOR[method], ls=LINESTYLE[method], lw=2.3, label=LABELS[method])
+        axs[1, 1].plot(reader.R, f['rho_R'], color=COLOR[method], ls=LINESTYLE[method], lw=2.3, label=LABELS[method])
     for ax, name, ylabel, scale in zip(axs.flat,
             ('QD effective field and quantum-amplitude force', 'Interaction / trajectory forces (not panel A)', 'Nuclear probability current', 'Nuclear density context'),
             ('Force (a.u.)', 'Force (a.u.)', r'Probability / $t_{au}$', 'Probability density'),
@@ -277,7 +294,9 @@ def forces(frames, reader, scales, title):
 
 
 def paper_overview(groups, model, title):
-    fig, axs = layout(title, subtitle='On/off resonance comparison inspired by PCCP 2026 Figs. 5, 8, 9, 10')
+    present = {k: a for archives, _ in groups.values() for k, a in archives.items()}
+    fig, axs = layout(title+' | '+method_heading(present),
+                     subtitle='On/off resonance: common saved time window only')
     for j, resonance in enumerate(('on', 'off')):
         entry = groups.get(resonance)
         if entry is None:
@@ -286,8 +305,11 @@ def paper_overview(groups, model, title):
         archives, interval = entry
         trace(axs[0, j], archives, 'photon_number', interval)
         trace(axs[1, j], archives, 'bo_population', interval, 1)
-        finish(axs[0, j], resonance+'-resonance', '$t$ (fs)', r'$\langle N\rangle$', interval)
-        finish(axs[1, j], resonance+'-resonance', '$t$ (fs)', r'$P_{S_1}$', interval)
+        heading = resonance+f'-resonance | {interval[0]:g}–{interval[1]:.3f} fs'
+        if set(archives) != set(COLOR):
+            heading += ' (partial)'
+        finish(axs[0, j], heading, '$t$ (fs)', r'$\langle N\rangle$', interval)
+        finish(axs[1, j], heading, '$t$ (fs)', r'$P_{S_1}$', interval)
     # Rows compare identical observables, so use exactly the same y limits.
     for row in axs:
         ylim = (min(ax.get_ylim()[0] for ax in row), max(ax.get_ylim()[1] for ax in row))

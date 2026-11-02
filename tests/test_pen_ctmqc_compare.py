@@ -172,6 +172,50 @@ class CTMQCCompareTests(unittest.TestCase):
             self.assertGreaterEqual(len(list((root/'plots').rglob('*.png'))), 8)
             self.assertFalse(list((root/'plots').rglob('*.npz')))
 
+    def test_missing_root_cannot_silently_render_qd_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); _, qd = fixture(root)
+            with patch.object(compare_plot, 'observations', side_effect=AssertionError('No rendering')), \
+                 self.assertRaises(SystemExit) as error:
+                main(['--ctmqc-root', str(root/'typo'), '--qd-root', str(qd), '--out', str(root/'plots')])
+            self.assertEqual(error.exception.code, 2)
+            self.assertFalse((root/'plots').exists())
+
+    def test_incomplete_or_too_short_groups_fail_before_render(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); ct, qd = fixture(root)
+            for extra in (['--require-through-fs', '40'], ['--require-through-fs', 'nan']):
+                with self.assertRaises(SystemExit):
+                    main(['--ctmqc-root', str(ct), '--qd-root', str(qd), '--out', str(root/'plots')]+extra)
+                self.assertFalse((root/'plots').exists())
+            archives, _ = load_group(ct, qd, RELATIVE)
+            with patch('multi_component_exact_factorization.pen_ctmqc_2026.compare.load_group',
+                       return_value=({'qd': archives['qd']}, ['CT missing'])), self.assertRaises(SystemExit):
+                main(['--ctmqc-root', str(ct), '--qd-root', str(qd), '--out', str(root/'plots')])
+            self.assertFalse((root/'plots').exists())
+
+    def test_partial_opt_in_is_labelled_not_advertised_as_three_way(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); _, qd = fixture(root)
+            main(['--ctmqc-root', str(root/'intentionally_absent'), '--qd-root', str(qd),
+                  '--out', str(root/'plots'), '--allow-partial', '--t-max-fs', '0', '--dpi', '60'])
+            import json
+            report = json.loads((root/'plots'/RELATIVE/'matching.json').read_text())
+            self.assertFalse(report['complete_three_way'])
+            self.assertEqual(report['missing_methods'], ['el', 'pol'])
+            archives, _ = load_group(root/'absent', qd, RELATIVE)
+            self.assertIn('PARTIAL', compare_plot.method_heading(archives))
+            self.assertNotIn('CTMQC EL', compare_plot.method_heading(archives))
+
+    def test_coincident_traces_have_distinct_line_styles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ct, qd = fixture(Path(tmp)); archives, _ = load_group(ct, qd, RELATIVE)
+            fig, ax = plt.subplots()
+            for a in archives.values():
+                compare_plot.time_line(ax, a, np.zeros(2), (0., .1))
+            self.assertEqual(len({line.get_linestyle() for line in ax.lines}), 3)
+            plt.close(fig)
+
 
 if __name__ == '__main__':
     unittest.main()

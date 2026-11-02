@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FFMpegWriter
 from ..pen_perspectives_2026.model import local_hamiltonian
 from ..pen_perspectives_2026.workflow import atomic_json
-from .compare_data import (load_group, overlap, aligned_errors, nearest_frame,
+from .compare_data import (METHODS, load_group, overlap, aligned_errors, nearest_frame,
                            choose_snapshots, FrameReader, snapshot_metrics)
 from . import compare_plot as plot
 from .render import STYLE, limits
@@ -94,8 +94,19 @@ def render_group(archives, warnings, relative, out, args):
     out.mkdir(parents=True, exist_ok=True)
     title = str(relative).replace('/', ' | ')
     interval = overlap(archives, args.t_max_fs)
+    missing_methods = [m for m in METHODS if m not in archives]
+    if missing_methods:
+        title += ' | PARTIAL: '+', '.join(m.upper() for m in archives)
+    source_intervals = {k: [float(a.values('t_fs')[0]), float(a.values('t_fs')[-1])]
+                        for k, a in archives.items()}
+    warnings = list(warnings)
+    if interval is not None and args.t_max_fs is not None and interval[1] < args.t_max_fs-1e-9:
+        warnings.append(f'Requested {args.t_max_fs:g} fs, but common saved data end at {interval[1]:.6f} fs; no extrapolation.')
+        print(f'TIME COVERAGE {relative}: {warnings[-1]}', flush=True)
     report = dict(group=str(relative), methods=list(archives), warnings=warnings,
         sources={k: str(a.path.resolve()) for k, a in archives.items()}, common_time_fs=interval,
+        complete_three_way=not missing_methods, missing_methods=missing_methods,
+        requested_t_max_fs=args.t_max_fs, source_intervals_fs=source_intervals,
         source_status={k: a.status.get('status', 'unknown') for k, a in archives.items()},
         source_numerical_checks={k: a.status for k, a in archives.items()},
         trajectory_settings={k: vars(a.settings) for k, a in archives.items() if a.settings is not None},
@@ -112,6 +123,10 @@ def render_group(archives, warnings, relative, out, args):
             else 'Common bare preparation where available; EL photon space remains classical.')
     if any('SKIPPED' in w for w in warnings):
         warn += ' A mismatched archive was excluded; see matching.json.'
+    if missing_methods:
+        warn = 'PARTIAL comparison: missing '+', '.join(m.upper() for m in missing_methods)+'. '+warn
+    if args.t_max_fs is not None and interval[1] < args.t_max_fs-1e-9:
+        warn += f' Common data only through {interval[1]:.3f} fs (requested {args.t_max_fs:g} fs).'
     errors = aligned_errors(archives, interval)
     report['observable_errors'] = errors
     report['photon_number_identity_max_abs'] = {}
@@ -195,6 +210,10 @@ def parser():
     p.add_argument('--resonance', choices=['both', 'on', 'off'], default='both')
     p.add_argument('--case', choices=['all', 'zero', 'weak', 'strong'], default='all')
     p.add_argument('--dse', choices=['both', 'on', 'off'], default='both')
+    p.add_argument('--allow-partial', action='store_true',
+                   help='Explicitly permit fewer than QD+EL+POL; partial figures are labelled. Default skips incomplete groups.')
+    p.add_argument('--require-through-fs', type=float,
+                   help='Require all included observable archives through this time; reject shorter groups before rendering')
     p.add_argument('--every-fs', type=float, default=5., help='Snapshot PNG cadence, include endpoints')
     p.add_argument('--snapshot-times', type=float, nargs='+', help='Explicit fs times, nearest actual frames')
     p.add_argument('--t-max-fs', type=float)
@@ -213,7 +232,7 @@ def main(argv=None):
     nums = [args.every_fs, args.movie_every_fs, args.density_width_scale]
     if not np.all(np.isfinite(nums)) or min(nums) <= 0:
         p.error('Positive finite cadence and density-width-scale required')
-    for value in (args.t_max_fs, args.time_tolerance_fs):
+    for value in (args.t_max_fs, args.time_tolerance_fs, args.require_through_fs):
         if value is not None and (not np.isfinite(value) or value < 0):
             p.error('Time limits/tolerance must be finite and nonnegative')
     if args.snapshot_times is not None and (not np.all(np.isfinite(args.snapshot_times)) or min(args.snapshot_times) < 0):
@@ -226,6 +245,11 @@ def main(argv=None):
         p.error('ffmpeg required for --movies; omit it for PNGs')
     if args.out.resolve() in (args.ctmqc_root.resolve(), args.qd_root.resolve()):
         p.error('Use a separate comparison output directory, not an input root')
+    if not args.allow_partial:
+        for name, root in (('CTMQC', args.ctmqc_root), ('QD', args.qd_root)):
+            if not root.is_dir():
+                p.error(f'{name} root does not exist: {root}. Check the actual pilot/production path; '
+                        'no comparison was generated. --allow-partial is only for intentional partial views.')
     groups = sorted({path.relative_to(root) for root in (args.ctmqc_root, args.qd_root)
                      for path in root.glob('*/*/dse_*/*') if path.is_dir() and path.name in ('zero', 'weak', 'strong')})
     groups = [g for g in groups if (args.model == 'all' or g.parts[0] == args.model)
@@ -234,15 +258,31 @@ def main(argv=None):
               and (args.case == 'all' or g.parts[3] == args.case)]
     if not groups:
         p.error('No scenario folders found. Roots must contain model/on|off/dse_off|on/case/')
-    args.out.mkdir(parents=True, exist_ok=True)
-    started, reports, summary = time.perf_counter(), [], {}
+    # Validate all sources BEFORE creating figures. A wrong CT root must never
+    # silently turn a three-way comparison into a QD-only 40-fs movie.
+    started, reports, summary, ready = time.perf_counter(), [], {}, []
     for relative in groups:
         archives, warnings = load_group(args.ctmqc_root, args.qd_root, relative)
         for warning in warnings:
             print(f'{relative}: {warning}', flush=True)
-        if not archives:
-            reports.append(dict(group=str(relative), skipped='No readable archive', warnings=warnings))
+        missing = [m for m in METHODS if m not in archives]
+        reason = None
+        if not archives or (missing and not args.allow_partial):
+            reason = 'Missing/mismatched required methods: '+', '.join(missing)
+        elif args.require_through_fs is not None:
+            interval = overlap(archives)
+            if interval is None or interval[1] < args.require_through_fs-1e-9:
+                reason = f'Common data do not reach required {args.require_through_fs:g} fs'
+        if reason is not None:
+            reports.append(dict(group=str(relative), skipped=reason, methods=list(archives), warnings=warnings))
+            print(f'SKIP {relative}: {reason}', flush=True)
             continue
+        ready.append((relative, archives, warnings))
+    if not ready:
+        p.error('No eligible comparison groups. Check CTMQC/QD roots, filters, Hamiltonians and time coverage. '
+                'Nothing was rendered. Use --allow-partial only if a partial figure is intended.')
+    args.out.mkdir(parents=True, exist_ok=True)
+    for relative, archives, warnings in ready:
         # Failures in derived figures must not alter/restart any simulation.
         try:
             report, interval = render_group(archives, warnings, relative, args.out/relative, args)
@@ -255,11 +295,13 @@ def main(argv=None):
             print(f'COMPARISON FAILED {relative}: {error}', flush=True)
     with plt.rc_context(STYLE):
         for (model, dse, case), data in summary.items():
-            fig = plot.paper_overview(data, model, f'{model} | {dse} | {case} | QD / EL / POL')
+            fig = plot.paper_overview(data, model, f'{model} | {dse} | {case}')
             fig.savefig(args.out/f'paper_observables_{model}_{dse}_{case}.png', dpi=args.dpi)
             plt.close(fig)
     atomic_json(args.out/'comparison_report.json', dict(wall_seconds=time.perf_counter()-started,
         groups=reports, source_ctmqc=str(args.ctmqc_root.resolve()), source_qd=str(args.qd_root.resolve()),
+        allow_partial=args.allow_partial, require_through_fs=args.require_through_fs,
+        rendered_groups=len(ready), skipped_groups=len(groups)-len(ready),
         no_propagation=True, no_input_writes=True, paper='https://doi.org/10.1039/D6CP02020H'))
     if any('error' in report for report in reports):
         raise SystemExit('Some comparison groups failed; see comparison_report.json. Input calculations unchanged.')

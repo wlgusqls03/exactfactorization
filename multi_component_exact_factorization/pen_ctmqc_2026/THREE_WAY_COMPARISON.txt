@@ -129,13 +129,20 @@ conda activate MCEF
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
 export MPLCONFIGDIR=/tmp/pen2026-compare-mpl
 
-# 아래 qd-root는 실제 QD paper campaign ROOT로 바꾼다.
+# 아래 ROOT는 실제 계산 결과가 있는 경로로 지정한다.
+# 2026-11-02에 확인한 실제 CT 결과는 pilot_server_v1(1 fs, 1000 trajectories)이다.
+# paper_server_v1이라는 예시 경로를 실제 결과 경로로 혼동하지 않는다.
 # 두 ROOT 바로 아래에 nonadiabatic/ 와 rabi/ 가 있어야 한다.
 python -m multi_component_exact_factorization.pen_ctmqc_2026.compare \
-  --ctmqc-root results/20261102/ctmqc_paper_server_v1 \
+  --ctmqc-root results/20261102/ctmqc_pilot_server_v1 \
   --qd-root results/20261030/pen2026_paper_v1 \
-  --out results/20261102/ctmqc_qd_comparison_v1 \
+  --out results/20261102/ctmqc_qd_comparison_checked_v2 \
+  --case strong --dse off \
   --every-fs 5 --t-max-fs 40
+
+# 위 명령은 공통 저장 구간까지만 그린다. 아직 CT가 1 fs라면 40 fs가 되지 않는다.
+# 반드시 40 fs 자료가 있는 경우에만 그리려면 --require-through-fs 40을 추가한다.
+# 40 fs 이어가기 및 실제 서버자료 점검 결과: SERVER_AUDIT_20261102.txt
 
 # 위 명령에 추가하면 4개 snapshot family의 MP4도 생성한다.
 # 실제 QD saved frame보다 촘촘한 dynamics를 새로 만드는 옵션은 아니다.
@@ -161,8 +168,13 @@ ROOT/<model>/<on|off>/dse_<off|on>/<case>/
   potential_context/        PNG (+ optional MP4)
   force_and_current/        PNG (+ optional MP4)
 
-자료가 없으면:
-- config/observable missing: 기록하고 나머지 방법만 그림. 세 방법이 다 있는지 확인.
+자료가 없으면 (2026-11-02 안전 처리 수정):
+- 입력 root 자체가 없으면 기본적으로 즉시 실패하며 아무 그림도 만들지 않는다.
+- 기본값은 QD/EL/POL 세 방법이 모두 있는 group만 그림. 나머지는 skipped로 기록.
+  전부 누락/불일치이면 실패한다. QD만 있는데 세 방법의 비교인 것처럼 만들지 않는다.
+- 의도한 부분 비교만 --allow-partial로 허용한다. 실제 포함된 방법과 PARTIAL 표시를 붙인다.
+- --require-through-fs T: 포함된 방법 모두 T fs를 갖는 group만 허용한다.
+- --t-max-fs T는 표시 상한일 뿐, 부족한 CT 데이터를 생성하거나 외삽하지 않는다.
 - Hamiltonian/NF mismatch: 제외하고 경고. 잘못된 resonance를 겹쳐 그리지 않는다.
 - coefficients/trajectory frame missing: time trace는 유지, 해당 snapshot/EF는 unavailable.
 - GI/GD는 기존 native QD analyze에서 계산. 추측하거나 CT 값으로 대체하지 않는다.

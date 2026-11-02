@@ -1,0 +1,185 @@
+2026-11-02 서버 CTMQC pilot 자료 점검 / 40 fs 이어가기
+====================================================
+
+1. 실제 받은 자료와 결론
+-----------------------
+CTMQC: results/20261102/ctmqc_pilot_server_v1
+QD:    results/20261030/pen2026_paper_v1
+기존 비교: results/20261102/ctmqc_qd_comparison_v1
+
+CT는 nonadiabatic/rabi x on/off x EL/POL = 8개, 모두 strong g=0.01,
+DSE off, Ntraj=1000, seed=2026, dt=0.1 au, 저장 간격 요청=0.1 fs이다.
+모든 케이스가 step=414, t=1.00141811120648 fs까지 끝났다. 40 fs 계산이 아니다.
+저장 간격은 정수 step으로 반올림되어 보통 41 step=0.09917425739 fs이다.
+각 케이스에는 초기/종료 포함 frame 12개와 정상 restart.npz가 있다.
+
+NaN/Inf, frame/restart shape/시간/계수 불일치 없음.
+초기 frame은 기록된 seed/초기조건으로 재생성한 값과 정확히 일치했다.
+최종 restart에서 energy/N/BO/Pol/CBO/kinetic 등을 다시 계산한 차이: 0.
+저장된 coefficient norm 최대 오차: 1.12e-15 이하.
+재정규화 전 RK step norm 최대 오차: 8.30e-9 이하.
+최대 energy 변화: 8.75669e-7 Ha (nonadiabatic/on/EL).
+box 밖 trajectory fraction: 0.
+EL pair/direction guard 적용률: 0.60%, 0.915%, 3.740%, 1.695%
+  (nonadiabatic/off, nonadiabatic/on, rabi/off, rabi/on; 모든 RK stage 누적).
+POL guard 적용률: 0%.
+
+판정: 1 fs의 저장 무결성과 짧은 구간 계산은 정상. 40 fs 안정성/수렴 인증은 아님.
+guard는 궤적을 삭제한 비율이 아니라 ill-conditioned pair/direction을 비활성화한
+횟수의 비율이다. 긴 구간에서는 dt, seed, Ntraj, bandwidth, guard 의존성을 확인한다.
+COMPLETE_NOT_CERTIFIED는 의도한 상태명이다. norm만으로 논문 재현을 인증하지 않는다.
+CTMQC approximate dynamics는 total energy를 정확히 보존한다고 가정하면 안 된다.
+core.py / quantum_momentum.py / QD model.py를 이번 점검에서 변경하지 않았다.
+기존 checkpoint의 dynamics hash가 모두 현재 코드와 일치한다.
+
+2. 발견하여 수정한 비교 문제
+---------------------------
+기존 비교 JSON의 source_ctmqc는 ctmqc_paper_server_v1이었다.
+실제 pilot_server_v1과 경로가 달랐다. 9개 비교 group 모두 methods=['qd']였다.
+따라서 기존 40 fs 비교 그림은 QD-only이며 CTMQC 비교 결과로 사용하면 안 된다.
+원자료/기존 그림은 삭제하거나 덮어쓰지 않았다.
+
+compare.py는 이제 기본적으로 QD+EL+POL이 모두 있는 group만 그린다.
+없는 root 또는 모든 group 불일치는 그림 생성 전 실패한다.
+의도한 부분 비교만 --allow-partial로 허용하고 PARTIAL 표기를 넣는다.
+--require-through-fs 40은 모든 포함된 방법이 실제로 40 fs까지 있어야 허용한다.
+--t-max-fs는 그림의 상한이며 짧은 자료를 40 fs까지 연장하지 않는다.
+QD/EL/POL의 색뿐 아니라 실선/파선/일점쇄선을 다르게 하여 겹침도 확인할 수 있다.
+EL 초기 photon-number의 Wigner sampling standard error도 표시한다.
+
+3. 다시 만든 실제 세 방법 비교 (0–1 fs, 재전파 없음)
+---------------------------------------------------
+results/20261102/ctmqc_qd_comparison_checked_v2/
+  paper_observables_nonadiabatic_dse_off_strong.png
+  paper_observables_rabi_dse_off_strong.png
+  <model>/<on|off>/dse_off/strong/
+    common_observables.png
+    photon_budget.png
+    polaritonic_populations.png
+    differences_and_checks.png
+    density_comparison/       PNG, MP4
+    polaritonic_guidance/     PNG, MP4
+    potential_context/       PNG, MP4
+    force_and_current/        PNG, MP4
+    matching.json, comparison.json
+
+PNG 66개, MP4 16개. 각 movie는 실제 저장 시각을 매칭한 11 frame이며
+짧은 pilot의 후처리 확인용이다. 40 fs movie가 아니며 시간을 보간한 wave도 없다.
+4개 group 모두 실제 methods=['qd','el','pol']임을 확인했다.
+
+QD 대비 0–1 fs 저장 시각에서 POL 최대 차이:
+                         <N>          P_S1
+nonadiabatic/off          1.945e-5     6.558e-6
+nonadiabatic/on           7.317e-5     7.483e-5
+rabi/off                 1.318e-5     5.10e-8
+rabi/on                  9.132e-6     1.63e-7
+
+위 수치는 finite-Fock QD와의 비교이며 논문 photon-grid QD와의 오차가 아니다.
+긴 시간에도 이 정도로 맞는다는 뜻이 아니다. 초기 핵 density의 matched-kernel
+L1 차이 약 0.0094에는 Ntraj=1000 표본 오차가 포함된다.
+EL 초기 <N>=0.0113768, sampling SE=0.0158227. photon generation의 증거가 아니다.
+EL은 upper local CBO, QD/POL은 bare S1 x photon vacuum으로 준비되어 있다.
+같은 초기 bare 준비의 비교를 원하면 별도 --initial bare run이 필요하며 resume 불가.
+CT trajectory만으로 고유한 exact epsilon/a/b/alpha를 재구성하지 않는다.
+potential_context의 QD TDPES와 CT conditional mean static energy는 구분되어 있다.
+
+4. 서버 실행: 현재 1,000개 궤적 유지, 8개 모두 40 fs까지
+----------------------------------------------------
+로컬 수정 commit을 GitHub에 push한 뒤 서버에서:
+
+cd /home/hbji/exactfactorization
+git pull --ff-only
+conda activate MCEF
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+export MPLCONFIGDIR=/tmp/pen-ctmqc-2026-mpl
+
+# 먼저 저장 파일/checkpoint 점검. 입력에는 쓰지 않는다.
+python -m multi_component_exact_factorization.pen_ctmqc_2026.audit \
+  --root results/20261102/ctmqc_pilot_server_v1 \
+  --out results/20261102/ctmqc_server_audit_v1/before_resume.json --target-fs 40
+
+# 권장 중간 점검: 5 fs까지만 전파, 이 단계에서는 rendering 생략.
+bash multi_component_exact_factorization/pen_ctmqc_2026/run_server.sh run \
+  results/20261102/ctmqc_pilot_server_v1 \
+  --model all --resonance both --perspective both --case strong --dse off \
+  --ntraj 1000 --seed 2026 --dt 0.1 --every-fs 0.1 --initial paper \
+  --end-fs 5 --resume --jobs 2 --no-render
+
+python -m multi_component_exact_factorization.pen_ctmqc_2026.audit \
+  --root results/20261102/ctmqc_pilot_server_v1 \
+  --out results/20261102/ctmqc_server_audit_v1/after_5fs.json --target-fs 40
+
+# after_5fs.json의 energy/guard/norm 및 실패 여부를 보고 다음 단계로 진행.
+# 파일검사 PASS가 에너지/표본 수렴을 대신하지 않는다.
+# 1 fs checkpoint에서 바로 40 fs로 갈 때도 아래 명령은 동일하다.
+bash multi_component_exact_factorization/pen_ctmqc_2026/run_server.sh run \
+  results/20261102/ctmqc_pilot_server_v1 \
+  --model all --resonance both --perspective both --case strong --dse off \
+  --ntraj 1000 --seed 2026 --dt 0.1 --every-fs 0.1 --initial paper \
+  --end-fs 40 --resume --jobs 2 --movie-stride 2 --png-every-fs 5 \
+  --tdse-root results/20261030/pen2026_paper_v1
+
+# 위 계산은 각 케이스의 plots/에 CT 영상/그림을 자동으로 다시 만든다.
+# --movie-stride 2는 약 0.2 fs마다 movie frame; 저장/전파 간격은 바꾸지 않는다.
+# ROOT 경로에 pilot이라는 이름이 남아 있어도 status.json이 실제 종료 시간을 표시한다.
+# Ntraj=10000 또는 dt/seed/bandwidth/guard 변경은 같은 checkpoint로 이어갈 수 없다.
+
+# 40 fs 세 방법 비교. 기존 잘못된 QD-only 폴더와 분리한다.
+python -m multi_component_exact_factorization.pen_ctmqc_2026.compare \
+  --ctmqc-root results/20261102/ctmqc_pilot_server_v1 \
+  --qd-root results/20261030/pen2026_paper_v1 \
+  --out results/20261102/ctmqc_qd_comparison_40fs_v2 \
+  --model all --resonance both --case strong --dse off \
+  --t-max-fs 40 --require-through-fs 40 --every-fs 5 \
+  --movies --movie-every-fs 0.25
+
+python -m multi_component_exact_factorization.pen_ctmqc_2026.audit \
+  --root results/20261102/ctmqc_pilot_server_v1 \
+  --out results/20261102/ctmqc_server_audit_v1/after_40fs.json --target-fs 40
+
+5. 실제 서버 pilot 기반 시간/용량 외삽 (측정된 40 fs 결과가 아님)
+-------------------------------------------------------------
+서버 1 fs propagation: EL 약 8초/케이스, POL 약 18–20초/케이스.
+1->40 fs 추가 전파 외삽: EL 5.2–5.3분/케이스, POL 11.7–12.8분/케이스.
+8개 합산 약 71 CPU-worker 분. jobs=2 이상적 약 35분이나 CPU 경합/후반
+quantum-momentum 처리 비용에 따라 늘어날 수 있다.
+
+중요: 위 시간에는 그림/영상이 없다. 서버 기존 render는 12 frame에 약 30초였다.
+40 fs/0.1 fs 저장, movie-stride=2이면 약 202 movie frame/케이스이므로,
+8개 자체 render도 약 1시간 이상의 worker 시간이 추가될 수 있다.
+여기에 별도 세 방법 비교 생성까지 포함해 jobs=2 기준 약 1.5–2.5시간을
+우선 작업창으로 잡는다. 실제 서버 부하 및 해상도에 따라 달라지는 예상이다.
+
+8개 추가 trajectory frame: 비압축 배열 약 0.411 GiB (헤더 제외),
+초기 압축률 단순 외삽 약 0.332 GiB. 원자료만으로 수십 GB가 필요하지 않다.
+초기보다 압축률이 나빠질 수 있다. JSON/restart/PNG/MP4 및 비교 결과를 포함해
+2–3 GiB 여유를 권장한다. 오래된 비교 폴더는 이 작업에서 삭제하지 않았다.
+--movie-stride 1이면 영상 생성량/시간이 증가한다. --no-render면 전파만 수행 가능.
+
+6. 로컬에서 수행하지 않은 일
+---------------------------
+8개 40 fs CTMQC production은 로컬에서 수행하지 않았다.
+기존 서버 입력을 읽어 검사/재렌더했고 회귀검사에는 아주 짧은 합성 run만 썼다.
+실제 40 fs의 CT guard, 에너지 변화, sampling convergence, 논문 정량 재현은
+서버의 장시간 결과와 추가 수렴 검사 후 판단해야 한다.
+
+7. 이번 검증 기록
+-----------------
+unittest 79개 통과 (54.165 s):
+  tests.test_pen_ctmqc_audit, tests.test_pen_ctmqc_compare,
+  tests.test_pen_ctmqc_2026, tests.test_pen_perspectives_2026,
+  tests.test_pen_paper_campaign, tests.test_pen_png_interval,
+  tests.test_discrete_mcef, tests.test_cavity_model.
+CT 입력 PNG 108개 + 수정 비교 PNG 66개: 파일 무결성 검사 통과.
+CT MP4 32개(각 12 frame) + 수정 비교 MP4 16개(각 11 frame):
+ffprobe 검사 및 ffmpeg 전체 frame 디코딩 오류 없음.
+40 fs 명령의 build_tasks/preflight만 실제 8개 checkpoint에 실행: 모두 통과.
+기존 입력에는 쓰지 않았으며 장시간 전파는 수행하지 않았다.
+
+변경 위치:
+  audit.py: audit_case(), main() — 입력 파일/관측량/restart 무결성, 비용 외삽.
+  compare.py: render_group(), parser(), main() — 입력 누락/공통 시간 보호.
+  compare_plot.py: method_heading(), time_line(), photon_budget(), paper_overview()
+                  및 비교선 — 실제 포함 방법, 겹침 구분, 초기 sampling SE.
+  tests/test_pen_ctmqc_audit.py, tests/test_pen_ctmqc_compare.py — 회귀검사.
+  THREE_WAY_COMPARISON.txt, 본 문서 — 실제 경로 및 서버 명령.
