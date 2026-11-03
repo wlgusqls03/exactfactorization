@@ -210,6 +210,9 @@ movie도 실제 snapshot만 사용한다. PNG 선택은 전파 간격을 바꾸�
 ROOT/<model>/<resonance>/dse_<...>/<case>/perspective_comparison/
   EL_POL_comparison.png, comparison.json
 ROOT/ctmqc_campaign_report.json: case별 실제 시간/용량/상태.
+  한 case가 실패해도 다른 대기 case는 끝까지 수행한다. 실패 case를 자동 재시도하거나
+  허용오차를 늘리지 않는다. 실패가 있으면 자동 비교는 건너뛰고 마지막에 nonzero 종료.
+  dynamics의 status와 task/render 실패는 별도 기록된다.
 
 기본 8개, Ntraj=10000, every=.1fs의 원시 frame 추정은 약 2.7 GiB(ZIP 이전).
 압축에 따라 작아지지만 PNG/MP4/restart가 추가된다. 여유 4~6 GiB를 권장하며,
@@ -227,6 +230,9 @@ ROOT/ctmqc_campaign_report.json: case별 실제 시간/용량/상태.
 core.py: Settings, hamiltonian, Engine.initial/evaluate/step, observables
 quantum_momentum.py: density_quantum_momentum, coupled_terms
 workflow.py: simulate, identity, build_tasks/preflight, CLI
+  execute_tasks: case별 실패 격리; 전체 종료 후 실패 보고
+checkpoint_probe.py: 원본 restart를 바꾸지 않는 <=1fs 시간 간격 점검
+  실패 복구 절차/서버 명령: SERVER_RECOVERY_20261103.txt
 diagnostics.py: mixed ensemble deposition, prepare_frame
 render.py: overview/fields/slices/corrections/numerical_checks/render_case/comparison
 tests/test_pen_ctmqc_2026.py: analytic force, norm, pair constraint, guard,

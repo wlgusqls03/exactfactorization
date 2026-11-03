@@ -4,7 +4,7 @@ TDSE archives are read only for optional comparison, never used to propagate
 CTMQC or to manufacture its wavefunction. No previous output is overwritten.
 """
 import argparse
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict
 import hashlib
 import json
@@ -244,6 +244,46 @@ def render_task(task):
                        png_every_fs=opts['png_every_fs'], dpi=opts['dpi'], t_max_fs=opts['t_max_fs'])
 
 
+def execute_tasks(tasks, action, jobs):
+    """Finish independent cases even if another case fails its numerical guard.
+
+    A failed action is NOT retried and no dynamics tolerance is changed. In
+    particular, consume every submitted future rather than abandoning a map
+    iterator on its first exception (which can cancel not-yet-started work).
+    KeyboardInterrupt/SystemExit still propagate: user cancellation is not a
+    recoverable case failure. Results retain input order for the campaign log.
+    """
+    results = [None]*len(tasks)
+
+    def record(index, error=None):
+        out = str(tasks[index][2])
+        results[index] = dict(path=out, task_status='FAILED' if error else 'SUCCEEDED',
+                              task_error=repr(error) if error else None)
+        print(f'{results[index]["task_status"]} {out}'
+              + (f': {error!r}; continuing other cases' if error else ''), flush=True)
+
+    if jobs == 1:
+        for index, task in enumerate(tasks):
+            try:
+                action(task)
+            except Exception as error:
+                record(index, error)
+            else:
+                record(index)
+    else:
+        with ProcessPoolExecutor(max_workers=jobs) as pool:
+            pending = {pool.submit(action, task): i for i, task in enumerate(tasks)}
+            for future in as_completed(pending):
+                index = pending[future]
+                try:
+                    future.result()
+                except Exception as error:
+                    record(index, error)
+                else:
+                    record(index)
+    return results
+
+
 def main(argv=None):
     p = parser()
     args = p.parse_args(argv)
@@ -275,25 +315,41 @@ def main(argv=None):
     if args.command in ('run', 'render') and not args.no_render and not args.no_movies and shutil.which('ffmpeg') is None:
         p.error('ffmpeg missing; use --no-movies')
     args.out.mkdir(parents=True, exist_ok=True)
+    task_results = []
     if args.command in ('run', 'render'):
         action = run_task if args.command == 'run' else render_task
-        if args.jobs == 1:
-            for task in tasks:
-                action(task)
-        else:
-            with ProcessPoolExecutor(max_workers=args.jobs) as pool:
-                list(pool.map(action, tasks))
-    if args.command != 'run' or not args.no_render:
-        from .render import comparison
-        comparison(args.out, tdse_root=args.tdse_root, t_max_fs=args.t_max_fs)
+        task_results = execute_tasks(tasks, action, args.jobs)
+    failures = [r for r in task_results if r['task_status'] == 'FAILED']
+    comparison_status, comparison_error = 'not_requested', None
+    if failures:
+        comparison_status = 'skipped_task_failure'
+        print('Comparison skipped: failed cases need diagnosis, not an implicit partial comparison.', flush=True)
+    elif args.command != 'run' or not args.no_render:
+        try:
+            from .render import comparison
+            comparison(args.out, tdse_root=args.tdse_root, t_max_fs=args.t_max_fs)
+            comparison_status = 'complete'
+        except Exception as error:
+            comparison_status, comparison_error = 'failed', repr(error)
     report = []
     for _, _, out, _ in tasks:
-        status = json.loads((out/'status.json').read_text())
+        # An action can fail before it creates status.json (e.g. an I/O error).
+        # Preserve that failure in the campaign report instead of hiding it
+        # behind a second FileNotFoundError during report generation.
+        try:
+            status = json.loads((out/'status.json').read_text())
+        except (OSError, ValueError) as error:
+            status = dict(status='UNAVAILABLE', status_read_error=repr(error))
         report.append(dict(path=str(out), **status,
             bytes=sum(f.stat().st_size for f in out.rglob('*') if f.is_file())))
     atomic_json(args.out/'ctmqc_campaign_report.json', dict(cases=report,
+        tasks=task_results, failed_tasks=failures, comparison_status=comparison_status,
+        comparison_error=comparison_error,
         total_bytes=sum(r['bytes'] for r in report),
         note='Measured local/server hostname in provenance. No claim of author-code or sampling convergence.'))
+    if failures or comparison_error:
+        raise SystemExit(f'{len(failures)} case task(s) failed; comparison={comparison_status}. '
+                         f'See {args.out}/ctmqc_campaign_report.json. Checkpoints were not discarded.')
 
 
 if __name__ == '__main__':

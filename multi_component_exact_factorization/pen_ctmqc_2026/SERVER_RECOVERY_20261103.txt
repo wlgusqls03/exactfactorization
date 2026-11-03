@@ -1,0 +1,148 @@
+2026-11-03: 서버 40 fs CTMQC 중단 진단과 안전한 다음 단계
+=======================================================
+
+1. 사용자에게서 받은 서버 상태 (새 restart는 아직 로컬에 없음)
+------------------------------------------------------------
+nonadiabatic/off/EL: 40.001090 fs 완료
+nonadiabatic/off/POL: 30.347323 fs 마지막 저장; raw norm error 1.10728e-5
+nonadiabatic/on/EL: 25.289436 fs 마지막 저장; raw norm error 2.8097e-5
+nonadiabatic/on/POL: 32.727505 fs 마지막 저장; raw norm error 1.00808e-5
+rabi/off/EL, POL: 1.001418 fs까지만 완료
+rabi/on/EL, POL: 40.001090 fs 완료
+QD 네 경우: 모두 40.001090 fs 완료
+
+따라서 strict 40 fs QD/EL/POL 비교가 rabi/on만 생성된 것은 정상적인 보호 동작이다.
+--t-max-fs는 시간을 늘려주지 않으며 --require-through-fs를 제거해서 부족한 데이터를
+40 fs 결과처럼 보이면 안 된다. COMPLETE_NOT_CERTIFIED는 수렴 인증이 아니다.
+
+2. 무엇이 실패했는가
+-------------------
+core.Engine.step()의 coupled RK4 한 단계 후, 재정규화 전 다음 값을 검사한다:
+  max_I |sum_l |c_l^I|^2 - 1| <= 1e-5.
+I는 trajectory, l은 quantum state. 전체 ensemble 확률 손실을 뜻하지 않는다.
+실패 단계는 채택하지 않으며 마지막 atomic restart는 보존된다.
+저장까지의 파일이 유효하다는 사실도 앞선 전체 동역학의 수렴을 인증하지 않는다.
+
+큰 norm 오차의 세부 원인은 아직 미확정이다. dt, 큰 CT 계수 변화율,
+population-threshold/quantum-momentum guard 전환 등의 영향을 실제 실패 직전
+checkpoint에서 검사해야 한다. 이 수정에서는 core.py, quantum_momentum.py,
+pen_perspectives_2026/model.py, norm threshold, Hamiltonian을 바꾸지 않았다.
+dt=.05 --resume은 원래 identity 검사에서 거부된다. config/identity를 손으로
+바꾸거나 norm threshold를 완화해서 우회하지 않는다.
+
+이전 workflow는 list(pool.map(...))의 첫 예외로 map iterator가 닫힐 수 있었다.
+이 경우 아직 시작하지 않은 future가 취소될 수 있다. rabi/off가 1fs에 남은
+상태와 부합하지만 실제 실행 순서를 로그 없이 단정하지는 않는다.
+새 execute_tasks는 모든 future를 개별 확인하여 다른 case를 계속 실행한다.
+실패는 최종 보고/종료 코드에 보존하고 자동 비교는 생략한다.
+사용자의 Ctrl-C나 SystemExit를 일반 case 실패로 삼키지 않는다.
+
+3. 서버에 적용
+-------------
+로컬 commit을 git push한 후 서버에서:
+
+cd /home/hbji/exactfactorization
+git pull --ff-only
+conda activate MCEF
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+
+# 같은 case에 writer가 실행 중이지 않은지 먼저 확인한다.
+ps -u "$USER" -o pid,etime,args | rg 'python.*pen_ctmqc_2026|run_server.sh'
+
+4. 실패한 세 case: 40 fs 재시도 대신 짧은 dt 점검
+------------------------------------------------
+python -m multi_component_exact_factorization.pen_ctmqc_2026.checkpoint_probe \
+  --root results/20261102/ctmqc_pilot_server_v1 \
+  --out results/20261103/ctmqc_failure_probe_v1/probe_report.json \
+  --forward-fs 0.2 --refine 1 2 4
+
+--root는 status=FAILED인 case만 고른다. 성공/미완료인 rabi/off 등은 건드리지 않는다.
+각 checkpoint에서 dt_original/1, /2, /4를 독립적으로 시험한다.
+현재 dt=.1 au이면 .1, .05, .025 au이다. 약 .2fs 전진하며 같은 물리 시각에서 비교한다.
+coarse step의 정수배로 끝을 맞춰 요청 시간보다 최대 원래 1 step 길어질 수 있다.
+원본의 force-integral history와 eigenvector anchors도 그대로 사용한다.
+오직 JSON을 새 위치에 저장한다. 원본 config/status/frame/restart는 수정하지 않는다.
+추가 wave/frame/restart 저장도 없다. 이미 있는 probe JSON은 덮어쓰지 않는다.
+
+특정 case를 명시하려면 --root 대신 --case-dir <.../strong/pol>을 사용한다.
+이 경우 완료된 짧은 pilot도 명시적으로 점검할 수 있다.
+--forward-fs의 허용 범위는 0 < 값 <= 1 fs. 40 fs production 기능이 아니다.
+원본이 실행 중 바뀌거나 source/config/shape가 맞지 않으면 점검을 거부한다.
+
+보내줄 파일: results/20261103/ctmqc_failure_probe_v1/probe_report.json
+여기에는 다음이 포함된다:
+  - 동일 checkpoint/설정/source hash, 시작/종료 시간
+  - 각 dt의 COMPLETE_SHORT_PROBE 또는 FAILED_GUARD
+  - 마지막 채택 시각과 실패한 단계의 끝 시각 (서로 구분)
+  - 채택된 단계의 재정규화 전 최대 norm 오차; 실패 원문
+  - guard 적용 수, energy 변화, CT rate/force, BO/Pol/CBO/photon 관측량
+  - 공통 종료 시각까지 성공한 trial끼리의 R/P/계수 projector/관측량 차이
+
+guard 통과만으로 작은 dt가 정확하다고 판단하지 않는다. 한 trial만 성공하면
+공통 endpoint 비교가 없으므로 더 작은 dt 검사가 필요하다. .05/.025가 모두
+성공해도 이들은 원래 dt=.1의 과거 history를 물려받은 국소 검사이다. 0fs부터의
+작은-dt 재계산 또는 검증된 별도 continuation 없이는 전체 수렴을 주장하지 않는다.
+현재 도구는 production restart 변환/가변-dt 전파를 구현하지 않는다.
+
+5. 1 fs에 남은 rabi/off 두 case만 독립적으로 40 fs까지
+-----------------------------------------------------
+아래는 dt/seed/설정을 그대로 유지한 정상 resume이다. 실패한 비단열 case나
+이미 40 fs인 rabi/on, QD는 다시 계산하지 않는다. 먼저 계산만 수행한다.
+
+bash multi_component_exact_factorization/pen_ctmqc_2026/run_server.sh run \
+  results/20261102/ctmqc_pilot_server_v1 \
+  --model rabi --resonance off --perspective both --case strong --dse off \
+  --ntraj 1000 --seed 2026 --dt 0.1 --every-fs 0.1 --initial paper \
+  --end-fs 40 --resume --jobs 2 --no-render
+
+위 case에서도 norm guard가 발생하면 멈춘 상태를 유지하고 4번을 새 probe JSON
+경로로 실행한다. 미래 안정성은 보장하지 않는다.
+
+완료 후 rabi/off 자체 그림/영상 (전파 없음):
+bash multi_component_exact_factorization/pen_ctmqc_2026/run_server.sh render \
+  results/20261102/ctmqc_pilot_server_v1 \
+  --model rabi --resonance off --perspective both --case strong --dse off \
+  --jobs 2 --movie-stride 2 --png-every-fs 5 --t-max-fs 40
+
+위 render는 저장된 config/trajectory_config를 읽으며 Ntraj/dt를 새로 설정하지 않는다.
+case별 plots/ 아래에 다시 그린다. 현재 실패한 다른 case의 전체 비교와 구분한다.
+
+6. 모든 case가 실제 40 fs에 도달한 뒤 최종 세 방법 비교
+----------------------------------------------------
+python -m multi_component_exact_factorization.pen_ctmqc_2026.compare \
+  --ctmqc-root results/20261102/ctmqc_pilot_server_v1 \
+  --qd-root results/20261030/pen2026_paper_v1 \
+  --out results/20261103/ctmqc_qd_comparison_40fs_recovered_v1 \
+  --model all --resonance both --case strong --dse off \
+  --t-max-fs 40 --require-through-fs 40 --every-fs 5 \
+  --movies --movie-every-fs 0.25
+
+미복구 case가 있으면 해당 group은 SKIP되는 것이 맞다.
+실제로 완료한 rabi 그룹만 먼저 비교하려면 --model rabi를 선택한다.
+비단열 case 복구 방법은 4번의 서버 probe 결과를 확인한 다음 정한다.
+
+7. 검증의 한계
+-------------
+로컬의 기존 서버 archive는 1fs pilot이다. 위 25~33fs 실패 checkpoint는 아직
+받지 못했다. 실제 서버 실패를 로컬에서 재현/해결했다고 주장하지 않는다.
+tests/test_pen_ctmqc_recovery.py는 작은 실제 Engine run과 의도적으로 실패시킨
+test action을 사용해 원본 보존, guard 보존, 독립된 dt trial, common-endpoint
+비교, 다중 process의 실패 격리, 최종 오류 보고를 검증한다.
+40fs production을 로컬에서 실행하지 않는다.
+
+실제로 수행한 검증:
+  - CTMQC recovery/audit/compare/core, QD model/paper campaign/PNG interval,
+    기존 discrete MCEF/cavity model: unittest 88개 통과 (60.579초).
+  - 별도의 빠른 합성 Hamiltonian: dt=.1에서 실제 RK norm guard 실패,
+    .05/.025에서는 짧은 시험 통과. 서버의 실제 실패를 재현한 것은 아니다.
+  - 로컬에 이미 있는 nonadiabatic/on EL/POL의 1fs pilot, Ntraj=1000:
+    각각 1.001418 -> 1.202186 fs만 세 dt로 시험. 모두 짧은 guard 검사 통과.
+    EL: 세 trial 합 4.37초, accepted raw norm 오차 최대 2.91e-9.
+    POL: 세 trial 합 10.95초, accepted raw norm 오차 최대 9.27e-12.
+    원본 config/status/restart hash 불변 확인. 새 원시 snapshot 저장 없음.
+    결과: results/20261103/ctmqc_recovery_local_checks_v1/
+            el_pilot_probe.json (15,621 bytes)
+            pol_pilot_probe.json (16,069 bytes)
+    이 초기 구간 결과를 25~33fs의 안정성/정확성으로 확대 해석하지 않는다.
+  - 5번 rabi/off resume 명령의 build_tasks/preflight를 기존 두 checkpoint에
+    적용해 설정/source 일치 확인. 명령의 40fs propagation은 실행하지 않았다.
