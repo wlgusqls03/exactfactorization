@@ -7,11 +7,14 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 import numpy as np
 from multi_component_exact_factorization.pen_gctmqc_2026.build import unpack
 from multi_component_exact_factorization.pen_gctmqc_2026.workflow import (
     parser, input_text, qml_input, run_case, verify_model)
 from multi_component_exact_factorization.pen_gctmqc_2026.data import read_frame, frame_observables
+from multi_component_exact_factorization.pen_gctmqc_2026.output_check import (
+    prepare_output_dirs, validate_native_outputs)
 from multi_component_exact_factorization.pen_ctmqc_2026.core import Settings, Engine
 from multi_component_exact_factorization.pen_perspectives_2026.resonance import paper_config
 
@@ -59,9 +62,34 @@ class AdapterTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 read_frame(p,paper_config('rabi','on'),'pol')
 
+    def test_native_output_directories_prepared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_output_dirs(tmp)
+            prepare_output_dirs(tmp)
+            for name in ('adapter_frames', 'native/coeff', 'native/trajectories'):
+                self.assertTrue((Path(tmp)/name).is_dir())
+
 
 @unittest.skipUnless(os.environ.get('GCTMQC_BUILD'),'Set GCTMQC_BUILD to test compiled author code')
 class NativeTests(unittest.TestCase):
+    def test_heap_perturbation_does_not_change_dynamics(self):
+        build=Path(os.environ['GCTMQC_BUILD']).resolve()
+        with tempfile.TemporaryDirectory() as tmp:
+            for model in ('nonadiabatic','rabi'):
+                for resonance in ('on','off'):
+                    c=paper_config(model,resonance,dse=False,dt=.05)
+                    for view in ('el','pol'):
+                        last=[]
+                        for perturb in ('0','165'):
+                            out=Path(tmp)/('_'.join((model,resonance,view,perturb)))
+                            args=parser().parse_args(['--build',str(build),'--out',str(out),
+                                '--end-fs','.2','--every-fs','.1','--no-render'])
+                            with patch.dict(os.environ,{'MALLOC_PERTURB_':perturb}):
+                                run_case((c,Settings(view,16,2026),out,args))
+                            last.append(read_frame(sorted((out/'adapter_frames').glob('*.bin'))[-1],c,view))
+                        for key in ('X','P','coeff','k_li'):
+                            np.testing.assert_allclose(last[0][key],last[1][key],atol=1e-12,rtol=1e-12)
+
     def test_models_all_cases_and_initial_preparation(self):
         build=Path(os.environ['GCTMQC_BUILD']).resolve()
         with tempfile.TemporaryDirectory() as tmp:
@@ -80,6 +108,12 @@ class NativeTests(unittest.TestCase):
                                 self.assertLess(report['max_surface_error'],1e-12)
                                 self.assertLess(report['max_mf_force_error'],1e-10)
                                 self.assertLess(report['max_normalized_norm_error'],1e-12)
+                                self.assertLess(report['max_open_boundary_k_bound_excess'],1e-12)
+                                output = json.loads((out/'output_validation.json').read_text())
+                                self.assertTrue(output['passed'])
+                                self.assertEqual(output['runtime_boundary_audit']['periodic_flags'],['F']*(2 if view=='el' else 1))
+                                self.assertFalse((out/'fort.128').exists())
+                                self.assertNotIn('error opening', (out/'run.log').read_text())
                                 z=read_frame(sorted((out/'adapter_frames').glob('*.bin'))[0],c,view)
                                 ini=Engine(c,s).initial()
                                 for key in ('X','P','coeff'):
@@ -93,6 +127,11 @@ class NativeTests(unittest.TestCase):
                                     self.assertNotIn('pol_population',r)
                                 with self.assertRaises(FileExistsError):
                                     run_case((c,s,out,args))
+                                # Reproduce the historical missing subdirectory
+                                # symptom without changing any native dynamics.
+                                (out/'fort.128').write_text('unexpected implicit unit\n')
+                                with self.assertRaisesRegex(ValueError, 'implicit-unit'):
+                                    validate_native_outputs(out)
 
 
 if __name__=='__main__':

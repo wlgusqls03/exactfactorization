@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FFMpegWriter
 from ..pen_ctmqc_2026.core import hamiltonian
 from .data import load_case, read_frame, frame_observables, analyze_case
+from .health import assess
 
 STYLE={'font.size':13,'axes.labelsize':14,'axes.titlesize':15,'figure.titlesize':17,
        'legend.fontsize':11,'axes.spines.top':False,'axes.spines.right':False}
@@ -49,10 +50,19 @@ def summary(root, c, meta, rows):
     axs[2,1].plot(t,value('raw_norm_error'),color=COLORS[1],label='Before normalization')
     axs[2,1].plot(t,value('coefficient_norm_max_error'),color=COLORS[0],label='Saved normalized state')
     axs[2,1].set_yscale('symlog',linthresh=1e-15)
+    axs[2,1].set_ylim(bottom=0)
+    axs[2,1].axhline(1e-5,color='k',ls='--',lw=1,label='Review threshold')
     finish(axs[2,1],ylabel=r'$|\|C\|^2-1|$',title='F  Numerical monitoring')
+    health = assess(rows)
+    warning = health['verdict'] != 'NO_LARGE_ERRORS_DETECTED_NOT_CERTIFIED'
+    legacy = meta.get('adapter_safety_version',0) < 3
+    warning = warning or legacy
     fig.suptitle(f"Author G-CTMQC / {meta['perspective'].upper()} / "
                  f"g={c.g:g}, omega={c.omega:g} Ha, N={meta['ntraj']}\n"
-                 'Short/long completion is not a convergence certificate')
+                 + ('LEGACY BUILD — uninitialized arrays; rebuild and recalculate'
+                    if legacy else ('NUMERICAL REVIEW REQUIRED — inspect step errors and time-step comparison'
+                    if warning else 'Completion is not a convergence certificate')),
+                 color='#A52A2A' if warning else 'black')
     fig.savefig(root/'plots/dynamics_summary.png',dpi=160)
     plt.close(fig)
 
@@ -89,7 +99,12 @@ def trajectory_figure(c,meta,frame,rows,limits):
     for ax in axs[1]:
         ax.axvline(frame['t_fs'],color='k',ls='--')
         ax.set_xlim(t[0],max(t[-1],1e-6))
-    fig.suptitle(f"Author G-CTMQC / {meta['perspective'].upper()} / t={frame['t_fs']:.3f} fs / g={c.g:g}")
+    legacy = meta.get('adapter_safety_version',0) < 3
+    warning = legacy or assess(rows)['verdict'] != 'NO_LARGE_ERRORS_DETECTED_NOT_CERTIFIED'
+    fig.suptitle(f"Author G-CTMQC / {meta['perspective'].upper()} / t={frame['t_fs']:.3f} fs / g={c.g:g}"
+                 + ('\nLegacy build: rebuild and recalculate' if legacy else
+                    ('\nNumerical review required; not a converged trajectory result' if warning else '')),
+                 color='#A52A2A' if warning else 'black')
     return fig
 
 
@@ -145,7 +160,9 @@ def main():
     if not cases:
         raise ValueError('No author cases found')
     for root in cases:
+        print('RENDER',root,'(saved trajectories only)',flush=True)
         render_case(root,a.movies)
+        print('RENDER_COMPLETE',root/'plots',flush=True)
 
 
 if __name__=='__main__':

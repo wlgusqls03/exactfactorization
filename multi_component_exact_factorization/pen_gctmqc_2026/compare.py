@@ -7,6 +7,16 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from .render import STYLE,finish
+from .health import assess
+
+
+METHOD_STYLES = {
+    'G-CTMQC EL': dict(color='#0072B2',ls='-'),
+    'G-CTMQC POL': dict(color='#D55E00',ls='-'),
+    'Python EL': dict(color='#56B4E9',ls='--'),
+    'Python POL': dict(color='#CC79A7',ls='--'),
+    'QD (finite Fock)': dict(color='black',ls='--'),
+}
 
 
 def load(path):
@@ -46,6 +56,14 @@ def compare(author_root,out,python_root=None,qd_root=None,tmax=None,require=None
                           'EL photon number is classical Wigner estimator; POL/QD is quantum finite-Fock.',
                           'Energy and conditional mean energy are not exact TDPES.',
                           'Different trajectory counts/seeds have sampling error; do not infer solver error from mean difference alone.'])
+            suspect=[]
+            for name,(_,rows,_) in data.items():
+                if name.startswith('G-CTMQC'):
+                    verdict=assess(rows)['verdict']
+                    if verdict != 'NO_LARGE_ERRORS_DETECTED_NOT_CERTIFIED':
+                        suspect.append(name)
+                        report['warnings'].append(name+': '+verdict)
+            report['numerical_review_methods']=suspect
             for name,path in paths.items():
                 if (path/'status.json').exists():
                     status=json.loads((path/'status.json').read_text()).get('status')
@@ -61,6 +79,8 @@ def compare(author_root,out,python_root=None,qd_root=None,tmax=None,require=None
             specs=[('bo_population',1,'BO S1 population'),('photon_number',None,'Photon number'),
                    ('product_R_ge_4',None,r'$P(R\geq4)$'),('R_mean',None,'Mean R (a0)'),
                    ('energy',None,'E(t) - E(0) (Ha)'),('pol_population',1,'Pol1 population (quantum only)')]
+            report['unavailable_observables']={name:[key for key,_,_ in specs if key not in rows[0]]
+                                               for name,(_,rows,_) in data.items()}
             for ax,(key,column,label) in zip(axs.flat,specs):
                 for j,(name,(_,rows,t)) in enumerate(data.items()):
                     if key not in rows[0]:
@@ -72,13 +92,19 @@ def compare(author_root,out,python_root=None,qd_root=None,tmax=None,require=None
                         y=y-y[0]
                     inside=(t>begin)&(t<end)
                     tx=np.r_[begin,t[inside],end]
-                    ax.plot(tx,np.interp(tx,t,y),lw=1.9,label=name,ls='--' if name.startswith('Python') else '-')
+                    ax.plot(tx,np.interp(tx,t,y),lw=1.9,label=name,**METHOD_STYLES[name])
                 finish(ax,ylabel=label)
+                if key=='R_mean' and 'QD (finite Fock)' in data and key not in data['QD (finite Fock)'][1][0]:
+                    ax.text(.02,.02,'QD mean R not cached',transform=ax.transAxes,
+                            fontsize=10,color='.35',va='bottom')
                 ax.set_xlim(begin,end if end>begin else begin+1e-3)
-                if key=='product_R_ge_4':
-                    # Do not visually magnify 1e-16 roundoff into a reaction.
+                if key in ('product_R_ge_4','bo_population','pol_population'):
+                    # Common population scale: do not magnify tiny fluctuations
+                    # (or roundoff) into an apparent order-one transition.
                     ax.set_ylim(-.02,1.02)
-            fig.suptitle(str(rel)+'\nG-CTMQC / independent Python / QD — direct observables')
+            fig.suptitle(str(rel)+'\n'+' / '.join(data)+' — direct observables'
+                         + ('\nNumerical review required: '+', '.join(suspect) if suspect else ''),
+                         color='#A52A2A' if suspect else 'black')
             target=out/rel
             target.mkdir(parents=True,exist_ok=True)
             fig.savefig(target/'observables_comparison.png',dpi=160)

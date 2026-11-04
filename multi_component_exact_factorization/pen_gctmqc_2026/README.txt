@@ -53,6 +53,7 @@ QML 및 두 의존 라이브러리도 build.py에 commit과 archive SHA256을 �
    adapter는 원래 정규화 동작을 바꾸지 않고, 정규화 전 오차의 interval 최대를
    binary frame/validation.json에 추가한다. 오차가 크면 경고를 남긴다.
    norm=1이나 COMPLETE_NOT_CERTIFIED는 장시간 수렴 증명이 아니다.
+   health CLI가 이를 따로 검사하며 큰 정규화 전 오차는 그림에도 경고한다.
 
 5. 비용
    Python 기본 corrected Q: Ntraj*Nstate^2 규모, NxN Gaussian 저장 안 함.
@@ -83,17 +84,43 @@ QML POL 순서는 [d0,n0; d1,n0; d0,n1; d1,n1], Python은 electronic-major.
 실제 bare S1 coefficient를 QML Vec0에 투영하여 넣는다.
 EL photon number는 Wigner/classical estimator이다. 유한 sampling으로
 진공에서도 평균이 0에서 벗어날 수 있다. 초기 offset을 임의로 빼지 않는다.
+그림의 photon-number 음영은 ensemble 표준편차/sqrt(N)이며, 서로 결합된
+궤적의 독립성이나 수치 수렴을 보증하는 신뢰구간은 아니다.
 
-build.py의 instrument()가 바꾸는 부분은 다음뿐이다:
+build.py의 instrument()가 바꾸는 부분은 다음과 같다:
+  - 비주기 경계 periodic_in=False, period=0 명시 초기화
+    (원본 main.f90은 TRUE인 경우만 대입해서 나머지는 미초기화였음)
+  - 비활성 spin-orbit coupling 배열 coup_so=0 명시 초기화
+    (SPIN_DIA=false에서도 cdot가 이 배열을 읽지만 원본은 초기화하지 않았음)
+  - RPE에서 초기화되지 않은 Vdiadiag 뒷열 제외
   - 외부 initial coefficient 읽기
   - binary snapshot 출력(X,P,C,energy,MF/CT force,history,k_li)
   - 정규화 전 norm 오차 관찰
 actual unified diff는 build directory/adapter.patch에 남긴다.
 전파식, quantum momentum, threshold, coupling force는 교체하지 않는다.
+단, 미정의 경계 flag와 미초기화 SOC 배열을 읽던 동작이 바로잡히므로
+기존 빌드의 동역학과 달라질 수 있다. 이것은 임의의 안정화/새 근사가 아니다.
+MALLOC_PERTURB_=0/165에서 동일 초기조건의 결과를 비교하는 native 회귀검사로
+heap 내용에 의존하지 않는지 검사한다. metadata의 adapter_safety_version=3이
+경계와 SOC 초기화를 모두 포함한 버전이다. 1fs 안정성만으로 발견할 수 없었다.
 snapshot의 MF/CT force는 갱신된 author k_li에서 직접 다시 평가한 진단량이며,
 직전 Verlet substep의 acceleration 자체라고 부르지 않는다.
 원래 dense text output도 보존한다. RPE의 미초기화 Vdiadiag 열은 사용하지
 않고, binary와 독립 Hamiltonian 검사를 사용한다.
+
+출력 경로 수정(2026-11-04): native/coeff와 native/trajectories를 실행 전에
+생성한다. 원본 Fortran은 OPEN 실패 후에도 fort.128에 쓰고 진행할 수 있다.
+이제 run.log의 OPEN 오류, fort.* 생성, text frame 누락, binary와의 위치/
+운동량/에너지/photon number 불일치를 output_validation.json에서 검사한다.
+native text는 dump 배수에만 저장하고, adapter binary는 마지막 step도
+추가로 저장한다. 마지막 시각이 조금 다른 것은 이 명시된 저장 규칙 때문이다.
+RPE의 초기화되지 않은 마지막 Vdiadiag 열은 검증에서도 제외한다.
+출력 폴더 수정만으로는 재빌드가 필요 없지만, 함께 발견된 boundary flag
+및 SOC 초기화 결함 수정은 반드시 새 빌드가 필요하다. 기존 build는 stale로 거절한다.
+새 경로에 --archive-cache를 지정하면 기존 다운로드를 재사용할 수 있다.
+run.log의 ADAPTER_PERIODIC_FLAGS, ADAPTER_M_PARAMETER를 실제 runtime
+입력과 비교하고, 열린 경계의 |Q_d|<M_d/sigma_d가 함의하는 k_ij 상한도
+모든 binary snapshot에서 검사한다. 초기화 오류를 에너지 변화와 구분한다.
 
 기본 nesteps=1을 고정한다. 이 source의 nesteps>1 interpolation에는
 integer iestep/nesteps가 있어, 그대로 substep 기능을 노출하지 않는다.
@@ -108,7 +135,22 @@ conda activate MCEF
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 gfortran --version
 python -m multi_component_exact_factorization.pen_gctmqc_2026.build \
-  --out results/_dependencies/gctmqc_b7a2 --download
+  --out results/_dependencies/gctmqc_b7a2_initfix_v3 --download
+
+기존 서버 다운로드를 재사용하여 수정본을 새 폴더에 빌드:
+python -m multi_component_exact_factorization.pen_gctmqc_2026.build \
+  --out results/_dependencies/gctmqc_b7a2_initfix_v3 \
+  --archive-cache results/_dependencies/gctmqc_b7a2/archives
+
+서버의 사용자 전용 compiler/BLAS 설치를 쓰는 현재 환경에서는 위 명령 전에:
+export GCTMQC_PREFIX=/home/hbji/exactfactorization/results/_dependencies/gctmqc_linalg
+export PATH="$GCTMQC_PREFIX/bin:$PATH"
+export LIBRARY_PATH="$GCTMQC_PREFIX/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$GCTMQC_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+hash -r
+gfortran --version
+시스템 compiler를 교체하지 않으며 sudo나 전역 환경 변경을 하지 않는다.
 
 필수: gfortran, GNU make, 시스템 LAPACK/BLAS. ffmpeg는 동영상에만 필요.
 의존 라이브러리를 설치하거나 sudo하지 않는다. 없으면 관리자에게 요청한다.
@@ -121,20 +163,22 @@ archive는 별도 약 73 MiB다. 소스와 라이선스를 유지한다.
 서버 1 fs pilot (먼저 확인할 것)
 --------------------------------
 python -m multi_component_exact_factorization.pen_gctmqc_2026.workflow \
-  --build results/_dependencies/gctmqc_b7a2 \
-  --out results/20261104/gctmqc_server_1fs_v1 \
+  --build results/_dependencies/gctmqc_b7a2_initfix_v3 \
+  --out results/20261104/gctmqc_server_1fs_v3 \
   --model all --resonance both --perspective both --case strong \
   --ntraj 1000 --dt 0.05 --end-fs 1 --every-fs 0.1 --jobs 2 --movies
 
 각 case의 validation.json과 dynamics_summary.png를 먼저 확인한다.
-그 다음 40 fs를 새 폴더에서 실행한다. 기존 Python restart는 가져오지 않는다.
+그 다음은 40 fs 검증이다. 비단열 사례는 큰 step error가 확인되어 현재
+기본 설정 그대로의 production 결과를 권장하지 않는다(아래 새 검증 참조).
+검증을 다시 할 경우 새 폴더를 쓴다. 기존 Python restart는 가져오지 않는다.
 native restart도 아직 지원하지 않으므로 반드시 t=0에서 시작한다.
 
 python -m multi_component_exact_factorization.pen_gctmqc_2026.workflow \
-  --build results/_dependencies/gctmqc_b7a2 \
-  --out results/20261104/gctmqc_server_40fs_v1 \
+  --build results/_dependencies/gctmqc_b7a2_initfix_v3 \
+  --out results/20261104/gctmqc_server_40fs_v3 \
   --model all --resonance both --perspective both --case strong \
-  --ntraj 1000 --dt 0.05 --end-fs 40 --every-fs 0.25 --jobs 2 --movies
+  --ntraj 128 --dt 0.025 --end-fs 40 --every-fs 0.25 --jobs 2 --movies
 
 하나만 돌리려면 --model nonadiabatic --resonance on --perspective pol --jobs 1.
 --m-parameter 50/100/200, dt=.05/.025, Ntraj와 seed를 바꾼 별도 폴더로 수렴검사.
@@ -147,6 +191,7 @@ N^2 비용이 증가한다. 각 case 실패는 격리되어 다른 case는 계�
 ROOT/{nonadiabatic,rabi}/{on,off}/dse_off/{zero,weak,strong}/{el,pol}/
   config.json, author_settings.json, input.in, initial_*.dat
   run.log, QuantumModelLib.out, status.json, validation.json
+  output_validation.json : native text/binary 정합성(물리적 수렴과 별개)
   model_check/model_check.json : 독립 compiled QML V/gradient/NAC 검사
   adapter_frames/frame_STEP.bin : time, raw norm error, 실제 trajectory 자료
   native/ : 저자 원래 text output, energy, STC, dEdt 등
@@ -158,14 +203,14 @@ ROOT/campaign.json : 전체 성공/실패 목록
 
 재렌더(전파 없음):
 python -m multi_component_exact_factorization.pen_gctmqc_2026.render \
-  --root results/20261104/gctmqc_server_40fs_v1 --movies
+  --root results/20261104/gctmqc_server_40fs_v3 --movies
 
 QD 및 기존 Python CTMQC 비교:
 python -m multi_component_exact_factorization.pen_gctmqc_2026.compare \
-  --author-root results/20261104/gctmqc_server_40fs_v1 \
+  --author-root results/20261104/gctmqc_server_40fs_v3 \
   --python-root results/20261103/ctmqc_pilot_server_v1 \
   --qd-root results/20261030/pen2026_paper_v1 \
-  --out results/20261104/gctmqc_three_method_comparison_v1 --t-max-fs 40
+  --out results/20261104/gctmqc_three_method_comparison_v3 --t-max-fs 40
 
 사용자 서버의 Python 결과가 results/20261102/...에 있다면 그 경로로 바꾼다.
 Python failed 사례와 Rabi/off 1fs 자료를 포함하면 공통 시각까지만 비교한다.
@@ -174,13 +219,40 @@ Python failed 사례와 Rabi/off 1fs 자료를 포함하면 공통 시각까지�
 
 시간간격 비교(전파 없음):
 python -m multi_component_exact_factorization.pen_gctmqc_2026.audit \
-  --coarse COARSE_ROOT --fine HALF_DT_ROOT --out timestep_audit.json
+  --coarse COARSE_ROOT --fine HALF_DT_ROOT --out timestep_audit.json \
+  --require-through-fs 40 --plots
 공통 timestamp의 차이와 저장시각 보간을 포함한 차이를 분리한다.
 공간/시간 interpolation 오차를 적분기 오차라고 단정하지 않는다.
+정규화 전 오류는 snapshot 사이 모든 step의 최대이며 first_interval은
+문제가 난 저장 구간이다. 정확한 최초 불량 step이라고 해석하지 않는다.
+dt=.05/.025/.0125 비교는 --every-fs 0.24188843265857을 쓰면 저장 간격이
+각각 200/400/800 step(10 a.u.)으로 맞는다. 실제 40 fs endpoint는 ceil로
+선택하므로 마지막 step 시각은 조금 다를 수 있고 audit가 이를 구분한다.
+
+완료된 계산의 품질 경고(전파 없음):
+python -m multi_component_exact_factorization.pen_gctmqc_2026.health \
+  --root RESULTS_ROOT --out RESULTS_ROOT/health.json --require-through-fs 40
+exit code 2는 검토 필요, 0도 정확성/논문 재현 인증을 뜻하지 않는다.
+raw norm > 1e-5: timestep 검토, > 1e-3: 큰 step error로 사용 보류.
+|E(t)-E(0)| > 1e-3 Ha도 검토하지만 CTMQC의 에너지 변화 전부를 적분기
+오차라고 단정하지 않는다. 이 값들은 보수적인 검토 기준이지 exact bound가 아니다.
+render는 같은 검사를 사용하여 의심되는 결과의 PNG/MP4에 경고를 표시한다.
 
 검증/현재 한계
 --------------
-로컬에서는 40 fs를 수행하지 않았다.
+최신 수정본으로 24개의 40 fs 실행을 실제 수행했다(단순 smoke 외삽 아님).
+128개 궤적의 8조건 dt=.05/.025, 비단열/on dt=.0125, M=50,
+allocator perturbation 재실행 및 1000개 궤적 EL/POL 검사를 포함한다.
+모든 출력 검사는 통과했지만 비단열 장시간 수렴이 완료된 것은 아니다.
+1000개 dt=.025의 max raw norm은 EL 1.21e-3 / POL 1.19e-4,
+max energy change는 .04483 / .01546 Ha. 큰 오차를 숨기지 않는다.
+Rabi on/off는 두 시간 간격에서 안정적이었고, 우선 서버 비교에 사용할 수 있다.
+통계적 수렴과 논문 결과 재현까지 인증한 것은 아니다.
+수정 전 기록: results/20261104/gctmqc_long_validation_v2/.
+초기화 수정 후 기록: results/20261104/gctmqc_initfix_validation_v3/ 및
+docs/gctmqc_40fs_validation_20261104.txt.
+
+최초 구현 당시 검사:
   - EL/POL x 두 모델 x on/off 8개: 128 trajectories, 1 fs
   - dt=.05 및 .025 a.u. 두 세트
   - zero/weak/strong 전체 24개 조합: 각 16 trajectories, .01 fs 테스트
@@ -199,13 +271,13 @@ python -m multi_component_exact_factorization.pen_gctmqc_2026.audit \
 원래 Python의 실패 원인을 숨기거나 norm guard를 낮추어 완료 처리하지 않았다.
 서버에서 author run의 raw norm, energy drift, dt/Ntraj/M 민감도를 검사해야 한다.
 
-1000 trajectories, .2fs 로컬 비용측정(전파/기록/모델검사 포함, 렌더 제외):
-  nonadiabatic/on EL 약2.35초, POL 약2.48초.
-단순 선형 외삽으로 같은 CPU에서 40fs 약8분/case, 8개 순차 약65분이다.
-서버 CPU와 장시간 ensemble 상태, I/O가 달라 보장할 수 없으며, 10000개로
-늘릴 때 이 숫자를 그대로 쓰면 안 된다. 먼저 서버의 1fs pilot을 측정한다.
-1000개/40fs/8 cases는 every=.25fs라면 대략0.5 GiB, every=.1fs라면 약1.3 GiB
-raw+native 저장 예상(그림/영상/한 번의 빌드 용량은 별도). 강결합 8개 기준이다.
+최신 40fs/.025 a.u. 실측 비용(이전 .2fs pilot 외삽을 대체):
+1000개 비단열/on EL/POL은 각각 약22.5/21.2분(동시 작업 포함),
+두 case 저장은 약210 MiB였다. 8case는 약0.8-1.0 GiB + 그림/영상 여유,
+jobs=2 전파 약90분 규모의 단순 외삽이다. 공유 서버 CPU에 따라 달라진다.
+10000개로 늘릴 때는 N^2 비용 때문에 이 숫자를 선형으로 쓰면 안 된다.
+서버의 1fs pilot을 먼저 측정한다. 새 build의 약1.6 GiB는 별도/1회 비용이다.
+정확한 최신 결과 및 실행 방법은 docs/gctmqc_40fs_validation_20261104.txt.
 
 CTMQC에는 핵의 복소 wavefunction이 없으므로 exact a,b,alpha,epsilon1,
 epsilon2 전체를 고유하게 추출할 수 없다. 이 구현은 이를 날조하지 않는다.

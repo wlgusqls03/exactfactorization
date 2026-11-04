@@ -14,6 +14,7 @@ from ..pen_perspectives_2026.resonance import paper_config
 from ..pen_ctmqc_2026.core import Engine, Settings, hamiltonian
 from .build import digest,HERE
 from .data import POL_PERM, analyze_case
+from .output_check import prepare_output_dirs, validate_native_outputs
 
 
 def qml_input(c, view):
@@ -119,6 +120,7 @@ def run_case(task):
     (out/'input.in').write_text(text)
     (out/'config.json').write_text(json.dumps(asdict(c),indent=2)+'\n')
     settings = dict(backend='authors-gctmqc-instrumented',perspective=s.perspective,
+        adapter_safety_version=3,boundary_mode='explicitly_open',zero_soc_initialized=True,
         ntraj=s.ntraj,seed=s.seed,initial=s.initial,algorithm=s.algorithm,
         m_parameter=args.m_parameter,force_history_threshold=.005,nesteps=1,
         dump_steps=dump,steps=steps,final_time_fs=steps*c.dt*AU_FS,
@@ -126,9 +128,8 @@ def run_case(task):
         capabilities={'exact_mcef_fields':False,'restart_from_python':False,'native_restart':False})
     settings['adapter_python_sha256']={f.name:digest(f) for f in Path(__file__).parent.glob('*.py')}
     (out/'author_settings.json').write_text(json.dumps(settings,indent=2)+'\n')
-    (out/'adapter_frames').mkdir()
-    # Upstream writes initial_conditions.dat before its output initializer.
-    (out/'native').mkdir()
+    # Upstream opens these files but never creates their parent directories.
+    prepare_output_dirs(out)
     env = dict(os.environ,OMP_NUM_THREADS=str(args.threads),OPENBLAS_NUM_THREADS='1')
     status = dict(status='RUNNING',backend=settings['backend'])
     def save_status():
@@ -138,15 +139,25 @@ def run_case(task):
     try:
         verify_model(build,out/'model_check',c,s.perspective)
         print('RUN G-CTMQC',out,flush=True)
+        propagate_start = time.monotonic()
         with (out/'input.in').open() as inp, (out/'run.log').open('w') as log:
             run = subprocess.run([str(build/'source/src/main.x')],cwd=out,env=env,
                 stdin=inp,stdout=log,stderr=subprocess.STDOUT)
+        status['propagation_seconds'] = time.monotonic()-propagate_start
         # Fortran STOP may return success on errors. Inspect completion AND data.
         if run.returncode or 'finished successfully' not in (out/'run.log').read_text():
             raise RuntimeError('Author executable failed; see run.log')
         report=analyze_case(out,steps*c.dt*AU_FS)
         if report['max_normalized_norm_error'] > 1e-8 or report['max_surface_error'] > 1e-8 or report['max_mf_force_error'] > 1e-7:
             raise ValueError('Archive validation failed: '+str(report))
+        if report['max_open_boundary_k_bound_excess'] > 1e-10:
+            raise ValueError('Open-boundary quantum-momentum cutoff contract violated')
+        status['binary_validated'] = True
+        check_start = time.monotonic()
+        validate_native_outputs(out)
+        status['native_output_validated'] = True
+        status['output_check_seconds'] = time.monotonic()-check_start
+        status['numerical_warnings'] = report['warnings']
         status.update(status='COMPLETE_NOT_CERTIFIED',last_saved_fs=report['last_saved_fs'])
         save_status()
         if not args.no_render:
@@ -159,7 +170,7 @@ def run_case(task):
                 # A plotting failure must not relabel valid dynamics as failed.
                 status['render_error']=repr(error)
                 print('RENDER_FAILED (dynamics saved)',out,repr(error),flush=True)
-            (out/'status.json').write_text(json.dumps(status,indent=2)+'\n')
+            save_status()  # Include rendering in total wall time, not only TDSE-free postchecks.
         return str(out),report
     except BaseException as e:
         status.update(status='FAILED',error=repr(e))

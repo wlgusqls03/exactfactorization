@@ -75,12 +75,37 @@ def unpack(data, target):
 
 
 def instrument(source):
-    """Only initialization/I/O/norm observation; no changes to equations/steps.
+    """Initialization/I/O/norm observation; no changes to equations/steps.
+
+    Also explicitly initialize the upstream boundary arrays. The pinned main
+    assigns TRUE for periodic coordinates but never FALSE for open coordinates;
+    reading those allocated uninitialized logicals is undefined behavior.
 
     Every replacement must occur exactly once in the pinned source. Save the
     actual unified diff alongside the build for independent inspection.
     """
     edits = {
+        'main.f90': [
+            ('    DO i_dof=1,n_dof\n      IF(periodic_variable(i_dof)) THEN',
+             '    ! Adapter safety: open coordinates must not inherit heap data.\n'
+             '    periodic_in = .FALSE.\n    period = 0.0_dp\n'
+             '    DO i_dof=1,n_dof\n      IF(periodic_variable(i_dof)) THEN'),
+            ('  END SUBROUTINE check_system_variables',
+             "    WRITE(stdout,*) 'ADAPTER_PERIODIC_FLAGS ', periodic_in\n"
+             "    WRITE(stdout,*) 'ADAPTER_M_PARAMETER ', M_parameter(1:n_dof)\n"
+             "    WRITE(stdout,*) 'ADAPTER_DOUBLE_INTERCEPT ', DoubleIntercept\n"
+             '  END SUBROUTINE check_system_variables'),
+        ],
+        'output.f90': [
+            ('tdpes(itraj),BOenergy(itraj,:),Vdiadiag(:)',
+             'tdpes(itraj),BOenergy(itraj,:) ! Adapter: omit uninitialized Vdiadiag'),
+        ],
+        'tools.f90': [
+            ("    IF(check/=0) PRINT*,'error allocating coup_so'",
+             "    IF(check/=0) PRINT*,'error allocating coup_so'\n"
+             '    ! cdot reads coup_so even when SPIN_DIA is false.\n'
+             '    coup_so = CMPLX(0.0_dp,0.0_dp,qp)'),
+        ],
         'variables.f90': [
             ('  namelist /system/', '  real(kind=dp) :: adapter_norm_max = 0.0_dp\n\n  namelist /system/'),
         ],
@@ -209,7 +234,7 @@ def build(out, download=False, retry=False, archive_cache=None):
         subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, env=env, check=True)
     manifest = dict(backend='authors-gctmqc-instrumented', sources=hashes,
         adapter_sha256={f:digest(HERE/f) for f in ('build.py','adapter_io.inc','model_probe.f90')},
-        modifications='External initial coefficients, binary observations and pre-normalization norm monitor ONLY',
+        modifications='Explicit open-boundary and zero SOC initialization; omit uninitialized RPE columns; external initial coefficients, binary observations and pre-normalization norm monitor. No changes to propagation equations.',
         paper_exact_commit=False, compiler=subprocess.check_output(['gfortran','--version'], text=True).splitlines()[0],
         commands=commands, binary_sha256=digest(out/'source/src/main.x'),
         probe_sha256=digest(out/'model_probe.x'))

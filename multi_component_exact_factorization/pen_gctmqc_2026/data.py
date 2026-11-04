@@ -103,17 +103,42 @@ def load_case(root):
     return c, meta, files
 
 
+def quantum_momentum_bound_excess(frame, c, meta):
+    """Independent bound implied by the pinned nonperiodic M/sigma cutoff.
+
+    In coherence_corrections.f90, |Q_d| < M_d/sigma_d on every accepted
+    corrected/density branch; k_ij=sum_d Q_d f_di/m_d. Violations therefore
+    expose a boundary/settings/layout error, not a CTMQC energy-conservation test.
+    """
+    if meta['perspective'] == 'el':
+        sigma, mass = np.array([c.sigma_r,1/np.sqrt(c.omega)]), np.array([c.mass,1.])
+    else:
+        sigma, mass = np.array([c.sigma_r]), np.array([c.mass])
+    bound = np.sum(abs(frame['integrated_forces'])*(meta['m_parameter']/sigma/mass)[None,:,None],axis=1)
+    return float(np.maximum(abs(frame['k_li'])-bound[:,:,None],0).max())
+
+
 def analyze_case(root, expected_final_fs=None):
     root = Path(root)
     c, meta, files = load_case(root)
     if not files:
         raise ValueError('No author snapshots')
-    rows = [frame_observables(read_frame(f, c, meta['perspective']), c, meta['perspective']) for f in files]
+    rows = []
+    bound_excess = 0.
+    for f in files:
+        frame = read_frame(f,c,meta['perspective'])
+        rows.append(frame_observables(frame,c,meta['perspective']))
+        if meta.get('adapter_safety_version',0) >= 2:
+            bound_excess = max(bound_excess,quantum_momentum_bound_excess(frame,c,meta))
     t = np.array([r['t_fs'] for r in rows])
     if t[0] != 0 or np.any(np.diff(t)<=0):
         raise ValueError('Non-monotone or incomplete initial time series')
     if expected_final_fs is not None and t[-1]+1e-8 < expected_final_fs:
         raise ValueError('Author run stopped early: '+str(t[-1]))
+    if expected_final_fs is not None:
+        expected_steps = sorted(set(range(0, meta['steps']+1, meta['dump_steps'])) | {meta['steps']})
+        if [r['step'] for r in rows] != expected_steps:
+            raise ValueError('Missing, extra or misordered binary snapshots')
     energy = np.array([r['energy'] for r in rows])
     report = dict(frames=len(rows), last_saved_fs=float(t[-1]),
         max_normalized_norm_error=max(r['coefficient_norm_max_error'] for r in rows),
@@ -122,8 +147,10 @@ def analyze_case(root, expected_final_fs=None):
         final_energy_drift_Ha=float(energy[-1]-energy[0]),
         max_mf_force_error=max(r['author_mf_force_max_error'] for r in rows),
         max_surface_error=max(r['author_surface_max_error'] for r in rows),
+        max_open_boundary_k_bound_excess=bound_excess if meta.get('adapter_safety_version',0)>=2 else None,
         numerical_convergence_certified=False,
         warnings=['Upstream renormalizes every electronic step; norm=1 is not an accuracy proof.',
+                  'raw_norm_error is the maximum over all electronic steps since the previous saved frame.',
                   'CTMQC total energy need not be conserved; examine dt/Ntraj/M convergence.',
                   'Exact MCEF scalars/connections unavailable without nuclear wavefunction.'])
     if meta['perspective'] == 'el':
