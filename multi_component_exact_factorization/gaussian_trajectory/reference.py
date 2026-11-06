@@ -80,8 +80,8 @@ def require_backend(name):
     if name == 'mte':
         return
     reasons = {
-        'tsh': 'No validated internal-state hopping/rescaling/frustrated-hop adapter is exposed.',
-        'ctmqc': 'A verified matched full-q coefficient/force/history/gauge adapter is missing; native finite-Fock methods remain separate.',
+        'tsh': 'Use gaussian_trajectory.channel_run --method tsh for the explicit FSSH pilot; this driver remains MTE-only.',
+        'ctmqc': 'Use gaussian_trajectory.channel_run --method ctmqc for the published-channel pilot; this driver remains MTE-only.',
         'ef-g-mls': 'R1/R4 evaluation is implemented, but a matched scalar, force and outer-gauge closure is unspecified.',
     }
     raise NotImplementedError(reasons.get(name, 'Unknown backend: '+str(name)))

@@ -170,6 +170,10 @@ def prepare(root, *, visual_h_R=None, support_relative=1e-5):
             "config":config,"population_basis":population_basis,
             "run_label":("Uncompressed MTE reference" if config.get("compression") in ("native","none") else
                          "MTE + Gaussian bridge projection")}
+    if config.get("method") in ("ctmqc", "tsh"):
+        method = "CTMQC equations" if config["method"] == "ctmqc" else "FSSH"
+        data["run_label"] = method + (" + Gaussian bridge projection (experimental)"
+            if config.get("compression") == "gaussian" else " full-internal uncompressed pilot")
     # Stable joint-density color scale, evaluated on the same visualization grid.
     joint_peak=0.0
     if visual_h_R is not None:
@@ -411,6 +415,9 @@ def render(root, movies=False, *, visual_h_R=None, support_relative=1e-5,
             "field_color_limits":{k:data["limits"][k] for k in ("a","b","delta_b")},
             "joint_density_estimator":"sum_I eta_I Gaussian_h(R-R_I) |Lambda_I(q)|^2; visualization only",
             "unavailable_by_design":["exact epsilon1/epsilon2", "CT-corrected quantum momentum without backend prescription"]}
+    if data["config"].get("method") == "ctmqc":
+        report["unavailable_by_design"] = ["exact epsilon1/epsilon2 without complex chi/gauge closure"]
+        report["ct_quantum_momentum"] = "See channels/ and Q_raw/Q_pairs frame fields; pair values are not one scalar field"
     with plt.rc_context(STYLE):
         fig=plot_summary(data); fig.savefig(out/"summary.png",dpi=dpi); plt.close(fig)
         for i in indices:

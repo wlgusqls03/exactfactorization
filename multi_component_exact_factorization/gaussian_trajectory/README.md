@@ -14,15 +14,87 @@
 | 전자–proton–heavy MCEF | 기존 실공간 potential, 전자 x-grid/proton q-grid, heavy만 trajectory |
 | PEN nonadiabatic / Rabi | 기존 2026 **두 diabatic 전자 상태** 모델, photon은 실제 q-grid. real-electron PEN과 혼동 금지 |
 | native 내부기저 변환 B3–B5 | round-trip 및 basis-motion 검사 함수 제공 |
-| 새 Gaussian CTMQC / TSH 전파 | **미지원: 명확한 오류로 중지**, MTE로 대체하지 않음 |
+| 새 Gaussian CTMQC / TSH 전파 | 별도 `channel_run` CLI: CTMQC 채널식 / FSSH + 선택적 Gaussian 투영. 아래 제한사항 참조 |
 | EF-G/MLS exact outer operator | R1/R4 식 평가와 manufactured 검사만 지원. 미정 scalar/gauge/force를 만들어 전파하지 않음 |
 | exact epsilon1/epsilon2, exact Sq/Sadv/Srel | trajectory density만으로 생성하지 않음. F6/F8는 별도 reference 함수 |
 
 기존 G-CTMQC의 native 실행 경로는 그대로 남아 있다. 기존 감사
 `results/20261104/gctmqc_paper_equation_audit_v1/README.txt`에서 보고한
 계수/힘 prefactor와 componentwise RK 문제를 무시하고 새 공간의 검증된
-backend라고 선언하지 않았다. TSH의 hop/rescale/frustrated-hop 규칙도
-현재 공개된 adapter에 없으므로 임의 추가하지 않았다.
+backend라고 선언하지 않았다. 새 경로는 저자 실행파일과 구분한 독립 수식 구현이다.
+TSH는 Tully FSSH의 명시적 baseline을 사용한다. 기존 `run.py`는 계속 MTE 전용이다.
+
+## CTMQC / TSH 추가 경로 (2026-11-06)
+
+`channel_run.py`는 같은 초기상태·Hamiltonian·P3/P8 Gaussian 모듈을 사용한다.
+`internal_channels.py`는 **q kinetic을 포함한 전체 내부 Hamiltonian**을 대각화한다.
+작은 시험 격자의 모든 채널을 유지하고 round-trip을 검사한다. 4-state truncation이나
+고전 photon 대체는 없다. MCEF의 전자는 x-grid이고 PEN benchmark는 기존 두 diabatic
+전자 상태다. 완전 기저에서 material NAC와 basis-motion 항을 함께 소거하여,
+공통 primitive G에 `-i H G + U*(CT correction)`을 적용한다.
+
+- CTMQC: Agostini et al. (2016), DOI `10.1021/acs.jctc.5b01180` 식 (28),(29);
+  Villaseco Arribas et al. (2022), DOI `10.3390/molecules27134002` 식 (14)–(18).
+  계수의 CT항과 힘의 CT항은 같은 force history를 쓴다. `fdot=-dE/dR`, 임의 reset 없음.
+- 기본 `quantum_momentum_mode=density`: state-resolved heavy Gaussian density의
+  posterior-weighted log derivative. `pair_intercept` 선택시 2022 식 (26),(27)의
+  pair별 corrected momentum을 따로 저장한다. denominator cancellation은 기본 중단;
+  `density_fallback`은 명시 선택만 허용하고 zero-transfer 조건 상실을 기록한다.
+- TSH: Tully (1990), DOI `10.1063/1.459170` FSSH. native NAC outgoing flux만 hopping에
+  사용한다. active state는 초기 channel population에서 sampling. 1D 에너지 보존
+  momentum rescaling, frustrated hop 기본 `keep`/선택 `reverse`, decoherence/collapse 없음.
+  확률 합>1이면 중단한다. Gaussian 압축으로 생긴 population 변화는 hop 확률에 넣지 않는다.
+- 채널 label은 공통 R 중심에서 overlap continuation하고 매 step 이어 간다.
+  모호한 overlap 또는 derivative-coupled degeneracy는 중단한다. 완전한 degenerate-subspace
+  전파를 구현했다고 주장하지 않는다.
+- RK4의 매 stage에서 전체 ensemble의 Q/history/Gaussian rate를 재계산한다.
+  TSH event는 각 dt 경계, 확률은 interval 시작점 flux다. event dt와 ensemble 수렴은 별도 필요.
+- Gaussian 압축을 켜면 **실험적 CTMQC/FSSH + Gaussian projection**이다. native 저자
+  G-CTMQC와 동등하거나 정확한 EF-G/MLS closure라고 부르지 않는다.
+
+짧은 구현 검사 명령(장시간 물리 계산용 수렴 격자가 아님):
+
+```bash
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+python -m multi_component_exact_factorization.gaussian_trajectory.channel_run \
+  --method ctmqc --model pen-nonadiabatic --compression gaussian \
+  --ntraj 7 --nq 32 --dt-au 0.01 --end-fs 0.01 --every-fs 0.005 \
+  --out results/20261106/channel_ctmqc_pilot --movies
+python -m multi_component_exact_factorization.gaussian_trajectory.channel_run \
+  --method tsh --model mcef --compression gaussian \
+  --ntraj 7 --nx 9 --nq 16 --qmin -6 --qmax -2 \
+  --dt-au 0.01 --end-fs 0.01 --every-fs 0.005 \
+  --out results/20261106/channel_tsh_mcef_pilot --movies
+```
+
+무압축 비교는 새 outdir에서 `--compression native`로 실행한다. CT corrected-Q는
+`--quantum-momentum-mode pair_intercept`. component 수는 `--components`로 선택하며
+K>1 초기 fitting 오차/rank는 별도 검사한다. mask 실험은
+`--support-relative 1e-8 --max-excluded-mass 1e-5`를 명시한다.
+**mask 밖 C 고정은 방정식을 바꾼다. 작은 excluded mass만으로 정확하다고 보장하지 않는다.**
+실제 g=0 시험에서는 이 정책으로 photon number/energy 오차가 발생했고
+threshold 증가가 항상 안정화하지 않았다. 기본 support=0은 유지한다.
+
+출력: `frames/`, `checkpoint.npz`, `status.json`, `metadata.json`, `timeseries.npz`,
+기존 형식 `plots/`, 새 `channels/summary.png`, `channels/snapshot_*.png`,
+`channels/channels.mp4`(`--movies`). raw/pair Q와 force history, active states,
+hop counts, Gaussian 압축의 channel-population-rate 기여를 저장한다.
+TSH active-surface energy와 quantum expectation energy는 다르게 표시한다.
+resume은 같은 source/config에서 `--out 기존경로 --resume --end-fs ...`;
+channel basis, force history, active state, RNG, 누적 audit까지 복구한다.
+
+현재 complete dense diagonalization은 작은 CPU pilot 용도다. 기본 dimension 한도256;
+한도를 넘으면 중단하고 state를 자동으로 버리지 않는다. production MCEF x×q 격자의
+효율적인 대규모 eigensolver/backend는 아직 없다. `--max-internal-dimension`을 늘릴 수
+있지만 자원/시간 추정 없이 큰 격자를 돌리는 것은 권장하지 않는다. 장시간 안정성,
+Gaussian K/grid/mask 수렴, CTMQC 채널 및 sampling 수렴은 미인증이다.
+
+실제 추가 시험에서는 위 PEN q32 설정의 Gaussian 전파가 dt=.01에서 .06749fs에
+PNC guard로 중단됐고, **dt=.0025에서는 CTMQC와 TSH 모두 .1fs를 통과**했다.
+MCEF compact pilot은 dt=.01로 .1fs를 통과했다. 장시간 안정성 인증은 아니다.
+PEN .1fs 시험을 재현하려면 위 PEN 명령의 `--dt-au 0.0025 --end-fs 0.1
+--every-fs 0.025`와 새로운 outdir을 사용한다. 실패한 run에서 dt를 바꾸는 것은
+동일-config resume가 아니므로 새 outdir에서 다시 시작한다.
 
 ## 읽은 자료와 수식 → 코드
 

@@ -2,10 +2,11 @@
 
 ## 범위와 판정
 
-이 작업은 **공통 수학 코어 + 지원되는 MTE pilot**을 구현했다. 기존
-MCEF/TDSE/CTMQC/G-CTMQC 파일과 기본값은 수정하지 않았다.
-Gaussian CTMQC/TSH 및 autonomous EF-G/MLS 전파는 아직 지원하지 않는다.
-원본에 없는 scalar/force/gauge/hopping closure를 발명하지 않았다.
+초기 작업은 **공통 수학 코어 + MTE pilot**이었다. 이후 2026-11-06 추가 작업에서
+독립 CTMQC 채널식과 명시적 FSSH를 구현하고 Gaussian 투영에 연결했다.
+기존 MCEF/TDSE/CTMQC/G-CTMQC 파일과 기본값은 수정하지 않았다.
+autonomous EF-G/MLS 전파는 여전히 지원하지 않으며 미정 scalar/force/gauge를
+발명하지 않았다. 아래 초기 MTE 검증 기록과 마지막 CTMQC/TSH 추가 기록을 구분한다.
 
 실행 호스트는 로컬 `20235256-p01`, Python은
 `/home/hbji/miniconda3/envs/MCEF/bin/python`이다. CPU/complex128,
@@ -146,8 +147,7 @@ deltaN_dot=-2(r/Lambda)deltaN가 생긴다. DOP853 및 동일 guard로 재시험
 - 물리적 branching/reflection 길이의 MCEF/PEN 및 장시간 수렴;
 - 동일 long-time 조건에서 dt/Nq/Ntraj/MLS degree-neighbors/K/initial fit의
   독립 수렴 및 비용 비교. 현재는 formula/manufactured/reference/초단기 검사;
-- verified full-q CTMQC coefficient/force/channel-history/gauge adapter;
-- TSH active surfaces, hop probability, rescale, frustrated-hop 처리의 검증된 adapter;
+- CTMQC/FSSH의 큰 production 내부 격자 및 장시간 수렴(작은 complete-grid adapter는 추가 구현됨);
 - EF-G/MLS의 matched epsilon2, chi phase, heavy force closure;
 - CPU 외의 GPU 경로, 더 일반적인 질량/분자 파라미터 변경 interface.
 
@@ -170,5 +170,105 @@ trajectory 시간으로 선형 외삽하지 않는다. 큰 메모리/저장량�
 작업 시작 HEAD: `8914c568b403361acba982e1df5e7cc049e5b517`.
 pilot metadata의 commit은 실행 당시 HEAD이며 실제 코드는 `source_sha256`으로
 따로 기록했다. commit 이후 동일 .py 파일의 hash는 변하지 않는다.
-이 커밋에는 새 namespace와 새 9개 테스트만 포함하고, 사용자 `paper/`,
+초기 MTE 커밋에는 새 namespace와 새 9개 테스트만 포함했고, 사용자 `paper/`,
 기존 untracked VSC 파일, 계산 결과는 포함하지 않는다. push는 수행하지 않는다.
+
+## CTMQC / FSSH 추가 구현의 실제 검증
+
+추가 작업 시작 HEAD: `3daafb24138cccdb1cab8993468613abf20f13f3`.
+새 source SHA는 각 pilot metadata에 저장했다. 기존 MTE 설정은 유지했다.
+
+- Gaussian 관련 **109 tests** 통과(기존69+추가40). CTMQC 수식16,
+  FSSH 수식/event14, 내부basis/driver/resume8, renderer2 추가.
+- 기존 PEN perspectives17 + CTMQC12 + native G-CTMQC7 + discrete MCEF7,
+  합계 **43 tests** 통과. 총152개.
+- native G-CTMQC 검사는 기존 실행파일을 호출한 회귀검사이며 새 CTMQC 수식과
+  저자 실행파일이 동일하다는 검사가 아니다.
+- FSSH synthetic 2,000 trajectories ×100 event steps에서 실제 hop 발생,
+  probability flux/ensemble transfer 및 hop 에너지 보존 확인.
+- source/basis mismatch resume 거절시 기존 status/checkpoint가 바뀌지 않는 검사 포함.
+
+실제 전체 짧은 pilot:
+`results/20261106/gaussian_channels_validation_v1/report.json`.
+
+MCEF(전자9×q16=144채널), PEN NA/Rabi(전자2×q32=64채널), Ntraj7,
+RK4 dt=.01au, 목표 .01fs(저장 끝 .010159314fs):
+
+- CTMQC/TSH × native/Gaussian, PEN g=0/.01, MCEF 1개 설정: 20건
+- CTMQC pair-intercept × native/Gaussian: 2건
+- **22/22 완주**, 제외질량0, max raw accepted PNC/norm `3.37e-7`,
+  complete basis round-trip 최대 `2.85e-14`, Gaussian vs 같은 backend native의
+  최종 G-L2 차이 최대 `8.82e-8`.
+- propagation/save 총 약84초(CPU 1thread, rendering 제외). 시간·격자·K·표본수
+  수렴은 인증하지 않는다. 분자 pilot의 hop 수는0이며 실제 hopping 검사는 위 합성검사와 구분한다.
+- 네 Gaussian 대표 case(MCEF/PEN NA × CTMQC/TSH)에서 PNG·MP4 생성 및
+  대표 PNG 직접 시각검사. `plots/diagnostics.mp4`와 `channels/channels.mp4`,
+  총8 MP4. 전체 validation 폴더 약40MiB.
+
+0.1fs 확장 검사는 짧은22개 검사와 별도로 수행했다:
+
+| Gaussian 경로 | dt (a.u.) | 결과 | max accepted PNC/norm |
+|---|---:|---|---:|
+| MCEF CTMQC | .01 | .100142fs 완주, 약77초 | 4.00e-15 |
+| MCEF FSSH | .01 | .100142fs 완주, 약71초 | 3.11e-15 |
+| PEN NA CTMQC | .01 | .067487fs 시도에서 PNC>1e-5 중단 | 실패 기록 보존 |
+| PEN NA FSSH | .01 | .067487fs 시도에서 PNC>1e-5 중단 | 실패 기록 보존 |
+| PEN NA CTMQC | .0025 | .100021fs 완주, 약89초 | 8.48e-8 |
+| PEN NA FSSH | .0025 | .100021fs 완주, 약85초 | 8.47e-8 |
+
+모든 경로에서 support=0, 재정규화/guard 완화 없음. PEN 무압축 CTMQC/FSSH도
+dt=.01에서 .100142fs 완주, norm 오차각각2.11e-15/2.33e-15. 시간 차이는 ceil
+step 정책 때문이며 서로 다른 끝 시각 상태를 같은 시각 G-error처럼 비교하지 않았다.
+Gaussian 압축 rate residual 최대는 이 구간 약4.8e-6. 이 결과는 이번 짧은 구간의
+dt refinement가 효과 있음을 보여주지만, 장시간 안정성/격자수렴을 증명하지 않는다.
+
+위 확장/실패/재검증 결과 위치:
+`results/20261106/gaussian_channels_extension_v1/`,
+`results/20261106/gaussian_channels_refine_ct_v1/`,
+`results/20261106/gaussian_channels_refine_tsh_v1/`의 `report.json`.
+MCEF2개와 refined PEN2개에 동일한 PNG/MP4 렌더러를 적용한다.
+
+재현 명령:
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python -m \
+  multi_component_exact_factorization.gaussian_trajectory.channel_validation \
+  --out results/20261106/gaussian_channels_server_v1 --end-fs 0.01 --movies
+```
+
+### mask 실험: 작은 mass만으로 안전하지 않음
+
+`results/20261106/gaussian_mask_audit_v1/mask_report.json`에 별도 실제 시험을 저장했다.
+기존 MTE/DOP853, N7/q64, q±14, dt_max=.02au, 목표 .2fs에서:
+
+| g | threshold | 결과 | 최대 제외확률 | native 대비 photon number 차이 |
+|---|---:|---|---:|---:|
+| 0 | 1e-8 | .099658fs 이후 trial PNC 실패 | 1.84e-9 | .0330 |
+| 0 | 1e-6 | .099658fs 이후 trial PNC 실패 | 1.57e-7 | .8241 |
+| .01 | 1e-8 | .200284fs 완주 | 1.85e-9 | .00585 |
+| .01 | 1e-6 | .099658fs 이후 trial PNC 실패 | 1.57e-7 | .3293 |
+
+마스크 밖 Cdot=0이면 작은 꼬리의 시간 위상도 정지한다. 전역 FFT q미분은 이를
+occupied 영역에 전달할 수 있다. 따라서 plotting mask와 달리 실제 RHS 변경이며,
+이 시험은 **마스크 threshold 증가가 안정성/정확성 해결책이라는 주장을 반박한다.**
+g=.01/1e-8 완주도 native 대비 G-L2 .0218, EOM rate residual .0673이었다.
+기본 support0을 유지했고 무단 normalization/강제 clipping은 넣지 않았다.
+
+별도 비생산 DOP853 retry probe에서는 trial PNC failure(h=.02au)를 절반 step
+재시도로 넘기고 .069885fs까지 accepted PNC≤3.20e-11로 진행했으나45초 시간상한에
+도달했다. 이는 trial guard 처리 개선 가능성이지 꼬리 stiffness 해결 인증은 아니다.
+
+### 변경 파일의 역할
+
+- `ctmqc_channels.py`: published matched coefficient/force/history, raw/pair Q 및 cancellation 감사.
+- `surface_hopping.py`: FSSH probability/event/rescaling; Gaussian population 변화와 분리.
+- `internal_channels.py`: full internal Hamiltonian, complete project/lift, basis-label continuation.
+- `channel_run.py`: whole-ensemble RK4, P3/P8 연결, source-checked atomic resume 및 field 저장.
+- `channel_render.py`: population/Q/force/energy/hop 진단, stable PNG/MP4.
+- `channel_validation.py`: 22개 bounded CPU pilot 및 비교/렌더링 driver.
+- `reference.py`: 기존 MTE driver에서 새 CTMQC/FSSH 전용 CLI로 안내(implicit fallback 없음).
+- `renderer.py`: 새 방법을 MTE라고 잘못 표시하지 않도록 label 수정.
+- 새 테스트4파일 및 README/본 검증 기록. 기존 모델·checkpoint·결과는 변경하지 않음.
+
+현재 production 규모 full-grid eigensolver, 장시간 Gaussian 안정화,
+복소 chi 없이 exact epsilon1/epsilon2를 구하는 closure는 미완료다.
