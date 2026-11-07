@@ -1,0 +1,8 @@
+{
+  "model": {"name": "pen-nonadiabatic", "nq": 32, "qmin": -14.0,
+            "qmax": 14.0, "g": 0.01, "dse": false, "q_operator": "fft"},
+  "method": "tsh", "compression": "gaussian", "components": 1,
+  "ntraj": 7, "seed": 2026, "dt_au": 0.01, "end_fs": 1.0,
+  "every_fs": 0.1, "integrator": "sphere-rk4", "support_relative": 0.0,
+  "max_internal_dimension": 64
+}

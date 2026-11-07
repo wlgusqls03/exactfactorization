@@ -11,7 +11,7 @@ import numpy as np
 
 from multi_component_exact_factorization.gaussian_trajectory.gaussian import pack_parameters
 from multi_component_exact_factorization.gaussian_trajectory.renderer import (
-    prepare, plot_snapshot, render,
+    prepare, plot_snapshot, plot_summary, render,
 )
 
 
@@ -43,6 +43,27 @@ def synthetic_cache(root, *, optional=True):
 
 
 class GaussianRendererTests(unittest.TestCase):
+    def test_sphere_auxiliary_defect_is_distinct_from_physical_pnc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            synthetic_cache(tmp)
+            root = Path(tmp)
+            (root/'config.json').write_text(json.dumps({'integrator': 'sphere-rk4'}))
+            (root/'status.json').write_text(json.dumps({'status': 'FAILED'}))
+            for i in range(3):
+                (root/'frames'/('audit_%06d.json' % i)).write_text(json.dumps({
+                    'integrator': {'max_auxiliary_stage_norm_error': 1e-4*(i+1)}}))
+            data = prepare(root)
+            np.testing.assert_allclose(data['traces']['sphere_auxiliary_defect'], [1e-4, 2e-4, 3e-4])
+            self.assertIn('FAILED: saved frames only', data['run_label'])
+            fig = plot_summary(data)
+            try:
+                ax = fig.axes[4]
+                self.assertIn('Physical PNC', ax.get_title())
+                self.assertEqual(len(ax.lines), 2)
+                self.assertNotIn('no correction', ax.get_title())
+            finally:
+                plt.close(fig)
+
     def test_png_and_missing_encoder_preserve_cache(self):
         with tempfile.TemporaryDirectory() as tmp:
             synthetic_cache(tmp)

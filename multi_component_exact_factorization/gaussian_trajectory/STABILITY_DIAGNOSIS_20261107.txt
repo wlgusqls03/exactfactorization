@@ -1,0 +1,202 @@
+Gaussian trajectory stability investigation (2026-11-07)
+========================================================
+
+STATUS: PARTIAL NUMERICAL REPAIR, NOT A 10--40 fs VALIDATION
+No coupled Gaussian CTMQC/FSSH 10 fs or 40 fs result is certified here.
+Neither norm preservation nor successful process completion implies accuracy.
+Original calculations, model defaults and checkpoints have not been replaced.
+
+Source contract
+---------------
+Read the complete paper/MCEF_Gaussian_Trajectory_Codex_Prompt.md,
+MCEF_Gaussian_Trajectory_Codex_Reference.pdf/.tex, 11_3.pdf, and the
+16-page handwritten CTMQC/MCEF source. There is no sources/ directory locally.
+P3 uses r=Re(C^dagger F), Cdot=(F-C*r)/Lambda. Do NOT replace r by
+the projected Gaussian amplitude derivative. P8--P14 use the amplitude
+metric/SVD; P15 gives Gdot_actual=F+(Lambda_dot_projected-r)*C on support.
+The extra P15 term can alter observables even if total norm remains one.
+The source permits documented support tests, not an unreported force,
+phase-extension rule or a claim that frozen tails equal the original EOM.
+
+What was reproduced
+-------------------
+The old full-channel PEN Gaussian CTMQC/FSSH pilot (K=1, Ntraj=7,
+q32[-14,14), omega=.17, g=.01, DSE off, dt=.0025 au) rejected a proposal
+near .241526 fs. The largest PNC error was at q=-14 and relative density
+about 6e-15. Integrated norm error was about 2e-15; density-weighted PNC
+error about 3e-15. A scalar norm error without its location was misleading.
+
+Off the constraint C^dagger C=1, the direct P3 extension has
+    d(C^dagger C)/dt = 2 (r/Lambda) (1-C^dagger C).
+At the actual worst points the radial eigenvalue -2r/Lambda was NEGATIVE
+(roughly -185 to -570 au^-1), i.e. strongly damped/stiff, not proof of
+exponential radial growth. Its scale was much larger than the physical
+tangent rate. There is also severe tail nonnormality in Lambda^-1 T_q Lambda:
+the measured initial FFT tangent-Jacobian 2-norm was about 5.1e5 while the
+largest imaginary eigenvalue magnitude was about 8.1.
+
+Repairs and explicit diagnostic options
+--------------------------------------
+1. sphere_integrator.py: opt-in sphere-rk4. C=Y/||Y|| and
+   Ydot=||Y|| Cdot give a homogeneous-coordinate extension of the SAME
+   tangent P3 equation. All Gaussian parameters, heavy variables and force
+   histories use the same RK stages. Initial invalid PNC and non-tangent
+   RHS are refused, not projected away. Auxiliary norm defects are guarded
+   and recorded. Physical G is never renormalized to disguise its error.
+   This improves constraint integration; it is NOT a closure fix.
+2. q_operators.py: optional local Hermitian fd2/fd4, FFT default unchanged.
+   Action, complete internal diagonalization, kinetic energy and photon p^2
+   use the same operator. These are DIFFERENT finite-grid discretizations.
+   Continuum current/field estimators do not obey exact discrete product rules.
+   Sampled-vacuum N bias and commutator defects are reported, not subtracted.
+3. internal_channels.py: identical complete-channel matrix algebra with
+   local derivative action and real sign transport when applicable. No
+   eigenstate truncation, different force or hopping rule. Short comparisons
+   to the previous dense calculation agree to rounding precision.
+4. run.py/channel_run.py: separate integrated norm, density-weighted PNC,
+   worst point/density, accepted/saved/rejected times and auxiliary defects.
+   Failure does not overwrite the last valid checkpoint.
+   Snapshot/save/render failures have their own phase and do not pretend to
+   be rejected propagation steps. Durable saved-step advances only after
+   checkpoint atomic replacement, with an injected-write-failure regression.
+5. stability_validation.py: same configuration through increasing targets;
+   stop on the first rejection. Saved partial frames can still be rendered.
+   COMPLETE_NOT_CERTIFIED remains distinct from convergence.
+6. renderer.py: for sphere-rk4, physical PNC and auxiliary RK defects are
+   different curves. Auxiliary values are from the saved step's stage audit,
+   not a fabricated maximum between saved times. Failed runs explicitly say
+   'FAILED: saved frames only'. Legacy integrator labels remain unchanged.
+
+Actual driver checks with the repaired implementation
+-----------------------------------------------------
+PEN nonadiabatic benchmark, q32[-14,14), g=.01, DSE off, Ntraj=7,
+K=1, sphere-rk4 dt=.01 au, support=0, complete 64 internal channels:
+* FFT CTMQC and FSSH both reject the proposal after .243339763 fs;
+  final saved frames are at .199799845 fs. The auxiliary chart guard,
+  not a physical PNC drift, detects the issue.
+* FD2 CTMQC and FSSH both complete 1.000208669 fs. PNC <=1.11e-15,
+  no masked probability and no hops in this short realization.
+  CTMQC energy .24816420 -> .24843246 Ha; N=-.00402362 -> .01244042.
+  FSSH expectation energy .24816420 -> .24840277 Ha; N -> .01247116.
+  The negative initial N is an unhidden coarse FD2 discretization bias.
+  These are NOT matched-H comparisons to the earlier FFT native results.
+  They validate the driver, not physical convergence or long-time stability.
+* FD2 runs suffered an external SIGTERM at .3996 fs, not a numerical guard.
+  Source/config matching was checked by the existing resume implementation;
+  the same states/history/RNG continued through .65/.9/1 fs checkpoints.
+  This interruption and recovery are separately recorded in result JSON.
+
+Tests executed: Gaussian formula/driver/render/staging tests; old PEN
+perspectives/CTMQC tests; authors G-CTMQC native build tests using
+results/_dependencies/gctmqc_b7a2_initfix_v3; seven discrete-MCEF tests.
+146 Gaussian + 36 PEN (including all 7 author-build tests) + 7 MCEF =
+189 distinct passing tests. Two author-build tests were initially skipped
+without GCTMQC_BUILD, then explicitly executed successfully with that build.
+The G-CTMQC build and old TDSE/CTMQC/MCEF production modules were not edited.
+
+Independent fixed-R controls (NOT CTMQC or surface hopping)
+----------------------------------------------------------
+All use the same declared finite-grid H for Gaussian and uncompressed
+reference, including p^2. These isolate the internal compression problem.
+
+* FD2 q64, g=.01, lifted RK4 dt=.02/.01:
+  10 fs attempts fail at 2.3526/2.4213 fs with corrupted observables.
+* FD2 q64, g=0, dt=.01 and .005:
+  both fail at .3744432938 fs. Before failure Gaussian E~8.5923 Ha
+  while uncompressed E~.2448276 Ha; Gaussian photon number ~49.
+  Physical PNC is still ~1e-15. Halving dt alone is not a repair.
+* FD2 q64, g=.01, dt=.01, relative support=1e-6:
+  1 fs completes, but N=.862458 vs native .013732,
+  E=.389297 vs native .244828 Ha, state L2 discrepancy=.663202.
+  Max excluded probability is only 2.664e-7; projection rate residual=.6160.
+  Small excluded mass and correct PNC do not imply accurate dynamics.
+* K2, q64, FD2, dt=.001: fails near .619815 fs; a larger mixture is not
+  automatically sufficient. K3 initialization did not converge within the
+  declared fit evaluation budget and was not silently accepted.
+* A results-only well-balanced oscillator discretization preserved the
+  uncoupled fixed-R stationary control to 10.00015 fs (two grids), but its
+  coupled cases still failed or had large observable errors. This different
+  finite-grid potential was NOT added to production. Its 10 fs completion
+  must NOT be cited as coupled Gaussian/CTMQC/FSSH long-time success.
+
+Interpretation
+--------------
+The first tail-PNC rejection is a real numerical issue, but removing it does
+not establish reliable dynamics. Finite-grid phase evolution, support policy
+and finite Gaussian-amplitude projection interact strongly. These tests do
+not prove that the continuum P3 formulation is inherently ill-posed. They do
+show that time-step reduction, PNC preservation, FD replacement and simple
+tail freezing are not a demonstrated 10--40 fs solution for this pilot.
+Do not loosen the guards or relabel native dynamics as Gaussian success.
+A further method change needs an explicit closure/representation decision
+and matched convergence tests before long physical production.
+
+Reproducible commands (repository root, MCEF environment)
+-------------------------------------------------------
+Tests:
+  OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover \
+    -s tests -p 'test_gaussian_*.py' -b
+
+Experimental staged CTMQC diagnostic (EXPECTED TO STOP; not production):
+  OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python -m \
+    multi_component_exact_factorization.gaussian_trajectory.stability_validation \
+    --config multi_component_exact_factorization/gaussian_trajectory/configs/pen_ctmqc_stability_probe.json \
+    --out results/20261107/gaussian_stability_recheck_ctmqc_v1 \
+    --targets-fs 0.1 1 10 40 --movies
+
+FSSH: use configs/pen_tsh_stability_probe.json and a DIFFERENT output directory.
+These are small 2-diabatic-electronic-state benchmark pilots, not the existing
+real-electron-grid PEN production and not 10,000-trajectory authors G-CTMQC.
+Do not use their q grid, ensemble or dt as converged production settings.
+
+Existing driver still supports --q-operator fft|fd2|fd4, --integrator
+rk4|sphere-rk4 (MTE also dop853), and explicit --support-relative /
+--max-excluded-mass. Default FFT, old time integrators and support are unchanged.
+Resume only permits end_fs changes with matching config AND source hashes.
+Old checkpoints remain readable but are not forcibly resumed across algorithm
+versions. Use the matching original commit to reproduce their exact evolution.
+
+Evidence paths (local, not generated by the commands above)
+---------------------------------------------------------
+results/20261107/gaussian_channels_long_v1/       original pilot evidence
+results/20261107/local_kinetic_probe/            matched-H controls and masks
+results/20261107/well_balanced_ho_probe/         explicitly altered diagnostic H
+results/20261107/gaussian_stability_fix_v1/      actual CTMQC/FSSH driver trials
+  stability_failure_evidence.png/.pdf           executed fixed-R control plots
+  plot_failure_evidence.py                     reproducible data-only plot
+The result-only experiments and their JSON retain failed/rejected status.
+No server job or coupled 40 fs Gaussian production was run in this repair.
+
+Implementation map (repository-relative paths; line numbers at this commit)
+--------------------------------------------------------------------------
+All module paths below start with
+multi_component_exact_factorization/gaussian_trajectory/:
+  sphere_integrator.py:21--126   error/audit type and sphere_rk4_step
+  q_operators.py:18--84         matched FFT/FD derivatives, kinetic and matrix
+  models.py:166--190,244--326    action, observables and photon grid bias audit
+  internal_channels.py:44--145  complete-channel algebra optimization
+  fields.py:13--121             derivative operator selection for field estimates
+  run.py:32--100,203--310       config, opt-in step and located state guards
+  run.py:332--389,426--534      field audits and durable failure/checkpoint logs
+  channel_run.py:31--58,226--342 opt-in CT/FSSH configuration and phase logs
+  stability_validation.py:18--114 staged runs and fail-closed CLI
+  renderer.py:87--195,255--313,400--425 physical PNC/auxiliary and failed-run labels
+  configs/pen_ctmqc_stability_probe.json   explicit small failure probe
+  configs/pen_tsh_stability_probe.json     FSSH counterpart
+
+New tests:
+  tests/test_gaussian_guard_diagnostics.py
+  tests/test_gaussian_internal_channels_optimized.py
+  tests/test_gaussian_q_operators.py
+  tests/test_gaussian_sphere_driver.py
+  tests/test_gaussian_sphere_integrator.py
+  tests/test_gaussian_stability_validation.py
+Modified renderer regression:
+  tests/test_gaussian_trajectory_render.py
+
+The four actual driver cases produced 32 PNGs and 8 MP4s after the label fix.
+FFT movies contain ONLY three stored pre-failure frames, not invented late
+time data. FD2 movies use fourteen actual frames through 1.0002 fs.
+render_receipt_physical_pnc_v2.json records renderer hashes separately from
+the propagation-source hashes. Before/after hashes confirm config, metadata,
+status, checkpoints and saved fields were not changed by re-rendering.

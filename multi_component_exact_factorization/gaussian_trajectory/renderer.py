@@ -104,7 +104,8 @@ def prepare(root, *, visual_h_R=None, support_relative=1e-5):
         raise ValueError("visual_h_R must be finite and positive")
     traces = {key: [] for key in ("times_fs", "energy", "kinetic_R", "photon_number",
                                   "population", "projection_residual", "pnc_error",
-                                  "mls_condition", "rho_q", "centers", "widths", "weights")}
+                                  "mls_condition", "rho_q", "centers", "widths", "weights",
+                                  "sphere_auxiliary_defect")}
     field_samples = {key: [] for key in ("a", "b", "delta_b")}
     R_values, rho_peak, conditional_peak = [], 0.0, 0.0
     heavy_peak, momentum_samples = 0.0, []
@@ -129,6 +130,13 @@ def prepare(root, *, visual_h_R=None, support_relative=1e-5):
         for key, source in (("projection_residual", "projection_residual"),
                             ("pnc_error", "pnc_error"), ("mls_condition", "MLS_condition")):
             traces[key].append(float(np.max(f[source])) if source in f else np.nan)
+        auxiliary = np.nan
+        if config.get("integrator") == "sphere-rk4":
+            audit_path = path.with_name(path.name.replace("frame_", "audit_")).with_suffix(".json")
+            if audit_path.exists():
+                numerical = json.loads(audit_path.read_text()).get("integrator", {})
+                auxiliary = numerical.get("max_auxiliary_stage_norm_error", np.nan)
+        traces["sphere_auxiliary_defect"].append(auxiliary)
         rho_q = _weighted(f, "rho")
         traces["rho_q"].append(rho_q)
         rho_peak = max(rho_peak, float(np.max(rho_q)))
@@ -174,6 +182,9 @@ def prepare(root, *, visual_h_R=None, support_relative=1e-5):
         method = "CTMQC equations" if config["method"] == "ctmqc" else "FSSH"
         data["run_label"] = method + (" + Gaussian bridge projection (experimental)"
             if config.get("compression") == "gaussian" else " full-internal uncompressed pilot")
+    status_file = root/"status.json"
+    if status_file.exists() and json.loads(status_file.read_text()).get("status") == "FAILED":
+        data["run_label"] += " | FAILED: saved frames only"
     # Stable joint-density color scale, evaluated on the same visualization grid.
     joint_peak=0.0
     if visual_h_R is not None:
@@ -260,12 +271,24 @@ def plot_summary(data):
                               (axes[1,2],"mls_condition","Condition number","Local R reconstruction conditioning")):
         values=tr[key]
         valid=np.isfinite(values)&(values>0)
+        sphere_pnc = key == "pnc_error" and data["config"].get("integrator") == "sphere-rk4"
         if np.any(valid):
-            ax.semilogy(t[valid],values[valid],color=COLORS[0])
+            ax.semilogy(t[valid],values[valid],color=COLORS[0],
+                        label="Physical norm / PNC" if sphere_pnc else None)
         elif np.all(values==0):
             ax.plot(t,values,color=COLORS[0]); ax.text(.04,.7,"Exactly zero in saved data",transform=ax.transAxes)
         else:
             _missing(ax,title)
+        if sphere_pnc:
+            label, title = "Norm defect", "Physical PNC / auxiliary RK defect"
+            auxiliary = tr["sphere_auxiliary_defect"]
+            keep = np.isfinite(auxiliary)&(auxiliary>0)
+            if np.any(keep):
+                ax.semilogy(t[keep], auxiliary[keep], color=COLORS[1], ls="--",
+                            label="Auxiliary stages at saved steps")
+            else:
+                ax.text(.03, .8, "Auxiliary defects not cached", transform=ax.transAxes)
+            _legend(ax)
         _axis(ax,"t (fs)",label,title)
         if ax.get_yscale()=="log":
             if key == "mls_condition":
@@ -389,7 +412,9 @@ def plot_snapshot(frame,data):
         _missing(ax,"Amplitude projection residual")
     ax.axvline(t,color=".4",ls="--",lw=1)
     _axis(ax,"t (fs)",r"$\|\dot G_{\rm actual}-\dot G_{\rm EOM}\|_2$ (a.u.)","Compression error (not QD discrepancy)")
-    ax.text(.03,.95,"Raw norm/PNC: %.2e\nMax MLS condition: %.2e"%
+    norm_label = ("Physical norm/PNC" if data["config"].get("integrator") == "sphere-rk4"
+                  else "Raw norm/PNC")
+    ax.text(.03,.95,(norm_label+": %.2e\nMax MLS condition: %.2e")%
             (float(np.max(frame.get("pnc_error",np.nan))),float(np.max(frame.get("MLS_condition",np.nan)))),
             transform=ax.transAxes,va="top",bbox={"facecolor":"white","alpha":.8,"edgecolor":".8"})
     for j,ax in enumerate(axes.flat):

@@ -29,6 +29,14 @@ AU_FS = .024188843265857
 GAUGE = 'common fixed-primitive Schrodinger phase; positive bridge only; chi not reconstructed'
 
 
+class StateGuardError(FloatingPointError):
+    """A rejected candidate, with evidence distinct from the last checkpoint."""
+
+    def __init__(self, message, diagnostics):
+        super().__init__(message)
+        self.diagnostics = diagnostics
+
+
 @dataclass
 class RunConfig:
     model: dict = field(default_factory=dict)
@@ -52,6 +60,8 @@ class RunConfig:
     rtol: float = 1e-10
     atol: float = 1e-12
     max_rhs_evaluations_per_segment: int = 100000
+    sphere_max_auxiliary_defect: float = .05
+    sphere_tangent_tolerance: float = 1e-10
     fit_center_separation: float = .65
     mls: dict = field(default_factory=lambda: dict(neighbors=7, multistream_policy='report'))
     heavy_density: str = 'state_resolved'
@@ -62,8 +72,15 @@ class RunConfig:
         require_backend(self.method)
         if self.compression not in ('native', 'gaussian'):
             raise ValueError('compression must be native or gaussian')
-        if self.integrator not in ('rk4', 'dop853') or min(self.rtol, self.atol) <= 0:
-            raise ValueError('Select rk4 or dop853 with positive tolerances')
+        if self.integrator not in ('rk4', 'dop853', 'sphere-rk4') or min(self.rtol, self.atol) <= 0:
+            raise ValueError('Select rk4, dop853 or sphere-rk4 with positive tolerances')
+        if self.integrator == 'sphere-rk4' and self.compression != 'gaussian':
+            raise ValueError('sphere-rk4 requires Gaussian C,z state; use RK4 for native G')
+        if (not np.isfinite(self.sphere_max_auxiliary_defect)
+                or not 0 < self.sphere_max_auxiliary_defect < 1
+                or not np.isfinite(self.sphere_tangent_tolerance)
+                or self.sphere_tangent_tolerance <= 0):
+            raise ValueError('Invalid homogeneous-coordinate integrator guards')
         if self.ntraj < 3 or int(self.ntraj) != self.ntraj or self.components < 1 or int(self.components) != self.components:
             raise ValueError('Need integer ntraj>=3 and components>=1')
         for value in (self.dt_au, self.end_fs, self.every_fs, self.stage_pnc_tolerance,
@@ -185,6 +202,18 @@ class Engine:
 
     def step(self, state):
         dt = self.c.dt_au
+        if self.c.integrator == 'sphere-rk4':
+            from .sphere_integrator import sphere_rk4_step
+            new, audit = sphere_rk4_step(state, dt, self.evaluate,
+                max_auxiliary_defect=self.c.sphere_max_auxiliary_defect,
+                tangent_tolerance=self.c.sphere_tangent_tolerance)
+            self.last_integrator_audit = audit
+            for name in ('max_auxiliary_stage_norm_error', 'candidate_auxiliary_norm_error',
+                         'max_raw_tangent_rate_error', 'max_relative_tangent_rate_error'):
+                key = 'sphere_'+name
+                self.audit[key] = max(self.audit.get(key, 0.), audit[name])
+            self.guard(new)
+            return new
         shift = lambda rate, factor: {k: state[k]+factor*dt*rate[k] for k in state}
         k1, _ = self.evaluate(state)
         k2, _ = self.evaluate(shift(k1, .5))
@@ -201,8 +230,14 @@ class Engine:
         of every complex coefficient. Restart reinitializes the adaptive solver
         at a saved state; agreement is tolerance-based (RK4 is bit reproducible).
         """
-        if self.c.integrator == 'rk4':
-            for _ in range(end_step-start_step): state = self.step(state)
+        if self.c.integrator in ('rk4', 'sphere-rk4'):
+            for current in range(start_step, end_step):
+                # run() saves only at segment boundaries. Keep the actual
+                # rejected step separate from the last durable checkpoint.
+                self.advance_location = dict(last_accepted_step=current,
+                    attempted_step=current+1, last_accepted_fs=current*self.c.dt_au*AU_FS,
+                    attempted_fs=(current+1)*self.c.dt_au*AU_FS)
+                state = self.step(state)
             return state, 4*(end_step-start_step)
         keys = list(state)
         shapes = {k: state[k].shape for k in keys}
@@ -218,7 +253,11 @@ class Engine:
                     a, b = np.split(v, 2); v = a+1j*b
                 out[k] = v.reshape(shapes[k])
             return out
-        rhs = lambda t, y: pack(self.evaluate(unpack(y))[0])
+        def rhs(t, y):
+            self.advance_location['last_rhs_evaluation_fs'] = t*AU_FS
+            return pack(self.evaluate(unpack(y))[0])
+        self.advance_location = dict(last_accepted_fs=start_step*self.c.dt_au*AU_FS,
+                                     attempted_step=None, attempted_fs=None)
         solver = DOP853(rhs, start_step*self.c.dt_au, pack(state), end_step*self.c.dt_au,
                         max_step=self.c.dt_au, rtol=self.c.rtol, atol=self.c.atol)
         while solver.status == 'running':
@@ -227,6 +266,7 @@ class Engine:
             message = solver.step()
             if solver.status == 'failed': raise FloatingPointError('DOP853: '+str(message))
             self.guard(unpack(solver.y))
+            self.advance_location['last_accepted_fs'] = solver.t*AU_FS
         return unpack(solver.y), solver.nfev
 
     def guard(self, state):
@@ -235,16 +275,35 @@ class Engine:
         G, bridges = self.reconstruct(state)
         norm = np.einsum('q,iqk->i', self.model.quadrature, abs(G)**2)
         err = float(np.max(abs(norm-1)))
+        diagnostics = dict(integrated_norm_error=err,
+                           pointwise_pnc_error=None, worst_pnc_location=None)
         if bridges:
-            for b, C in zip(bridges, state['C']):
+            diagnostics['pointwise_pnc_error'] = 0.
+            diagnostics['density_weighted_pnc_error'] = 0.
+            for i, (b, C) in enumerate(zip(bridges, state['C'])):
                 mask = b.rho > self.c.support_relative*np.max(b.rho)
-                err = max(err, float(np.max(abs(np.sum(abs(C[mask])**2, axis=1)-1))))
+                defect = abs(np.sum(abs(C)**2, axis=1)-1)
+                where = np.flatnonzero(mask)[np.argmax(defect[mask])]
+                local = float(defect[where])
+                if local >= diagnostics['pointwise_pnc_error']:
+                    diagnostics['pointwise_pnc_error'] = local
+                    diagnostics['worst_pnc_location'] = dict(trajectory=i,
+                        q_index=int(where), q=float(self.model.q[where]),
+                        relative_density=float(b.rho[where]/np.max(b.rho)),
+                        density=float(b.rho[where]))
+                diagnostics['density_weighted_pnc_error'] = max(
+                    diagnostics['density_weighted_pnc_error'],
+                    float(self.model.quadrature@(b.rho*defect)))
+                err = max(err, local)
         if err > self.c.accepted_norm_tolerance:
-            raise FloatingPointError('Raw norm/PNC error %.6g; reduce dt (no renormalization performed)' % err)
+            raise StateGuardError('Raw norm/PNC error %.6g; inspect timestep, q discretization '
+                'and tail conditioning (no renormalization performed)' % err, diagnostics)
         edge = np.sum(self.model.quadrature[[0, -1]][None, :, None]*abs(G[:, [0, -1]])**2, axis=(1, 2))
+        diagnostics['q_boundary_mass'] = float(np.max(edge))
         if np.max(edge) > self.c.edge_mass_tolerance:
-            raise FloatingPointError('q boundary mass %.6g exceeds %.6g; enlarge box' %
-                                     (np.max(edge), self.c.edge_mass_tolerance))
+            raise StateGuardError('q boundary mass %.6g exceeds %.6g; enlarge box' %
+                                     (np.max(edge), self.c.edge_mass_tolerance), diagnostics)
+        self.last_guard_diagnostics = diagnostics
         self.audit['max_accepted_norm_pnc_error'] = max(self.audit['max_accepted_norm_pnc_error'], err)
         self.audit['max_edge_mass'] = max(self.audit['max_edge_mass'], float(np.max(edge)))
         return err
@@ -278,7 +337,8 @@ def snapshot(engine, state, t_fs):
     fields = analyze_fields(state['R'], G, m.quadrature, m.q,
                   basis_convention=m.basis_convention, gauge_convention=GAUGE,
                   mls_config=MLSConfig(**c.mls), support_relative=c.support_relative,
-                  pnc_tolerance=c.accepted_norm_tolerance)
+                  pnc_tolerance=c.accepted_norm_tolerance,
+                  q_operator=m.config.q_operator)
     obs = m.observables(state['R'], G)
     pop = np.einsum('q,iqk->ik', m.quadrature, abs(G)**2)
     # Conditional probabilities ONLY for density estimation; no state update.
@@ -310,7 +370,14 @@ def snapshot(engine, state, t_fs):
         result[key] = fields[key]
     if 'bo_population' in obs:
         result['bo_population'] = obs['bo_population']
+    for key in ('q_p_commutator_over_i', 'q_p_commutator_defect',
+                'q_p_commutator_imaginary_defect'):
+        if key in obs:
+            result[key] = obs[key]
     audit = dict(projection=rates, derivative=derivative_audit,
+                 guard=engine.last_guard_diagnostics,
+                 q_operator=m.config.q_operator,
+                 integrator=getattr(engine, 'last_integrator_audit', {'integrator': c.integrator}),
                  field_checks={key: float(np.nanmax(abs(fields[key]))) for key in
                                ('a_imaginary_defect', 'b_imaginary_defect', 'alpha_imaginary_defect',
                                 'a_quotient_residual', 'b_quotient_residual', 'alpha_bridge_residual')},
@@ -396,7 +463,10 @@ def run(config, out, *, resume=False, movies=False, render=True):
         commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
         metadata = dict(commit=commit, source_sha256=hashes, python=platform.python_version(),
                         numpy=np.__version__, hostname=platform.node(), model=engine.model.metadata(),
-                        integrator=config.integrator+'; no renormalization', precision='float64/complex128',
+                        integrator=config.integrator,
+                        integrator_policy=('homogeneous C=Y/||Y||, raw auxiliary defects guarded; not an accuracy proof'
+                            if config.integrator == 'sphere-rk4' else 'no renormalization'),
+                        precision='float64/complex128',
                         gauge=GAUGE, initializer_fit=fit, backend='B1 full-internal MTE',
                         resource_estimate=estimate,
                         method_label='MTE + Gaussian bridge projection' if config.compression == 'gaussian' else 'Uncompressed full-internal MTE',
@@ -406,12 +476,17 @@ def run(config, out, *, resume=False, movies=False, render=True):
     if final_step < step: raise ValueError('Resume target precedes checkpoint')
     stride = max(1, int(round(config.every_fs/AU_FS/config.dt_au)))
     atomic_json(root/'config.json', asdict(config))
+    last_saved_step = step if resume else None
+    phase = 'initial_guard'
     def save():
+        nonlocal phase, last_saved_step
+        phase = 'snapshot_and_save'
         frame, audit = snapshot(engine, state, step*config.dt_au*AU_FS)
         atomic_npz(root/'frames'/('frame_%010d.npz' % step), **frame)
         atomic_json(root/'frames'/('audit_%010d.json' % step), audit)
         atomic_npz(checkpoint, step=step, config_json=json.dumps(asdict(config)), source_hash_json=json.dumps(hashes),
                    **{'state_'+k: v for k, v in state.items()})
+        last_saved_step = step  # durable only after the atomic replacement
         status = dict(status='RUNNING', step=step, t_fs=frame['t_fs'], wall_seconds=time.perf_counter()-start)
         atomic_json(root/'status.json', status)
         print('SAVED step=%d t=%.6f fs norm/PNC=%.3g projection=%.3g' %
@@ -422,14 +497,18 @@ def run(config, out, *, resume=False, movies=False, render=True):
         evaluations = 0
         while step < final_step:
             target = min(final_step, (step//stride+1)*stride)
+            phase = 'propagation'
             state, nfev = engine.advance(state, step, target)
             evaluations += nfev; step = target
             save()
+        phase = 'postprocessing'
         refresh_timeseries(root)
         propagation_seconds = time.perf_counter()-start
         if render:
+            phase = 'rendering'
             from .renderer import render as render_outputs
             render_outputs(root, movies=movies)
+        phase = 'final_status'
         atomic_json(root/'status.json', dict(status='COMPLETE_NOT_CERTIFIED', step=step,
             t_fs=step*config.dt_au*AU_FS, propagation_seconds=propagation_seconds,
             rhs_evaluations_this_session=evaluations,
@@ -437,9 +516,19 @@ def run(config, out, *, resume=False, movies=False, render=True):
             wall_seconds=time.perf_counter()-start, max_rss_MiB=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024,
             warning='Short pilot only; Gaussian projection and classical heavy dynamics are approximations'))
     except Exception as exc:
-        atomic_json(root/'failure.json', dict(error=repr(exc), attempted_step=step+1,
+        location = getattr(engine, 'advance_location', {}) if phase == 'propagation' else {}
+        saved_fs = None if last_saved_step is None else last_saved_step*config.dt_au*AU_FS
+        atomic_json(root/'failure.json', dict(error=repr(exc),
+                    phase=phase, attempted_step=location.get('attempted_step'),
+                    propagation_location=location, last_saved_step=last_saved_step,
+                    last_saved_fs=saved_fs,
+                    rejected_candidate=getattr(exc, 'diagnostics', None),
+                    integrator_rejection=getattr(exc, 'audit', None),
                     instruction='Last saved checkpoint preserved; diagnose before resume'))
-        atomic_json(root/'status.json', dict(status='FAILED', step=step, error=repr(exc)))
+        atomic_json(root/'status.json', dict(status='FAILED', step=step, error=repr(exc),
+                    phase=phase, last_saved_step=last_saved_step, last_saved_fs=saved_fs,
+                    numerical_audit=engine.audit,
+                    propagation_location=location, wall_seconds=time.perf_counter()-start))
         raise
     return root
 
@@ -451,12 +540,14 @@ def main():
     p.add_argument('--model', choices=['pen-nonadiabatic', 'pen-rabi', 'mcef'])
     p.add_argument('--method', choices=['mte', 'ctmqc', 'tsh', 'ef-g-mls'])
     p.add_argument('--compression', choices=['gaussian', 'native'])
-    p.add_argument('--integrator', choices=['dop853', 'rk4'])
+    p.add_argument('--integrator', choices=['dop853', 'rk4', 'sphere-rk4'])
     for name in ('ntraj', 'seed', 'components'): p.add_argument('--'+name, type=int)
     for name in ('dt-au', 'end-fs', 'every-fs'): p.add_argument('--'+name, type=float)
     for name in ('nq', 'nx'): p.add_argument('--'+name, type=int)
     for name in ('qmin', 'qmax', 'g', 'omega'): p.add_argument('--'+name, type=float)
     p.add_argument('--dse', choices=['on', 'off'])
+    p.add_argument('--q-operator', choices=['fft', 'fd2', 'fd4'],
+                   help='Explicit q discretization; FFT remains the historical default')
     p.add_argument('--resume', action='store_true')
     p.add_argument('--movies', action='store_true')
     p.add_argument('--no-render', action='store_true')
@@ -469,6 +560,7 @@ def main():
         if getattr(a, key) is not None: model[key] = getattr(a, key)
     if a.model: model['name'] = a.model
     if a.dse: model['dse'] = a.dse == 'on'
+    if a.q_operator: model['q_operator'] = a.q_operator
     for key in ('method', 'compression', 'integrator', 'ntraj', 'seed', 'components', 'dt_au', 'end_fs', 'every_fs'):
         if getattr(a, key) is not None: raw[key] = getattr(a, key)
     config = RunConfig(**raw)

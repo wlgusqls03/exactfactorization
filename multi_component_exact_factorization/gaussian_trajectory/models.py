@@ -18,6 +18,8 @@ from ..pen_perspectives_2026.resonance import paper_config
 from ..pen_ctmqc_2026.core import hamiltonian
 from multi_component_exact_factorization_cavity.core import (
     frozen_potential, sine_kinetic)
+from .q_operators import (OPERATORS, periodic_derivative, kinetic_action,
+                          kinetic_matrix, kinetic_symbol)
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,7 @@ class ModelConfig:
     xmin: float = -22.
     xmax: float = 30.
     excitation: int = 1
+    q_operator: str = 'fft'
 
 
 def erf_inverse_gradient(distance, radius):
@@ -61,7 +64,8 @@ def erf_inverse_gradient(distance, radius):
 class InternalModel:
     """Current-state action, operator derivative force and initial wavepacket.
 
-    q uses a periodic FFT kinetic and rectangle quadrature.  MCEF x uses the
+    q defaults to periodic FFT; explicit FD2/FD4 use the same periodic grid
+    and rectangle quadrature with local Hermitian stencils. MCEF x uses the
     existing Dirichlet DST-I kinetic.  Electronic primitive coefficients in
     MCEF equal sqrt(dx)*Phi(x), so sum_k |C_k|^2=1 without a hidden dx weight.
     Heavy trap energy is external and is NOT counted again in action().
@@ -79,6 +83,8 @@ class InternalModel:
             raise ValueError('dse must be a boolean, not a string')
         if config.excitation not in (0, 1):
             raise ValueError('Initial electronic excitation must be 0 or 1')
+        if config.q_operator not in OPERATORS:
+            raise ValueError('q_operator must be fft, fd2, or fd4')
         self.q = np.linspace(config.qmin, config.qmax, config.nq, endpoint=False)
         self.dq = float(self.q[1]-self.q[0])
         self.quadrature = np.full(config.nq, self.dq)
@@ -113,7 +119,10 @@ class InternalModel:
             self.basis_convention = 'fixed electronic Dirichlet grid, sqrt(dx)-weighted coefficients'
         self.initial_P_mean = 0.
         self.initial_P_sigma = 1/(2*self.initial_R_sigma)
-        self.kinetic_q = self.kq**2/(2*self.mass_q)
+        # Public symbol remains consistent with the selected operator. The
+        # FD branches apply its local stencil, never an FFT of tiny tails.
+        self.kinetic_q = (self.kq**2/(2*self.mass_q) if config.q_operator == 'fft' else
+                         kinetic_symbol(config.nq, self.dq, self.mass_q, operator=config.q_operator))
 
     def _inputs(self, R, G=None):
         R = np.asarray(R, dtype=float)
@@ -157,13 +166,26 @@ class InternalModel:
         G = np.asarray(G)
         if G.ndim != 3 or G.shape[1] != len(self.q):
             raise ValueError('Expected [trajectory,q,component] for q derivative')
-        return np.fft.ifft(np.fft.fft(G, axis=1)
-                           *(1j*self.kq[None, :, None])**order, axis=1)
+        if self.config.q_operator == 'fft':
+            # Preserve the old default expression and numerical ordering.
+            return np.fft.ifft(np.fft.fft(G, axis=1)
+                               *(1j*self.kq[None, :, None])**order, axis=1)
+        return periodic_derivative(G, self.dq, operator=self.config.q_operator, order=order)
+
+    def kinetic_q_action(self, G):
+        """Exactly the q kinetic used by action, energy and channel matrices."""
+        if self.config.q_operator == 'fft':
+            return np.fft.ifft(np.fft.fft(G, axis=1)
+                               *self.kinetic_q[None, :, None], axis=1)
+        return kinetic_action(G, self.dq, self.mass_q, operator=self.config.q_operator)
+
+    def kinetic_q_matrix(self):
+        """Complete q kinetic for the small dense internal-channel adapter."""
+        return kinetic_matrix(len(self.q), self.dq, self.mass_q, operator=self.config.q_operator)
 
     def action(self, R, G):
         R, G = self._inputs(R, G)
-        kinetic = np.fft.ifft(np.fft.fft(G, axis=1)
-                              * self.kinetic_q[None, :, None], axis=1)
+        kinetic = self.kinetic_q_action(G)
         v = self.potential(R)
         if self.is_photon:
             return kinetic+np.einsum('iqkl,iql->iqk', v, G)
@@ -222,7 +244,13 @@ class InternalModel:
         if np.any(norm <= 0):
             raise ValueError('Cannot report observables of a zero-norm state')
         dG = self.derivative_q(G)
-        p2 = np.einsum('iqk,iqk,q->i', dG.conj(), dG, self.quadrature).real/norm
+        if self.config.q_operator == 'fft':
+            p2 = np.einsum('iqk,iqk,q->i', dG.conj(), dG, self.quadrature).real/norm
+        else:
+            # D1^dagger D1 != -D2 for FD2/FD4. Use the Hamiltonian kinetic
+            # p^2=-D2, not a different finite-grid photon-number operator.
+            p2 = (2*self.mass_q*np.einsum('iqk,iqk,q->i', G.conj(),
+                  self.kinetic_q_action(G), self.quadrature).real/norm)
         energy = np.einsum('iqk,iqk,q->i', G.conj(), self.action(R, G), self.quadrature).real/norm
         result = dict(norm=norm, internal_energy=energy,
                       external_heavy_energy=self.external_potential(R),
@@ -232,6 +260,11 @@ class InternalModel:
                       p_mean=np.einsum('iqk,iqk,q->i', G.conj(), -1j*dG, self.quadrature).real/norm,
                       p2=p2, primitive_population=np.einsum('iqk,q->ik', abs(G)**2, self.quadrature)/norm[:, None],
                       q_edge_probability=np.sum(density[:, [0, -1]], axis=1)*self.dq/norm)
+        commutator = self.derivative_q(self.q[None, :, None]*G)-self.q[None, :, None]*dG
+        commutator_mean = np.einsum('iqk,iqk,q->i', G.conj(), commutator, self.quadrature)/norm
+        result['q_p_commutator_over_i'] = commutator_mean.real
+        result['q_p_commutator_defect'] = commutator_mean.real-1.
+        result['q_p_commutator_imaginary_defect'] = commutator_mean.imag
         if self.is_photon:
             vectors = np.linalg.eigh(electronic(self.c, R)[0])[1]
             amplitudes = np.einsum('ikl,iqk->iql', vectors, G)
@@ -240,10 +273,40 @@ class InternalModel:
             result['photon_energy'] = .5*(self.omega**2*result['q2']+p2)
         return result
 
+    def photon_discretization_audit(self):
+        """Sampled continuum vacuum errors; never subtract them from N(t).
+
+        On a finite grid, a chosen discrete p^2 and q^2 do not obey the exact
+        oscillator algebra. In particular coarse FD N may be slightly negative
+        even in the sampled continuum vacuum. Record that resolution error
+        instead of hiding it by an offset or changing the initial wavefunction.
+        """
+        if not self.is_photon:
+            return None
+        vacuum = np.exp(-.5*self.omega*self.q**2)
+        vacuum /= np.sqrt(self.quadrature@abs(vacuum)**2)
+        state = vacuum[None, :, None]
+        kinetic = self.kinetic_q_action(state)[0, :, 0]
+        q2 = float(self.quadrature@(self.q**2*abs(vacuum)**2))
+        p2 = float(2*self.mass_q*np.real(self.quadrature@(vacuum.conj()*kinetic)))
+        photon_number = .5*(self.omega*q2+p2/self.omega)-.5
+        residual = kinetic+(.5*self.omega**2*self.q**2-.5*self.omega)*vacuum
+        dq_state = self.derivative_q(state)
+        commutator = (self.derivative_q(self.q[None, :, None]*state)
+                      -self.q[None, :, None]*dq_state)[0, :, 0]
+        return dict(reference='sampled continuum harmonic vacuum; no offset subtraction',
+                    q_operator=self.config.q_operator,
+                    p2_definition='2*m_q*<T_q> = <-D_qq>, not <D_q^dagger D_q> for finite differences',
+                    sampled_vacuum_photon_number=photon_number,
+                    sampled_vacuum_energy_error_Ha=self.omega*photon_number,
+                    sampled_vacuum_hamiltonian_residual_l2=float(np.sqrt(self.quadrature@abs(residual)**2)),
+                    sampled_vacuum_commutator_defect=float(np.real(self.quadrature@(vacuum.conj()*commutator))-1.))
+
     def metadata(self):
         return dict(configuration=asdict(self.config), basis=self.basis_convention,
                     gauge=self.gauge, mass_R=self.mass_R, mass_q=self.mass_q,
-                    omega=self.omega, q_operator='periodic FFT kinetic; rectangle quadrature',
+                    omega=self.omega, q_operator=('periodic '+self.config.q_operator+' kinetic; rectangle quadrature'),
+                    photon_discretization=self.photon_discretization_audit(),
                     initial_R_center=self.initial_R_center, initial_R_sigma=self.initial_R_sigma,
                     initial_P_mean=self.initial_P_mean, initial_P_sigma=self.initial_P_sigma,
                     bridge_center=self.bridge_center, bridge_sigma=self.bridge_sigma,

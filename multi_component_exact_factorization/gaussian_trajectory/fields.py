@@ -10,7 +10,7 @@ import numpy as np
 from .mls import build_mls_operator
 
 
-def periodic_q_derivative(values, q, order=1):
+def periodic_q_derivative(values, q, order=1, *, q_operator='fft'):
     """Uniform periodic-grid derivative along axis 1, retaining complex phase."""
     q = np.asarray(q, dtype=float)
     data = np.asarray(values)
@@ -23,13 +23,18 @@ def periodic_q_derivative(values, q, order=1):
         raise ValueError("values must have finite q samples on axis 1")
     if order not in (1, 2):
         raise ValueError("Only derivative orders 1 and 2 are supported")
+    if q_operator != 'fft':
+        from .q_operators import periodic_derivative
+        return periodic_derivative(data, spacing[0], operator=q_operator,
+                                   order=order, axis=1)
     k = 2 * np.pi * np.fft.fftfreq(len(q), d=spacing[0])
     multiplier = ((1j * k) ** order).reshape((1, len(q)) + (1,) * (data.ndim - 2))
     return np.fft.ifft(multiplier * np.fft.fft(data, axis=1), axis=1)
 
 
 def analyze_fields(R, G, quadrature, q, *, basis_convention, gauge_convention,
-                   mls_config=None, support_relative=1.e-10, pnc_tolerance=1.e-6):
+                   mls_config=None, support_relative=1.e-10, pnc_tolerance=1.e-6,
+                   q_operator='fft'):
     """Return a,b,alpha and bridge density in a common primitive basis.
 
     ``G.shape = (Ntrajectory, Nq, Nelectronic)``. The bridge is positive,
@@ -37,7 +42,10 @@ def analyze_fields(R, G, quadrature, q, *, basis_convention, gauge_convention,
     ``basis_convention``/``gauge_convention`` are caller declarations and must
     identify common conventions, not independent phase choices per trajectory.
 
-    q uses periodic FFT with rectangle dq quadrature. Tail mass is reported;
+    q uses the declared periodic derivative with rectangle dq quadrature.
+    Finite-difference local fields are continuum estimators; their product rule
+    is not exact at finite spacing, and they are not native bond currents.
+    Tail mass is reported;
     the caller must check finite-domain convergence. a,b are NaN off support,
     while alpha includes the *full* integrated numerator, including tails.
     No per-trajectory normalization is silently applied.
@@ -53,7 +61,7 @@ def analyze_fields(R, G, quadrature, q, *, basis_convention, gauge_convention,
         raise ValueError("Positive q quadrature vector required")
     if not 0 <= support_relative < 1 or not np.isfinite(pnc_tolerance) or pnc_tolerance < 0:
         raise ValueError("Invalid support threshold or PNC tolerance")
-    Gq = periodic_q_derivative(state, q)
+    Gq = periodic_q_derivative(state, q, q_operator=q_operator)
     if not np.allclose(weights, q[1] - q[0], rtol=1.e-10, atol=1.e-13):
         raise ValueError("Periodic FFT q requires constant rectangle quadrature dq")
     rho = np.sum(np.abs(state) ** 2, axis=2)
@@ -108,7 +116,7 @@ def analyze_fields(R, G, quadrature, q, *, basis_convention, gauge_convention,
                   basis_representation="fixed_primitive_dq_dR_zero",
                   basis_convention=basis_convention, gauge_convention=gauge_convention,
                   bridge_gauge="positive", outer_phase_assumed_zero=False,
-                  q_boundary="periodic_fft", support_relative=float(support_relative),
+                  q_boundary="periodic_"+q_operator, support_relative=float(support_relative),
                   scalar_potentials_available=False)
     return fields
 

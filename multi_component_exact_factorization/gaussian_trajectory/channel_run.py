@@ -46,8 +46,8 @@ class ChannelConfig(RunConfig):
         self.base_config().validate()
         if self.method not in ('ctmqc', 'tsh'):
             raise ValueError('Channel driver supports ctmqc or tsh; old MTE CLI is unchanged')
-        if self.integrator != 'rk4':
-            raise ValueError('Channel pilots currently require fixed RK4/event steps')
+        if self.integrator not in ('rk4', 'sphere-rk4'):
+            raise ValueError('Channel pilots require RK4 or sphere-rk4/event steps')
         if self.quantum_momentum_mode not in ('density', 'pair_intercept'):
             raise ValueError('Select density or pair_intercept quantum momentum')
         if self.intercept_policy not in ('raise', 'density_fallback'):
@@ -239,6 +239,8 @@ def run(config, out, *, resume=False, movies=False, render=True):
     checkpoint = root/'checkpoint.npz'
     start = time.perf_counter()
     step = 0
+    last_saved_step = None
+    phase = 'initialization'
     final = int(np.ceil(config.end_fs/AU_FS/config.dt_au-1e-12))
     stride = max(1, int(round(config.every_fs/AU_FS/config.dt_au)))
     # Refusing an incompatible resume must not relabel a completed old run as
@@ -256,6 +258,7 @@ def run(config, out, *, resume=False, movies=False, render=True):
             with np.load(checkpoint, allow_pickle=False) as f:
                 state = {k[6:]: f[k].copy() for k in f.files if k.startswith('state_')}
                 step = int(f['step'])
+                last_saved_step = step
                 engine.anchor, engine.active = f['anchor'].copy(), f['active'].copy()
                 engine.rng.bit_generator.state = json.loads(str(f['rng_json']))
                 engine.hops = json.loads(str(f['hops_json']))
@@ -271,7 +274,9 @@ def run(config, out, *, resume=False, movies=False, render=True):
                 source_sha256=hashes, commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
                 hostname=platform.node(), initializer_fit=fit, model=engine.model.metadata(),
                 resource_estimate=estimate, channel_basis=CHANNEL_BASIS,
-                integrator='RK4 whole ensemble; TSH events at each dt boundary',
+                integrator=config.integrator+' whole ensemble; TSH events at each dt boundary',
+                integrator_policy=('homogeneous C=Y/||Y||; raw auxiliary defects guarded; not an accuracy proof'
+                    if config.integrator == 'sphere-rk4' else 'no renormalization'),
                 force_history='integrated internal adiabatic force, no reset',
                 low_density='outside support C frozen, no renormalization; threshold and mass budget explicit',
                 scalar_potentials='unavailable without a matched complex chi/gauge closure'))
@@ -280,6 +285,8 @@ def run(config, out, *, resume=False, movies=False, render=True):
         atomic_json(root/'config.json', asdict(config))
 
         def save():
+            nonlocal phase, last_saved_step
+            phase = 'snapshot_and_save'
             frame, audit = channel_snapshot(engine, state, step*config.dt_au*AU_FS)
             atomic_npz(root/'frames'/('frame_%010d.npz' % step), **frame)
             atomic_json(root/'frames'/('audit_%010d.json' % step), audit)
@@ -288,32 +295,48 @@ def run(config, out, *, resume=False, movies=False, render=True):
                        rng_json=json.dumps(engine.rng.bit_generator.state), hops_json=json.dumps(engine.hops),
                        engine_audit_json=json.dumps(engine.audit),
                        **{'state_'+k:v for k,v in state.items()})
+            last_saved_step = step
             atomic_json(root/'status.json', dict(status='RUNNING',step=step,t_fs=frame['t_fs']))
             print('SAVED %s t=%.6f fs norm/PNC=%.3g projection=%.3g hops=%s' %
                   (config.method,frame['t_fs'],frame['pnc_error'],max(frame['projection_residual']),engine.hops),flush=True)
+        phase = 'initial_guard'
         engine.guard(state)
         if not resume:
             save()
         while step < final:
+            phase = 'propagation'
             state = engine.step(state)
             step += 1
             if step % stride == 0 or step == final:
                 save()
+        phase = 'postprocessing'
         refresh_timeseries(root)
         propagation_seconds = time.perf_counter()-start
         if render:
+            phase = 'rendering'
             from .renderer import render as base_render
             from .channel_render import render as channel_render
             base_render(root, movies=movies)
             channel_render(root, movies=movies)
+        phase = 'final_status'
         atomic_json(root/'status.json', dict(status='COMPLETE_NOT_CERTIFIED',step=step,
             t_fs=step*config.dt_au*AU_FS,propagation_seconds=propagation_seconds,
             wall_seconds=time.perf_counter()-start,numerical_audit=engine.audit,hops=engine.hops,
             warning='Implementation pilot, not convergence or physical validation; inspect projection and timestep'))
     except Exception as exc:
-        atomic_json(root/'failure.json',dict(error=repr(exc),attempted_step=step+1,
+        saved_fs = None if last_saved_step is None else last_saved_step*config.dt_au*AU_FS
+        atomic_json(root/'failure.json',dict(error=repr(exc),phase=phase,
+                    attempted_step=step+1 if phase == 'propagation' else None,
+                    attempted_fs=(step+1)*config.dt_au*AU_FS if phase == 'propagation' else None,
+                    last_accepted_step=step,last_accepted_fs=step*config.dt_au*AU_FS,
+                    last_saved_step=last_saved_step,last_saved_fs=saved_fs,
+                    rejected_candidate=getattr(exc, 'diagnostics', None),
+                    integrator_rejection=getattr(exc, 'audit', None),
                     instruction='Last atomic checkpoint preserved; inspect guard, do not hide norm errors'))
-        atomic_json(root/'status.json',dict(status='FAILED',step=step,error=repr(exc)))
+        atomic_json(root/'status.json',dict(status='FAILED',step=step,error=repr(exc),
+                    phase=phase,last_saved_step=last_saved_step,last_saved_fs=saved_fs,
+                    last_accepted_fs=step*config.dt_au*AU_FS,numerical_audit=engine.audit,
+                    wall_seconds=time.perf_counter()-start))
         raise
     return root
 
@@ -325,6 +348,7 @@ def main():
     p.add_argument('--method',choices=['ctmqc','tsh'])
     p.add_argument('--model',choices=['mcef','pen-nonadiabatic','pen-rabi'])
     p.add_argument('--compression',choices=['gaussian','native'])
+    p.add_argument('--integrator',choices=['rk4','sphere-rk4'])
     for key in ('ntraj','seed','components','max-internal-dimension'):
         p.add_argument('--'+key,type=int)
     for key in ('dt-au','end-fs','every-fs','support-relative','max-excluded-mass','heavy-width-floor'):
@@ -334,6 +358,7 @@ def main():
     for key in ('qmin','qmax','g'):
         p.add_argument('--'+key,type=float)
     p.add_argument('--dse',choices=['on','off'])
+    p.add_argument('--q-operator',choices=['fft','fd2','fd4'])
     p.add_argument('--quantum-momentum-mode',choices=['density','pair_intercept'])
     p.add_argument('--intercept-policy',choices=['raise','density_fallback'])
     p.add_argument('--frustrated-policy',choices=['keep','reverse'])
@@ -349,6 +374,7 @@ def main():
             model[key]=getattr(a,key)
     if a.model: model['name']=a.model
     if a.dse: model['dse']=a.dse=='on'
+    if a.q_operator: model['q_operator']=a.q_operator
     for f in fields(ChannelConfig):
         if f.name!='model' and getattr(a,f.name,None) is not None:
             raw[f.name]=getattr(a,f.name)

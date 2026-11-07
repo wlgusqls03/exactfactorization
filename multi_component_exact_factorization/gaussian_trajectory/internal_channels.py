@@ -9,7 +9,7 @@ a separate derivation and are rejected rather than divided by a small gap.
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.linalg import block_diag, eigh
+from scipy.linalg import eigh
 from scipy.optimize import linear_sum_assignment
 
 
@@ -44,49 +44,87 @@ class InternalChannels:
         self.derivative_tolerance = derivative_tolerance
         self.minimum_overlap = minimum_overlap
         ident = np.eye(len(model.q))
-        Tq = np.fft.ifft(model.kinetic_q[:, None]*np.fft.fft(ident, axis=0), axis=0)
-        if np.max(abs(Tq.imag)) > 1e-10:
-            raise ValueError('Internal kinetic matrix is unexpectedly complex')
-        self.kinetic = np.kron(Tq.real, np.eye(model.nk))
+        Tq = model.kinetic_q_matrix()
+        self.kinetic = np.kron(Tq, np.eye(model.nk))
         if not model.is_photon:
             self.kinetic += np.kron(ident, model.Tx)
 
     def matrices(self, R):
+        """Dense audit matrices, preserving the public reference interface.
+
+        Propagation uses the same local operator through ``_local_action``:
+        constructing a dense derivative matrix is unnecessary when it is
+        diagonal (MCEF) or block diagonal in q (PEN).
+        """
         potential = self.model.potential(np.atleast_1d(R))
         gradient = self.model.potential_gradient(np.atleast_1d(R))
+        return self._local_matrix(potential)+self.kinetic[None], self._local_matrix(gradient)
+
+    def _local_matrix(self, values):
+        """Embed the unchanged local potential without Python block loops."""
+        values = np.asarray(values)
+        matrix = np.zeros((len(values), self.dimension, self.dimension), dtype=values.dtype)
         if self.model.is_photon:
-            V = np.array([block_diag(*v) for v in potential])
-            dV = np.array([block_diag(*dv) for dv in gradient])
+            nq, nk = len(self.model.q), self.model.nk
+            rows = np.arange(nq)[:, None, None]*nk + np.arange(nk)[None, :, None]
+            cols = np.arange(nq)[:, None, None]*nk + np.arange(nk)[None, None, :]
+            matrix[:, rows, cols] = values
         else:
-            V = np.array([np.diag(v.ravel()) for v in potential])
-            dV = np.array([np.diag(dv.ravel()) for dv in gradient])
-        return V+self.kinetic[None], dV
+            index = np.arange(self.dimension)
+            matrix[:, index, index] = values.reshape(len(values), -1)
+        return matrix
+
+    def _local_action(self, values, vectors):
+        """Exactly apply local dH/dR to all columns; no state truncation.
+
+        The final U^dagger product is still dense, but dH itself need not be.
+        This changes only algebraic evaluation cost, not the force/NAC rule.
+        """
+        if self.model.is_photon:
+            shaped = vectors.reshape(len(self.model.q), self.model.nk, self.dimension)
+            return np.einsum('qkl,qln->qkn', values, shaped).reshape(vectors.shape)
+        return values.reshape(-1, 1)*vectors
 
     def evaluate(self, R, reference=None):
-        H, dH = self.matrices(R)
+        coordinates = np.atleast_1d(R)
+        potential = self.model.potential(coordinates)
+        gradient = self.model.potential_gradient(coordinates)
+        H = self._local_matrix(potential)+self.kinetic[None]
+        if not np.all(np.isfinite(gradient)):
+            raise ValueError('Nonfinite internal Hamiltonian derivative')
         energies, vectors, forces, nacs = [], [], [], []
         min_overlap = 1.
-        for i, (h, dh) in enumerate(zip(H, dH)):
+        for i, (h, dh) in enumerate(zip(H, gradient)):
             E, U = eigh(h, check_finite=True)
             if reference is not None:
                 overlap = reference[i].conj().T@U
                 row, col = linear_sum_assignment(-abs(overlap)**2)
                 order = col[np.argsort(row)]
                 E, U = E[order], U[:, order]
-                diagonal = np.diag(reference[i].conj().T@U)
+                # Reuse the already computed overlap. A second dense matrix
+                # product only to extract its diagonal has identical content.
+                diagonal = overlap[np.arange(self.dimension), order]
                 min_overlap = min(min_overlap, float(np.min(abs(diagonal))))
                 if np.any(abs(diagonal) < self.minimum_overlap):
                     raise ValueError('Ambiguous internal-channel continuation: reduce dt '
                                      'or resolve the degenerate subspace; no relabeling guess')
-                U = U.astype(complex)*np.exp(-1j*np.angle(diagonal))[None]
-            derivative = U.conj().T@dh@U
+                if np.isrealobj(U) and np.isrealobj(reference[i]):
+                    # For the actual real Hamiltonians, parallel transport is
+                    # exactly a sign. Avoid artificial complex arithmetic from
+                    # exp(-i*pi). G and its coefficients remain fully complex.
+                    U = U*np.where(diagonal < 0., -1., 1.)[None]
+                else:
+                    # Preserve genuine complex gauge references, including
+                    # checkpoints produced by the previous complex path.
+                    U = U.astype(complex)*np.exp(-1j*np.angle(diagonal))[None]
+            derivative = U.conj().T@self._local_action(dh, U)
             gap = E[None, :]-E[:, None]
             near = abs(gap) <= self.gap_tolerance
             np.fill_diagonal(near, False)
             if np.any(abs(derivative[near]) > self.derivative_tolerance):
                 raise ValueError('Degenerate channels have nonzero derivative coupling; '
                                  'a subspace treatment is required')
-            d = np.zeros_like(derivative, dtype=complex)
+            d = np.zeros_like(derivative)
             resolved = abs(gap)>self.gap_tolerance
             d[resolved] = derivative[resolved]/gap[resolved]
             np.fill_diagonal(d, 0.)
