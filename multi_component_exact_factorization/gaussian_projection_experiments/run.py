@@ -42,6 +42,8 @@ class ExperimentConfig:
     integrator:str='sphere-rk4'
     rtol:float=1e-8
     atol:float=1e-10
+    adaptive_max_halvings:int=16
+    adaptive_max_attempts:int=2048
 
     def validate(self):
         if self.mode not in ('standard','energy'):raise ValueError('Unknown projection mode')
@@ -56,6 +58,9 @@ class ExperimentConfig:
         if self.reference_max_dimension<1:raise ValueError('Invalid reference size limit')
         if self.integrator not in ('sphere-rk4','adaptive-sphere-rk4'):raise ValueError('Unknown integrator')
         if not np.all(np.isfinite([self.rtol,self.atol])) or min(self.rtol,self.atol)<=0:raise ValueError('Positive finite integration tolerances required')
+        for value in (self.adaptive_max_halvings,self.adaptive_max_attempts):
+            if isinstance(value,bool) or int(value)!=value or value<1:
+                raise ValueError('Positive integer adaptive budgets required')
 
 
 def fingerprints():
@@ -144,7 +149,9 @@ def run(config,out,*,resume=False):
             trial_audit.clear()
             if config.integrator=='adaptive-sphere-rk4':
                 proposed,audit=adaptive_interval(state,config.dt_au,evaluate,rtol=config.rtol,atol=config.atol,
-                                               max_auxiliary_defect=config.max_auxiliary_defect)
+                                               max_auxiliary_defect=config.max_auxiliary_defect,
+                                               max_halvings=config.adaptive_max_halvings,
+                                               max_attempts=config.adaptive_max_attempts)
             else:
                 proposed,audit=sphere_rk4_step(state,config.dt_au,evaluate,max_auxiliary_defect=config.max_auxiliary_defect)
             # Reject nonfinite/rank-deficient final physical states too, not
@@ -186,6 +193,8 @@ def parser():
     p.add_argument('--reference-max-dimension',type=int,default=2048)
     p.add_argument('--integrator',choices=['sphere-rk4','adaptive-sphere-rk4'],default='sphere-rk4')
     p.add_argument('--rtol',type=float,default=1e-8);p.add_argument('--atol',type=float,default=1e-10)
+    p.add_argument('--adaptive-max-halvings',type=int,default=16)
+    p.add_argument('--adaptive-max-attempts',type=int,default=2048)
     p.add_argument('--render',action='store_true');p.add_argument('--movies',action='store_true')
     return p
 
@@ -196,7 +205,8 @@ def config_from_args(a):
         components=a.components,mode=a.mode,dt_au=a.dt_au,end_fs=a.end_fs,every_fs=a.every_fs,
         separation=a.separation,initialization=a.initialization,rank_rtol=a.rank_rtol,constraint_rtol=a.constraint_rtol,
         power_atol=a.power_atol,reference=not a.no_reference,reference_max_dimension=a.reference_max_dimension,
-        integrator=a.integrator,rtol=a.rtol,atol=a.atol)
+        integrator=a.integrator,rtol=a.rtol,atol=a.atol,
+        adaptive_max_halvings=a.adaptive_max_halvings,adaptive_max_attempts=a.adaptive_max_attempts)
 
 
 def main():

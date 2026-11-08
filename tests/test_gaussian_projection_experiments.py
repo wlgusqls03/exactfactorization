@@ -153,6 +153,32 @@ class DriverTests(unittest.TestCase):
             adaptive_interval(state,.1,bad,max_halvings=3)
         np.testing.assert_array_equal(state['C'],[[1.]])
 
+    def test_gaussian_trial_domain_failure_is_retried_without_clipping(self):
+        state=dict(C=np.array([[1.+0j]]),z=np.array([1.]))
+        def rhs(s):
+            if s['z'][0]<=0:
+                raise ValueError('invalid weights or widths; reduce step or change parameterization')
+            return dict(C=np.zeros_like(s['C']),z=-100*s['z'])
+        v,a=adaptive_interval(state,.1,rhs,rtol=1e-9,atol=1e-12)
+        self.assertGreater(a['rejected_trials'],0)
+        np.testing.assert_allclose(v['z'],[np.exp(-10)],rtol=2e-7,atol=1e-12)
+        np.testing.assert_array_equal(state['z'],[1.])
+
+    def test_adaptive_does_not_retry_arbitrary_programming_errors(self):
+        state=dict(C=np.array([[1.+0j]]),z=np.array([1.]))
+        def bad(s):raise ValueError('unsupported coordinates')
+        with self.assertRaisesRegex(ValueError,'unsupported coordinates'):
+            adaptive_interval(state,.1,bad)
+
+    def test_adaptive_checks_final_rhs_before_acceptance(self):
+        state=dict(C=np.array([[1.+0j]]),z=np.array([1.]));seen=[]
+        def rhs(s):
+            seen.append(s['z'].copy())
+            return dict(C=np.zeros_like(s['C']),z=np.ones_like(s['z']))
+        v,a=adaptive_interval(state,.1,rhs)
+        self.assertEqual(len(seen),13)
+        np.testing.assert_array_equal(seen[-1],v['z'])
+
     def test_hermite_seed_is_explicit_and_not_an_online_fit(self):
         p=FixedProblem(dict(nq=64,q_operator='fd2',g=0))
         rho=np.sum(abs(p.physical_G0)**2,axis=1)

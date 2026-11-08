@@ -66,7 +66,12 @@ seed 사용. 초기 오차는 더 클 수 있으나 초기 성분 퇴화를 분�
 --integrator adaptive-sphere-rk4: 동일 RHS의 full step vs 두 half step 오차 제어.
 모든 C(q), transformed parameter, passive integral에 rtol/atol을 적용한다.
 accepted solution은 두 half step이며 Richardson/energy 사후 보정은 없다.
-한 outer interval 내 2^16 step 축소 또는 2048회 시도 한계를 넘으면 실패한다.
+기본적으로 한 outer interval 내 2^16 step 축소 또는 2048회 시도 한계를 넘으면 실패한다.
+--adaptive-max-halvings / --adaptive-max-attempts로 이 수치적 재시도 한도를
+명시적으로 늘릴 수 있다. rtol/atol 또는 energy/rank 허용오차를 완화하는 옵션이
+아니다. 중간/최종 RK 시험 상태의 Gaussian 폭 등이 표현 가능 범위를 벗어나면
+작은 step으로 재시도하며, 초기화/좌표/shape 설정 오류는 그대로 보고한다.
+폭이나 가중치를 clipping하거나 유효하지 않은 상태를 저장하지 않는다.
 time-step 축소도 rank 손실/거의 사라지는 에너지 제약 방향을 해결하지 못할 수 있다.
 
 실행 (저장소 루트, MCEF 환경)
@@ -98,6 +103,17 @@ python -m multi_component_exact_factorization.gaussian_projection_experiments.sw
 --integrator adaptive-sphere-rk4로 정확한 시간적분이 가능한지 별도로 검사한다.
 rank/시간적분 guard로 일부 case가 실패하면 sweep은 나머지를 계속 수행하고
 전체 종료코드 2를 반환한다. 이는 실패를 숨기지 않기 위한 동작이다.
+
+장시간 목표 + 다중 Gaussian 시험 (완주 보장 명령이 아님):
+python -m multi_component_exact_factorization.gaussian_projection_experiments.sweep \
+  --out results/20261108/gaussian_manyK_server_v1 \
+  --K 4 6 8 12 --modes energy --couplings .01 --nq 128 \
+  --initialization hermite --separation .8 \
+  --integrator adaptive-sphere-rk4 --dt-au .01 --end-fs 10 --every-fs .05 \
+  --adaptive-max-halvings 24 --adaptive-max-attempts 8192 --render
+실제 로컬 시험의 도달 시간/중단 이유는 LONG_K_TEST_REPORT.txt에 기록한다.
+초기 성분을 잘 분리하는 것과 초기 vacuum을 정확하게 표현하는 것 사이에
+조건수/초기오차 tradeoff가 있다. initialization.json을 함께 확인할 것.
 
 4) reference 없이 자율 전파: 위 run 명령의 새 --out에 --no-reference 추가.
 5) 실공간 MCEF adapter의 매우 짧은 fixed-heavy 검사 (production 아님)

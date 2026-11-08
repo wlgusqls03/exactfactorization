@@ -1,0 +1,147 @@
+2026-11-08: 에너지 제약 + 다중 Gaussian, 실제 10 fs 목표 시험
+==========================================================
+
+범위 / 결론
+-----------
+고정 R=2인 내부 PEN benchmark (2 diabatic 전자성분 + photon q).
+일반적인 complex C(q), Gaussian 밀도 혼합의 제곱근 Lambda_K를 유지했다.
+움직이는 핵, heavy quantum momentum, CTMQC ensemble 전파가 아니다.
+고정-R 내부 에너지 조건을 움직이는 핵의 내부 에너지에 강제하지 않았다.
+
+이번에는 K=1을 사용하지 않았다. K=2,4,6,8,12,16, 총 26건 모두
+end_fs=10으로 실제 실행했다. 26건 모두 수치 guard로 중단되었으며
+10 fs 또는 40 fs Gaussian 전파를 완주/검증했다고 주장할 수 없다.
+이 결과를 기존 TDSE / native CTMQC가 모두 1 fs 미만에서 실패한다는
+주장으로 확대해서는 안 된다.
+
+짧은 공통 구간에서는 K 증가에 따른 상태 오차 감소가 관측되었다.
+하지만 초기 표현력/짧은 구간 정확도 개선이 장시간 안정성으로 이어지지
+않았다. 에너지 drift가 매우 작은 상태에서도 parameter 문제로 중단됐다.
+현재 규칙의 장시간 사용은 아직 검증되지 않았다.
+
+실제 실행 설정과 결과 위치
+-------------------------
+results/20261108/gaussian_manyK_long_v1/
+  accurate_seed/        K=2,4,6,8; separation=.65; dt=.02 au
+  separated_seed/       K=4,6,8,12; separation=.80; dt=.02 au
+  well_separated_seed/  K=8,12,16; separation=.90; dt=.01 au
+위 11건은 commit 22edf0d의 코드. 적분의 재시도 한도는 16/2048이었다.
+
+아래 15건은 이번 trial-domain 재시도 수정 후 새 폴더에서 처음부터 실행:
+  retry_accurate/       K=2,4,6,8; separation=.65; dt=.01 au
+  retry_separated/      K=6,8,12; separation=.80; dt=.02 au
+  retry_well_separated/ K=8,12,16; separation=.90; dt=.01 au
+  fft_grid64/           K=4,8,12; separation=.80; dt=.01 au
+  fitted_seed/          K=4,8; separation=.80; dt=.01 au; initial amplitude fit
+재시도 상한: max_halvings=24, max_attempts=8192.
+rtol=1e-8, atol=1e-10, rank_rtol=1e-12, power_atol=1e-12는 완화하지 않았다.
+
+공통: g=.01, omega=.17, DSE off, q=[-14,14), energy-constrained projection.
+주 검사: nq=128 FD2. fft_grid64만 nq=64 FFT의 별도 민감도 검사이며
+연속체 격자 수렴을 인증한 비교는 아니다. 매 계산은 자신과 동일한 H_disc의
+spectral reference 및 실제 K 초기상태에서 출발한 reference를 사용했다.
+reference는 진단에만 사용하며 parameter / C 업데이트에 들어가지 않는다.
+
+기본 초기화는 서로 다른 중심의 Hermite convolution seed이다.
+separation=.65/.80/.90은 Gaussian 초기 중심의 분리 정도이지 g가 아니다.
+큰 separation은 초기 조건수를 개선할 수 있지만 vacuum 진폭 오차도 커진다.
+fitted_seed에서는 초기 진폭만 최적화했고, 전파 중 reference 재fitting은 없다.
+모든 26건은 초기 full-rank 검사를 통과한 뒤 실제 전파에 들어갔다.
+
+시험 조건 중 K별 가장 긴 마지막 accepted 시간 (정확도 인증 시간이 아님):
+  K       마지막 t(fs)        해당 family
+   2      0.5565852835         retry_accurate
+   4      0.1610976962         retry_accurate (원래 accurate_seed도 같은 시각)
+   6      0.1141713402         retry_separated
+   8      0.0626491041         retry_accurate
+  12      0.0222537358         retry_separated
+  16      0.0043539918         retry_well_separated
+K별 다른 초기화의 최장 시간을 고른 표이므로 이것만으로 수렴률을 추론하지 않는다.
+모든 config/status/failure/initialization/metadata/checkpoint는 보존되어 있다.
+
+공통 시각의 정확도 (서로 다른 종료 시간의 error를 비교하지 않음)
+----------------------------------------------------------------
+retry_accurate, FD2 nq128, separation=.65, dt=.01 au.
+모든 K에서 t=0.05007090556 fs에 저장된 값을 비교했다.
+
+ K   initial physical amplitude mismatch   propagated state L2 error   density L1 error
+ 2   4.6931971039e-2                        1.8013519452e-2             1.6632259199e-2
+ 4   3.2143226261e-3                        4.5909429844e-3             3.9072014693e-3
+ 6   2.2901949931e-4                        3.4166139368e-4             1.5732256158e-4
+ 8   1.6419376692e-5                        1.8135868690e-5             1.4442741134e-5
+
+propagated error는 각 K와 같은 초기상태에서 시작한 reference에 대한 오차.
+따라서 physical initial mismatch도 반드시 함께 해석해야 한다.
+이 초기화 계열의 짧은 구간에서는 표현력과 전파 오차 모두 개선됐다.
+이것을 10 fs 정확도, 다른 seed에서의 단조 수렴, CTMQC 대비 우월성으로
+해석해서는 안 된다.
+
+최적화된 초기 진폭으로도 재시험:
+ K=4: initial error=2.4517402316e-4, 마지막 .02660772759 fs,
+      마지막 state error=4.14458123e-5, trial budget 초과.
+ K=8: initial error=2.8435039074e-6, 마지막 .00798231828 fs,
+      마지막 state error=6.14603218e-8, trial budget 초과.
+초기 fitting만 잘 되면 장시간 전파도 보장된다는 결론은 나오지 않는다.
+
+중단 원인 / 에너지
+-----------------
+수정 후 15건의 최대 energy drift: 약 2.52e-11 Ha 이하.
+26건 모두 마지막 저장 G, density, energy, reference, state error는 유한값.
+전체 최대 norm error=4.44e-16, electronic PNC error=6.66e-16.
+이 작은 오차들은 장시간 정확성의 증거가 아니다.
+
+주요 중단 원인은 매우 작은 가중치/폭을 갖는 Gaussian 성분, tangent rank
+손실, 큰 transformed parameter 속도와 adaptive local-error/domain 한계였다.
+예: retry_accurate K4의 마지막 min weight 약 2.0e-13.
+K8 일부 rejected stage에서 rank 22/23, K12에서 34/35를 기록했다.
+K16 재시험은 한 outer interval에서 8192회 시도 (7128 substeps accepted,
+1064 rejected), 최소 내부 step 약 4.68e-8 au까지 사용한 뒤 trial budget으로
+중단됐다. 이 outer interval은 transactional이므로 마지막 온전한 checkpoint는
+직전 outer interval의 .0043539918 fs이다.
+
+rank 조건수에는 column scaling과 weight parameterization의 영향도 있다.
+따라서 이번 guard 실패만으로 Gaussian 밀도 표현 자체의 수학적 불가능이나
+정확한 연속시간 해의 발산을 증명했다고 주장하지 않는다.
+rank threshold를 낮추거나 ridge/성분 제거를 조용히 넣지 않았다.
+
+같은 FD2 H의 spectral-reference 대조를 t=0,1,5,10 fs에서 평가:
+norm 약 .9999999999999987, energy drift 절댓값 최대 1.48e-15 Ha.
+이는 Gaussian 전파가 아니라 비압축 Hermitian reference 대조임을 구분한다.
+
+발견한 코드 문제와 최소 수정
+---------------------------
+integration.py: 중간 RK 시험 Gaussian의 invalid width / underflow 등의
+ValueError가 즉시 중단을 유발하던 경로를 확인했다. 명시된 numerical-domain
+오류만 작은 step으로 재시도하고, 최종 후보도 acceptance 전에 검사한다.
+좌표/shape/config 오류는 그대로 예외로 올린다. 초기화 오류를 숨기지 않는다.
+폭/weight clipping, masking, rank truncation, 에너지 사후 보정은 추가하지 않았다.
+
+run.py: adaptive_max_halvings / adaptive_max_attempts를 config와 CLI에 노출.
+기본 16/2048은 유지. 이번 재시험만 명시적으로 24/8192를 사용했다.
+projection.py의 수식과 기존 gaussian_trajectory 전파 코드는 변경하지 않았다.
+
+회귀검사 / 출력
+---------------
+Gaussian tests 165/165 (기존 146 + 실험 모듈 19).
+PEN perspectives tests 17/17, discrete MCEF tests 7/7. 합계 189/189.
+새 3개 시험: numerical trial error 재시도, 임의 programming error 전달,
+최종 candidate RHS 검사. git diff --check 통과.
+기존 gaussian_trajectory Python 파일 19개를 HEAD와 byte 비교: 변경 0개.
+수정 후 15건 metadata source hash와 실제 현재 코드의 일치를 확인했다.
+
+주요 출력 (위 results root 안):
+  manyK_long_report.json / .csv / .txt   모든 case, 오류 및 공통시각 비교
+  manyK_long_attempt_summary.png / .pdf  초기오차/전파시간/상태오차/energy
+  summarize_manyK.py                     저장 결과만 읽는 재집계 스크립트
+  retry_accurate/K_comparison_g_0.01.png / .pdf
+  retry_accurate/g_0.01/K8_energy/plots/diagnostic_summary.png / .pdf
+  retry_accurate/g_0.01/K8_energy/plots/state_*.png
+  retry_accurate/g_0.01/K8_energy/plots/state_diagnostics.mp4
+마지막 movie는 실패 전의 3개 저장 프레임뿐이다 (H264 1650x990, .3 s).
+이를 10 fs movie나 성공한 긴 dynamics로 제시하지 않는다.
+
+기존 result/checkpoint 및 기본 계산법은 덮어쓰지 않았다.
+26건 case wall time 합산은 약 1884 s (동시 실행이므로 전체 경과 시간과 다름).
+이번 결과로 장시간 production을 권하지 않는다. 다음 연구 과제는 단순 K 증가가
+아니라 Gaussian parameter 퇴화/조건수/빈 성분 처리를 어떻게 정식화할지다.
+그 처리는 별도의 수치·방법론 선택이며, 이번 시험에서 임의로 대체하지 않았다.
