@@ -1,0 +1,132 @@
+2026-11-08 실제 로컬 검사 결과
+============================
+
+범위: 고정 R, 같은 유한격자 Hermitian Hamiltonian, 일반 complex C(q).
+움직이는 R / CTMQC quantum momentum / MLS는 이 실험에 없다.
+기존 방법/기본값/checkpoint 소스는 수정하지 않았다.
+
+테스트
+------
+Gaussian 관련 총 162 tests = 기존 146 + 신규 16, 모두 통과.
+기존 PEN perspective 17 tests 통과 (27.144 s; fontconfig cache 경고는 있었음).
+기존 discrete MCEF 7 tests 통과. 합계 186 tests.
+기존 gaussian_trajectory.run MTE/native CLI도 ntraj=7, nq=32,
+dt=.005 au, end=.01 fs로 별도 실행하여 .010038 fs까지 완료.
+legacy source_hashes()에 포함된 24개 파일을 git HEAD와 SHA256 비교: 변경 0개.
+
+신규 검사 내용:
+- constrained SVD vs 독립 KKT 해.
+- P3 불변, PNC/norm rate, P15, energy directional derivative.
+- energy zero shift 불변, infeasible constraint/rank 결핍을 명시적 실패 처리.
+- reference on/off 최종 C,z bitwise 동일.
+- 같은 K-fitted 초기상태의 reference, 초기 fitting 오차 별도 기록.
+- checkpoint resume vs uninterrupted 전파 bitwise 동일.
+- 다른 dt resume와 기존 폴더 덮어쓰기 차단.
+- PEN NA/Rabi 및 실공간 MCEF, FFT/FD2/FD4 action을 기존 model과 대조.
+- adaptive step doubling의 독립 선형 해 비교, 실패 시 원 상태 보존.
+- reference 없는 그림, K 비교 그림, 구형 matplotlib legend 호환.
+
+저장된 실험
+-----------
+results/20261108/gaussian_projection_revision_v1/
+  K_study_dt005/           16 cases: g=0,.01 x K=1..4 x standard/energy
+  K_study_dt00125/         같은 16 cases, dt를 1/4로
+  hermite_K_study/         같은 16 cases, unfitted Hermite 초기화, dt=.0025
+  adaptive_checks/          4 cases: K=1,2, g=0,.01, energy
+  adaptive_constraint_audit/ 4 cases: K=1..4, g=0, energy, rejected-stage 기록
+  grid_checks/             q128 box14 / q80 box17.5 / MCEF standard,energy
+  coupled_K1_energy_3fs_dt005/   목표 3 fs (실패, 아래 참조)
+  coupled_K1_energy_adaptive_3fs/ 목표 3 fs (실패, 아래 참조)
+  precheck_K1_energy/, precheck_K2_energy/  초기 짧은 검사
+  final_supported_pilot/, final_supported_pilot_v2/ 최종 CLI + 자동 PNG/PDF/MP4 확인
+  legacy_cli_smoke/        기존 MTE CLI (새 projection 실험 아님)
+
+처음 64개 fixed-R 실험 중 17개 완주, 47개 FAILED.
+마지막 supported pilot 2개를 별도로 추가했다 (합계 66, 완주 19, 실패 47).
+완주는 정확성 인증이 아니다. 아래 비결합 standard K=1은 .4 fs까지 완주해도
+에너지 오차가 커서 물리적으로 사용할 수 없는 명확한 예이다.
+작업 중 추가된 계측/렌더 변경은 각 metadata.json의 실제 source hash로 구별.
+기존 결과를 덮어쓰지 않았으며, source가 바뀐 중간 연구 checkpoint에 강제로
+resume하지 않는다. 최종 코드로 새 출력 폴더에서 재현 가능하다.
+
+주요 수치 (fs, Ha; omega=.17, fixed R=2, DSE off, FD2)
+----------------------------------------------------
+q64 [-14,14), g=0, K1 standard, dt=.00125:
+  최종 .4000229955 fs, energy drift +8.202124809 Ha,
+  복소 상태 L2 error 1.445111018. 기존 실패를 재현한다.
+
+q64, g=.01, K1 standard, dt=.00125:
+  최종 .4000229955 fs, energy drift +1.12162849e-5 Ha,
+  상태 error .0046014703.
+
+q64, g=.01, K1 energy, adaptive rtol=1e-8 atol=1e-10, outer dt=.02:
+  최종 .4000834676 fs, max |energy drift| 2.49800181e-16 Ha,
+  상태 error .0049497033, fidelity .9999755057.
+  에너지 drift는 줄었으나 상태 error는 standard보다 작지 않다.
+
+q64, g=.01, K2 energy, 같은 adaptive:
+  최종 .4000834676 fs, final energy drift +1.63632163e-11 Ha,
+  상태 error .0055525784. K1보다 단순히 더 정확하다고 말할 수 없다.
+  K별로 reference도 해당 초기 Gaussian mixture에서 출발했다.
+
+q64, g=0, K1 energy, adaptive:
+  마지막 accepted .06482609995 fs, energy drift -2.85882429e-15 Ha.
+  다음 outer interval에서 local-error 제어 한계로 중단.
+  rejected stages: tangent condition ~2.42, min energy constraint resolvability
+  1.2675e-5, min energy covector norm 3.5607e-9, max parameter rate 56.35.
+  Gaussian tangent 전체 rank는 좋은데 에너지 조건 방향이 작아지는 별도
+  문제가 관측된다. 이것만으로 해의 수학적 비존재를 증명했다고 하지 않는다.
+
+q64, g=0, K2 energy, adaptive:
+  마지막 .05224790145 fs, energy drift -1.31814004e-12 Ha.
+  rejected stages tangent condition 최대 8.59e8, parameter rate 최대 1210.7.
+  K3/K4에서도 time-error/rank 제한이 발생했다. 단순 K 수렴은 확보 못함.
+
+연장 시험의 중요한 차이
+----------------------
+g=.01 K1 energy 목표 3 fs:
+  fixed step .005: 마지막 2.444887 fs, 안전장치 실패.
+  adaptive: 마지막 .6676120741 fs, energy drift -4.88498131e-15 Ha,
+            상태 error .0065673886, local-error 제어 한계로 중단.
+fixed step에서 더 오래 숫자가 나오는 것을 더 정확한 해로 해석하면 안 된다.
+에너지 변화와 연속시간 projection power 적분의 불일치도 함께 저장되어 있다.
+이번 시험은 10--40 fs 사용 가능성을 입증하지 못했다. 그 길이의 production
+계산을 수행했거나 안정화 완료했다고 주장하지 않는다.
+
+초기화 / 격자 민감도
+-------------------
+fit 초기화의 tangent condition:
+  K1 2.43, K2 7.99e2, K3 5.45e7, K4 1.72e7.
+unfitted Hermite 초기화:
+  K2 39.6, K3 455, K4 7019 (초기 amplitude error는 더 큼, 별도 저장).
+초기 조건수를 개선해도 모든 전파가 해결되지는 않았다.
+offline_capacity.json도 constrained local fitting 결과이다. center 분리 제약으로
+K2 fitting 오차가 K1보다 클 수 있다. 이를 전역 최소 오차 또는 Gaussian
+표현능력의 수학적 한계로 해석하지 않는다. K1 offline fitting은 moments만
+계산하는 것에 그치지 않고 amplitude-metric 최소제곱을 추가 수행한다.
+
+standard g=0 K1 dt=.00125:
+  q80 [-17.5,17.5), 같은 dq=.4375: .4 fs drift +.00798502 Ha.
+  q128 [-14,14), dq=.21875: .2266796975 fs에 rank guard,
+      마지막 energy drift +37.0648698 Ha.
+큰 grid/box 의존성이 있으므로 .4 fs 수치를 continuum 수렴값이나 물리적인
+성장 시간으로 해석해서는 안 된다. 각 비교의 reference는 해당 동일 H_disc.
+
+실공간 MCEF fixed-heavy smoke:
+  nx17, q48 [-6,-2), fixed heavy R=9.5, dt=.0025, 목표 .02 fs.
+  standard/energy 모두 .0200162678 fs 완주.
+  drift: standard +6.0793e-11 Ha / energy +2.4980e-15 Ha.
+  상태 error 양쪽 약 3.1425e-7. 매우 짧고 거친 격자 검사이며 기존 실공간
+  MCEF의 긴 production 동역학 검증을 대체하지 않는다.
+
+해석 및 다음 결정
+----------------
+1. 전파에 reference 값을 넣거나 reference와의 차이로 미분하지 않는다.
+2. energy-constrained parameter solve 자체의 대수는 검증했다.
+3. 에너지 제약이 전체 동역학의 안정성/상태 정확도를 보장하지는 않았다.
+4. K 증가, 초기화, dt, grid 변화에 대한 단순 수렴은 확인되지 않았다.
+5. C(q)를 특정 위상 ansatz로 바꾸지 않았다. 움직이는 R, CTMQC, TSH에
+   고정 내부 에너지 조건을 전파하지 않았다.
+6. 다음 연구 대상은 Gaussian tangent 퇴화와 에너지 제약 방향의 소실이다.
+   rank truncation/ridge/adaptive K/다른 variational 원리는 별도의 선택이며
+   이번 코드에서 조용히 대체하지 않았다.
