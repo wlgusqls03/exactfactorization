@@ -1,0 +1,96 @@
+고정 폭 복소 Gaussian 검증 인덱스 (2026-11-10)
+================================================
+
+결론: 고정 R의 quantum conditional subsystem에서는 사용할 만한 축약 표현이
+확인되었다. 그러나 움직이는 핵 + CTMQC에서 EL보다 조금 비싸고 POL보다 빠른
+대안이라는 목표는 아직 달성하지 못했다. 전체 MCEF/PEN production 검증이 아니다.
+
+변경 범위
+---------
+기존 tracked 파일 변경 없음. 다음은 모두 새 파일이다.
+
+multi_component_exact_factorization/coherent_gaussian/
+  __init__.py             1-5     별도 namespace
+  core.py                 14-194  State, overlap, tangent_rate, evaluate, split_actual_rate
+  models.py               20-283  Pen, RealPen, McefLocal, quadrature_matrices
+  experiment.py           20-314  initialization, reference, metrics, quadrature gate, run/CLI
+  compare.py              27-242  GaussianPOL adapter, native EL/POL/QD comparison, CLI
+  benchmark.py            17-100  RHS cost, common-interval errors, reference/domain audit
+  render.py               27-205  static/MP4, native comparison, matched-control K plots
+  derive_report.py        14-273  한국어 유도 PDF와 JSON/CSV receipts 생성
+  README.rst              1-157   실행 순서와 미구현/제한 사항
+tests/test_coherent_gaussian.py  1-176  신규 수식/전파/render/failure-gate 검사
+docs/coherent_gaussian_derivation_ko.pdf/json/csv
+docs/coherent_gaussian_validation_index.txt
+docs/.gitattributes                 1  이 PDF 하나만 binary로 취급
+
+검증
+----
+새 수식/driver tests 14개 + 기존 gaussian*/pen_ctmqc/pen_perspectives 회귀 194개:
+총 208개 통과 (로컬 CPU). Render convergence 함수는 별도 실제 출력으로 확인.
+코드와 결과는 기존 계산 default/checkpoint와 분리했다. 서버 장시간 실행은 하지 않았다.
+
+실공간 전자 PEN: fixed R=-4, nx=17, DSE on, BO 전체 nx 상태, 40 fs
+----------------------------------------------------------------
+동일 numerical controls: rtol=1e-7, atol=1e-9, max-step=0.5 au,
+shape regularization=1e-6, nf_reference=32, energy-rate constraint on.
+
+K   최대 complex-state L2   최대 photon number 오차   propagation wall(s)
+2   0.1973683              0.0528406                  24.27
+4   0.0319684              0.0015490                  31.26
+8   0.0036634              0.0001353                  44.87
+12  0.0039178              0.0001907                  60.91
+
+이 시험에서는 K=8이 가장 유리했다. K>=8이면 일반적으로 충분하다는 증명이 아니다.
+nx=359 production grid와의 수렴은 하지 않았다. K=12의 단조 개선도 확인되지 않았다.
+
+2026 two-state PEN: fixed R, 40 fs
+---------------------------------
+BO K=4, reg=1e-7, nf_reference=48: 최대 L2 0.00114965, 에너지 drift 1.55e-10 Ha.
+CBO K=4, 같은 reg/max-step/tolerance/nf: 최대 L2 0.00317356,
+초기 표현 오차 0.00316747. CBO가 무조건 더 정확하지 않다.
+Rabi fixed-R K=4, 40 fs: 최대 L2 0.00158488.
+
+MCEF / CBO에서 확인한 제한
+-------------------------
+MCEF 원래 1/|q+9.5| pole을 무한지지 Gaussian에 숨겨 적용하지 않았다.
+local polynomial surrogate만 지원한다. 10 fs 국소 시험을 수행했고,
+40 fs 탐색은 약 13 fs부터 domain/reference 범위를 벗어나 그 이후 정확도 해석 불가.
+이제 reference-tail/domain gate로 해당 경우 중단한다.
+
+Real-electron CBO는 nquad=32 vs 64 상대 matrix 차이 0.0694.
+이전 6 fs 탐색의 큰 energy drift를 확인한 뒤 preflight에서 미수렴을 거부하도록 수정.
+2-state benchmark CBO와 달리 real-electron CBO의 장시간 결과는 아직 신뢰할 수 없다.
+
+움직이는 핵 + CTMQC
+------------------
+8 trajectories, 10 fs, nf=8, 동일 bare preparation:
+  EL        19.69 s; photon MAE 0.13773; S1 MAE 0.05564
+  POL      156.05 s; photon MAE 0.02725; S1 MAE 0.02732
+  Gaussian 147.13 s; photon MAE 0.02718; S1 MAE 0.02723
+오차는 동일 0-10 fs interval에서 finite-Fock QD와 비교했다.
+작은 ensemble이고 EL photon 값에는 vacuum Wigner sampling 오차가 크다.
+이 값으로 수렴된 EL/POL의 물리적 우열이나 Gaussian 속도 우위를 단정하지 않는다.
+
+16 trajectories, 40 fs 시도, nf=12:
+  EL/POL/QD는 40 fs 완료. Gaussian은 18 fs까지 저장하고 RHS 300001회 예산 초과.
+  Gaussian wall 6596 s. POL 40 fs wall 1287 s.
+NaN 발산과 구분해야 하며, 이 구현의 장시간 비용 목표는 미달이다.
+
+RHS microbenchmark Ntraj=16, nf=12, 20회 median:
+  EL 0.222 ms, POL 6.967 ms.
+  Gaussian K=1/2/4/8: 18.155 / 19.184 / 20.202 / 21.468 ms.
+전체 q 격자 전파는 없지만 POL force/CT-source diagonalization 비용이 남는다.
+
+주요 결과 위치
+--------------
+results/20261110/coherent_gaussian_final/real_pen_K_convergence.png
+results/20261110/coherent_gaussian_final/nonadiabatic_bo40_K4/plots/
+results/20261109/coherent_gaussian_v2/realpen40_chart_nx17_bo_K8/plots/
+results/20261109/coherent_gaussian_v2/ct10_n8_K4_nf8/plots/method_comparison.png
+results/20261109/coherent_gaussian_v2/ct40_n16_K4/plots/method_comparison.png
+results/20261109/coherent_gaussian_v1/mcef10_nx17_primitive/plots/
+
+fixed-R plots/ 안에는 conditional PNG 3개, summary PDF, MP4가 있다.
+정확한 config와 성공/실패 receipts는 각 run/ 및 유도 PDF의 동반 JSON/CSV에 보존했다.
+실패/미수렴 trial은 삭제하지 않았다. 이전 VSC/MCEF/PEN 결과는 건드리지 않았다.
